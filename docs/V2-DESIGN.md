@@ -63,7 +63,7 @@ V2 必须解决：
         ▲
         │
   systemd timer：唯一固定心跳
-  默认每5分钟执行 companion tick
+  默认每30分钟执行 companion tick
 ```
 
 ## 4. 核心对象与生命周期
@@ -132,15 +132,15 @@ Case 不等于 Agent 会话。每次需要工作时，Primary Codex重新派遣�
 
 ### 5.1 技术决策
 
-使用 systemd timer 作为唯一、固定、默认每5分钟一次的粗粒度心跳：
+使用 systemd timer 作为唯一、固定、默认每30分钟一次的粗粒度心跳：
 
 ```text
-systemd timer（默认5分钟）→ companion tick → Schedule Manager
+systemd timer（默认30分钟）→ companion tick → Schedule Manager
 ```
 
-不自行实现系统计时器，不让 systemd 理解任何投资任务。Schedule Manager 负责时区、交易日、活动窗口、冷却、预算、任务合并、Misfire 和 `next_run_at`。5分钟只是调度精度，不代表每5分钟调用数据源或 AI；没有到期任务时，Tick 只完成一次本地 SQLite 查询并退出。
+不自行实现系统计时器，不让 systemd 理解任何投资任务。Schedule Manager 负责时区、交易日、活动窗口、冷却、预算、任务合并、Misfire 和 `next_run_at`。30分钟只是默认调度精度，不代表每30分钟调用数据源或 AI；没有到期任务时，Tick 只完成一次本地 SQLite 查询并退出。
 
-需要更低延迟的 webhook、用户材料和未来消息订阅不等待下一次心跳：入口先原子写入 Inbox/Event 与 Outbox，再触发一次合并执行；5分钟心跳只承担兜底恢复。行情巡视、新闻增量扫描和园丁任务分别按自身 Schedule 运行，典型频率应是15分钟、小时、日、周或月，而不是跟随系统心跳。
+需要更低延迟的 webhook、用户材料和未来消息订阅不等待下一次心跳：入口先原子写入 Inbox/Event 与 Outbox，再触发一次合并执行；30分钟心跳只承担到期扫描和兜底恢复。默认任务频率按投资意义而非技术能力设置：广域新闻/文章巡视每个交易日1次（收盘后），重点主题可在盘前、午间、收盘后共3次；结构化持仓与标的复核通常每日收盘后1次；财报或重大案件的临时强化巡视每2–4小时，必须带TTL；价格类30分钟巡视只有用户明确要求时才启用。园丁按周做活跃材料体检、按月做时间线归纳与归档，不设置每日园丁。
 
 ### 5.2 AI 友好的管理接口
 
@@ -210,7 +210,7 @@ companion-recover.service 执行一次
   ├─ 根据 Misfire 生成最多一次补跑
   └─ 恢复未发送 Outbox
   ↓
-companion.timer 开始默认每5分钟 Tick
+companion.timer 开始默认每30分钟 Tick
 ```
 
 systemd 单元应配置：
@@ -370,10 +370,9 @@ Case / 临时 Watch / 静默归档
 
 触发机制：
 
-- 每日：Inbox 去重、失败和陈旧检查；
-- 每周：开放 Case、临时 Watch 和未处理线索体检；
+- 每周：Inbox 去重、开放 Case、临时 Watch、失败和未处理线索体检；
 - 每月：按 Case/标的整理时间线和当前证据；
-- 每季度：长期 Thesis 与冷归档建议；
+- 每季度：可选的长期 Thesis 与冷归档建议；
 - 容量/状态：材料超过阈值、Case 结案或 Thesis 重大变化时局部整理。
 
 园丁可自动更新索引、生成时间线草稿和移动满足明确规则的归档材料；改变当前 Thesis、合并 Case 或暂停长期 Watch 需要 Primary 审核；永久删除材料、决策历史或用户原文必须由用户确认。V2 默认不实现物理删除。
