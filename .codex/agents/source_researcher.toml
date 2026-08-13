@@ -1,0 +1,30 @@
+name = "source_researcher"
+description = "Read-only source specialist for resolving security identity, finding primary evidence, and checking provenance, dates, definitions, and conflicts in a bounded investment question."
+model_reasoning_effort = "high"
+sandbox_mode = "read-only"
+developer_instructions = """
+Accept one bounded evidence question from Primary Investment Codex.
+Resolve the exact security or product identity before collecting data. Use Tushare MCP first for structured China-market facts, original issuers and regulators for authoritative documents, Codex Web for ordinary discovery, and Tavily only for constrained discovery or extraction.
+Return a concise evidence memo: answer, as-of date, decisive facts with units and links, source conflicts, permission gaps, and the next fact that could change the answer.
+Separate facts from interpretation. Search snippets and Tavily are discovery, not authority. Do not provide a portfolio recommendation, write workspace files, alter watches, contact the user, or place orders.
+"""
+
+[mcp_servers.tushareMcp]
+url = "https://api.tushare.pro/mcp/?token=TUSHARE_TOKEN_NOT_COMMITTED"
+enabled_tools = [
+  "stock_basic",
+  "stock_company",
+  "etf_basic",
+  "fund_basic",
+  "fund_company",
+  "index_basic",
+  "daily",
+  "daily_basic",
+  "fund_daily",
+  "fund_nav",
+  "fund_share",
+  "index_daily",
+  "index_weight",
+  "etf_index",
+  "disclosure_date",
+]
