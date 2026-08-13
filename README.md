@@ -23,14 +23,14 @@ systemd timer → Companion Schedule/Run/Outbox → cc-connect
               → Markdown 文件句柄与 SQLite 精确状态
 ```
 
-当前实现、运行节奏、恢复机制和安全边界见 [V2 设计](docs/V2-DESIGN.md) 与 [运维手册](docs/V2-OPERATIONS.md)；下一阶段的 Financial Kernel、长期认知和个性化主动治理见 [V3 设计](docs/V3-DESIGN.md)。
+从 [项目状态与交棒入口](docs/PROJECT-STATUS.md) 开始阅读。当前架构见 [V3 设计](docs/V3-DESIGN.md)，运行与恢复见 [运维手册](docs/V2-OPERATIONS.md)，历史决策见 [V2 设计](docs/V2-DESIGN.md)。
 
 ## 验证
 
 ```bash
 python3 -m pytest -q
 ./bin/companion recover
-./bin/companion status
+./bin/companion doctor
 ```
 
 项目不连接券商、不自动交易、不维持常驻 Subagent。

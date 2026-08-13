@@ -14,7 +14,7 @@ def emit(value):
 
 
 def parser() -> argparse.ArgumentParser:
-    p=argparse.ArgumentParser(prog="companion",description="Investment Companion V2 operational CLI")
+    p=argparse.ArgumentParser(prog="companion",description="Investment Companion V3 operational CLI")
     p.add_argument("--root",default=os.environ.get("COMPANION_ROOT","/home/ghk/investment-home"));sub=p.add_subparsers(dest="command",required=True)
     for name in ["init","status","doctor","tick","recover","bootstrap"]:sub.add_parser(name)
     wi=sub.add_parser("workspace-init");wi.add_argument("--finance-source")

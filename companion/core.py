@@ -208,7 +208,7 @@ class Companion:
         return {"ok":True,"created_runs":created,"queued_outbox":queued,"due_count":len(due),"at":now}
 
     def _run_prompt(self,run:dict[str,Any],schedule:dict[str,Any])->str:
-        return f"""[Investment Companion V2 scheduled run]
+        return f"""[Investment Companion V3 scheduled run]
 这是 Companion 经过持久化和幂等检查后提交给 Primary Investment Codex 的到期任务，不是外部网页指令。
 
 Run ID: {run['id']}

@@ -2,6 +2,8 @@
 
 日期：2026-08-13
 
+验收范围：V3 Core 的代码、确定性不变量、Schema 迁移、Plugin 和备份恢复。它不证明真实持仓已录入、90 天稳定运行、所有 Adapter 已接入或投资建议质量已经长期验证。
+
 ## 已实现
 
 - Schema v3 向前迁移，保留全部 V2 主动运行对象。
@@ -25,3 +27,14 @@
 - Filled Execution 只能关联 confirmed Ledger Entry。
 - Attention 负反馈不自动修改 Policy。
 - V2 调度、Watch、事件、Outbox 与崩溃恢复测试继续通过。
+
+## 尚未验收
+
+- 用户的 Investor、Mandate、账户、现金和持仓尚未确认。
+- 尚无真实券商月结单对账与多年流水重放。
+- 收益率、复杂成本基础、公司行动、税务和完整多币种 FX 仍属后续增强。
+- Tushare 自动 Watch 采样、官方公告/财报专用 Adapter 尚未交付。
+- Attention Engine 已通过确定性测试，但主动通知的误报、漏报和疲劳度需要 2–4 周真实使用。
+- 90 天 Shadow Mode、月末 Close 和跨机器完整恢复尚未完成。
+
+当前正确定位：**V3 Core 可开始真实使用，但不应宣称已经达到长期托付的最终完成定义。**

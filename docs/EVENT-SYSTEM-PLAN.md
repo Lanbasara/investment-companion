@@ -1,6 +1,8 @@
 # Investment Companion：事件系统实施计划
 
-状态：设计与调研基线，尚未开始实现。
+状态：历史设计基线，已由 V2/V3 实现取代；仅用于追溯早期决策，不作为当前实施说明。
+
+当前权威入口见 [PROJECT-STATUS.md](PROJECT-STATUS.md)、[V3-DESIGN.md](V3-DESIGN.md) 和 [V2-OPERATIONS.md](V2-OPERATIONS.md)。本文中的 `companiond`、最小工具清单和阶段计划均为历史设想。
 
 ## 1. 产品边界
 

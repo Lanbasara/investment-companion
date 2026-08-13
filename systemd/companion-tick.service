@@ -1,5 +1,5 @@
 [Unit]
-Description=Investment Companion V2 scheduler tick
+Description=Investment Companion V3 scheduler tick
 After=network-online.target cc-connect.service
 Wants=network-online.target
 RequiresMountsFor=/home/ghk/investment-home

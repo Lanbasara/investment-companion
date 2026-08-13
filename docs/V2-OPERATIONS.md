@@ -1,4 +1,6 @@
-# Investment Companion V2 运维手册
+# Investment Companion V3 运维手册
+
+本文保留 V2 建立的运行与恢复机制，并补充 V3 个人事实初始化。版本现状以 [PROJECT-STATUS.md](PROJECT-STATUS.md) 为准。
 
 ## 用户管理面
 
