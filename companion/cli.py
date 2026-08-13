@@ -17,6 +17,7 @@ def parser() -> argparse.ArgumentParser:
     p=argparse.ArgumentParser(prog="companion",description="Investment Companion V2 operational CLI")
     p.add_argument("--root",default=os.environ.get("COMPANION_ROOT","/home/ghk/investment-home"));sub=p.add_subparsers(dest="command",required=True)
     for name in ["init","status","tick","recover","bootstrap"]:sub.add_parser(name)
+    wi=sub.add_parser("workspace-init");wi.add_argument("--finance-source")
     dispatch=sub.add_parser("dispatch");dispatch.add_argument("--dry-run",action="store_true");dispatch.add_argument("--limit",type=int,default=1)
     b=sub.add_parser("backup");b.add_argument("destination")
     ba=sub.add_parser("backup-auto");ba.add_argument("directory")
@@ -37,6 +38,7 @@ def main(argv=None) -> int:
     a=parser().parse_args(argv);c=Companion(Path(a.root))
     try:
         if a.command=="init":result=c.initialize()
+        elif a.command=="workspace-init":result=c.workspace_init(a.finance_source)
         else:
             c.initialize()
             if a.command=="status":result=c.system_status()

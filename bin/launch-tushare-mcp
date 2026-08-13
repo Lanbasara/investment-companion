@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+credential_file="${TUSHARE_TOKEN_FILE:-$HOME/.config/tushare/token}"
+node_bin_dir="${NODE_BIN_DIR:-$HOME/.nvm/versions/node/v24.18.0/bin}"
+
+if [[ ! -r "$credential_file" ]]; then
+  echo "Tushare credential is not readable: $credential_file" >&2
+  exit 1
+fi
+
+IFS= read -r tushare_token < "$credential_file"
+if [[ -z "$tushare_token" ]]; then
+  echo "Tushare credential file is empty" >&2
+  exit 1
+fi
+
+export PATH="$node_bin_dir:$PATH"
+exec npx -y mcp-remote "https://api.tushare.pro/mcp/?token=${tushare_token}"

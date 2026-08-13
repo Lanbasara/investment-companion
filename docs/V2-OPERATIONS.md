@@ -4,6 +4,16 @@
 
 用户继续在飞书中用自然语言管理主动系统，例如：“列出现在所有巡视”“把收盘巡视改到 18:00”“暂停月度园丁”“解释这个观察为何存在”。Primary Codex 使用 `manage-investment-companion` Skill 和 Companion MCP 完成精确读写；不要直接编辑 SQLite、systemd 或 cc-connect Cron。
 
+## 初始化新工作区
+
+```bash
+git clone <private-or-public-repository-url>
+cd investment-companion
+./bin/companion workspace-init --finance-source /absolute/path/to/finance-feed
+```
+
+`workspace-init` 是幂等的 meta 能力：创建 SQLite、标准工作材料目录与三条默认 Schedule；重复执行不会重复创建计划。省略 `--finance-source` 时仍会创建巡视计划，但 Inbox 来源为空，之后可通过自然语言或 `schedule_patch` 接入信息源。它从不清除既有运行态。
+
 ## 默认节奏
 
 - 基础设施心跳：systemd 每 30 分钟唤醒一次，只做本地到期检查；每 Tick 最多投递一个 Run。

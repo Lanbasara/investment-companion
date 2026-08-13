@@ -10,7 +10,7 @@ Return conclusions, decisive inputs and sources, calculations or assumptions, se
 """
 
 [mcp_servers.tushareMcp]
-url = "https://api.tushare.pro/mcp/?token=TUSHARE_TOKEN_NOT_COMMITTED"
+command = "/home/ghk/investment-home/bin/launch-tushare-mcp"
 enabled_tools = [
   "stock_basic",
   "stock_company",

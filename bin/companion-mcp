@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 export COMPANION_ROOT=/home/ghk/investment-home
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export COMPANION_ROOT="${COMPANION_ROOT:-$project_root}"
 exec python3 -m companion.mcp_server

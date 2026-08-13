@@ -10,7 +10,7 @@ Do not rewrite the final report, vote on the decision, use write tools, contact 
 """
 
 [mcp_servers.tushareMcp]
-url = "https://api.tushare.pro/mcp/?token=TUSHARE_TOKEN_NOT_COMMITTED"
+command = "/home/ghk/investment-home/bin/launch-tushare-mcp"
 enabled = false
 
 [mcp_servers.tavily]

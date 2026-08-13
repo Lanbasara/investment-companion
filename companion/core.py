@@ -373,15 +373,21 @@ Schedule ID: {schedule['id']}
             with self.db.transaction() as con:con.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)",(cursor_key,str(max_mtime)))
         return {"source":source,"path":str(base),"cursor_before":cursor,"matched":len(candidates),"added":len(set(added)),"cursor_after":max_mtime}
 
-    def bootstrap_defaults(self)->dict[str,Any]:
+    def bootstrap_defaults(self,finance_source:str|None=None)->dict[str,Any]:
         existing=self.schedule_list();created=[]
+        finance_source=finance_source or os.environ.get("COMPANION_FINANCE_SOURCE")
         if not any(x["origin"].get("bootstrap")=="v2-finance-patrol" for x in existing):
-            created.append(self.schedule_create(name="投资信息源收盘后巡视",kind="patrol",mission="巡视交易日新增的投资新闻、公告与深度文章，寻找与当前 Watch、Case、Thesis 或组合相关的 Observation、Suspicion 与 Challenge；无材料性变化时保持静默。",cadence={"type":"local_time","at":"17:30","timezone":"Asia/Shanghai","weekdays":[0,1,2,3,4]},scope={"inbox_sources":[{"path":"/home/ghk/hq/store/finance","source":"guanlan-finance","glob":"*.md","recursive":True,"limit":200}]},policy={"notify":"material_only","max_patrols_per_day":1,"misfire":"run_once"},origin={"bootstrap":"v2-finance-patrol"}))
+            scope={"inbox_sources":[{"path":finance_source,"source":"finance-feed","glob":"*.md","recursive":True,"limit":200}]} if finance_source else {"inbox_sources":[]}
+            created.append(self.schedule_create(name="投资信息源收盘后巡视",kind="patrol",mission="巡视交易日新增的投资新闻、公告与深度文章，寻找与当前 Watch、Case、Thesis 或组合相关的 Observation、Suspicion 与 Challenge；无材料性变化时保持静默。",cadence={"type":"local_time","at":"17:30","timezone":"Asia/Shanghai","weekdays":[0,1,2,3,4]},scope=scope,policy={"notify":"material_only","max_patrols_per_day":1,"misfire":"run_once"},origin={"bootstrap":"v2-finance-patrol"}))
         if not any(x["origin"].get("bootstrap")=="v2-weekly-gardener" for x in existing):
             created.append(self.schedule_create(name="认知园丁周度体检",kind="maintenance",mission="检查 Inbox 去重、开放 Case、临时 Watch、失败运行、陈旧线索与无主材料；只做安全整理并提交认知性变更建议。",cadence={"type":"local_time","at":"10:00","timezone":"Asia/Shanghai","weekdays":[6]},policy={"mode":"weekly","physical_delete":False,"notify":"exceptions_only","misfire":"run_once"},origin={"bootstrap":"v2-weekly-gardener"}))
         if not any(x["origin"].get("bootstrap")=="v2-monthly-gardener" for x in existing):
             created.append(self.schedule_create(name="认知园丁月度归纳",kind="maintenance",mission="按 Case、标的、线索和时间增量维护 Timeline、当前证据状态与归档建议；不物理删除，不擅自修改正式 Thesis。",cadence={"type":"monthly","day":1,"at":"10:30","timezone":"Asia/Shanghai"},policy={"mode":"monthly","physical_delete":False,"notify":"material_only","misfire":"run_once"},origin={"bootstrap":"v2-monthly-gardener"}))
         return {"created":created,"schedules":self.schedule_list()}
+
+    def workspace_init(self,finance_source:str|None=None)->dict[str,Any]:
+        initialized=self.initialize();defaults=self.bootstrap_defaults(finance_source)
+        return {"ok":True,"workspace":initialized,"created_schedules":[x["id"] for x in defaults["created"]],"schedules":defaults["schedules"]}
 
     def case_create(self, *, title:str, brief:str, subject:dict[str,Any]|None=None, origin:dict[str,Any]|None=None, actor:str="primary-codex")->dict[str,Any]:
         cid=new_id("case");root=self.investigations/"cases"/cid

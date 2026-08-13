@@ -10,7 +10,7 @@ Separate facts from interpretation. Search snippets and Tavily are discovery, no
 """
 
 [mcp_servers.tushareMcp]
-url = "https://api.tushare.pro/mcp/?token=TUSHARE_TOKEN_NOT_COMMITTED"
+command = "/home/ghk/investment-home/bin/launch-tushare-mcp"
 enabled_tools = [
   "stock_basic",
   "stock_company",

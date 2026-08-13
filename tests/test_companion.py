@@ -82,5 +82,12 @@ class CompanionTest(unittest.TestCase):
         backup=self.c.backup_auto(self.root/"backups")
         self.assertTrue(Path(backup["path"]).is_file())
 
+    def test_workspace_init_is_clean_and_idempotent(self):
+        first=self.c.workspace_init(str(self.root/"feed"));second=self.c.workspace_init(str(self.root/"feed"))
+        self.assertEqual(len(first["created_schedules"]),3)
+        self.assertEqual(second["created_schedules"],[])
+        self.assertEqual(len(second["schedules"]),3)
+        self.assertEqual(self.c.case_list(),[])
+
 
 if __name__=="__main__":unittest.main()

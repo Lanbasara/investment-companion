@@ -5,3 +5,13 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+investigations/inbox/*
+investigations/patrols/*
+investigations/cases/*
+investigations/maintenance/*
+investigations/archive/*
+!investigations/inbox/.gitkeep
+!investigations/patrols/.gitkeep
+!investigations/cases/.gitkeep
+!investigations/maintenance/.gitkeep
+!investigations/archive/.gitkeep
