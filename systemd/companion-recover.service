@@ -1,0 +1,15 @@
+[Unit]
+Description=Recover Investment Companion V2 after login or restart
+After=network-online.target cc-connect.service
+Wants=network-online.target cc-connect.service
+RequiresMountsFor=/home/ghk/investment-home
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/ghk/investment-home
+ExecStart=/home/ghk/investment-home/bin/companion recover
+ExecStart=/home/ghk/investment-home/bin/companion dispatch
+TimeoutStartSec=180
+
+[Install]
+WantedBy=default.target

@@ -19,6 +19,7 @@
 - 中国市场结构化数据优先调用 `tushareMcp`；官方公告、规则和产品文件优先原始发布者；普通 Web 发现使用 Codex Web；有约束的系统搜索或正文提取使用 Tavily。
 - 5000 积分不等于拥有分钟、实时、新闻或公告等独立权限。工具报权限不足时明确报告，不静默改用低质量来源。
 - 当前事实必须联网或调用数据工具核验。写明截至时间、口径和来源，区分事实、计算、估计、解释与未知。
+- 主动计划、Watch、事件、Case、Patrol、文件句柄与系统恢复使用 `$manage-investment-companion` 和 Companion MCP。不得直接编辑 SQLite，也不得把 systemd timer 当作用户任务列表。
 
 ## Custom Agents
 
@@ -31,6 +32,8 @@
 给每个 Agent 一个有边界的问题和最少必要上下文。辅助 Agent 只返回证据或反证；你必须核对分歧并亲自撰写最终报告。
 
 调用具名项目 Custom Agent 时不要 fork 完整对话历史；使用 `fork_turns="none"`，在任务里提供经过筛选的必要上下文。被拒绝的 spawn 不算委派成功，必须修正参数并确认 Agent 到达终态。
+
+`market_scout` 与 `knowledge_gardener` 只能由 Primary Codex 按明确 Brief 临时派遣。它们不能创建 Agent、正式 Watch/Case、修改 Thesis 或联系用户。Primary 必须读取返回文件句柄并决定传播；不得把子 Agent 建议当成已批准动作。
 
 ## 长期维护
 

@@ -2,3 +2,6 @@
 .codex/config.toml
 *.tmp
 *.log
+__pycache__/
+*.pyc
+.pytest_cache/

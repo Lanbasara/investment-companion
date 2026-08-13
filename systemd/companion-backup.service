@@ -1,0 +1,8 @@
+[Unit]
+Description=Back up Investment Companion SQLite database
+After=companion-recover.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/ghk/investment-home
+ExecStart=/bin/bash -lc '/home/ghk/investment-home/bin/companion backup /home/ghk/.local/share/investment-companion/backups/companion-latest.db'

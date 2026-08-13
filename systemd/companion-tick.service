@@ -1,0 +1,13 @@
+[Unit]
+Description=Investment Companion V2 scheduler tick
+After=network-online.target cc-connect.service
+Wants=network-online.target
+RequiresMountsFor=/home/ghk/investment-home
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/ghk/investment-home
+ExecStart=/home/ghk/investment-home/bin/companion tick
+ExecStart=/home/ghk/investment-home/bin/companion dispatch
+TimeoutStartSec=180
+Nice=10

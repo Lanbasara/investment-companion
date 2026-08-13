@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+set -euo pipefail
+export COMPANION_ROOT=/home/ghk/investment-home
+exec python3 -m companion.mcp_server
