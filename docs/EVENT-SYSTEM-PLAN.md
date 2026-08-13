@@ -173,7 +173,7 @@ Primary Codex 收到后：
 
 - 接入交易日历、股票/ETF 日线 Adapter。
 - 实现到期调度、限流、数据陈旧和连续失败事件。
-- 先以 systemd timer 或 cc-connect 单个 cron 每分钟调用 `companion tick`；调度器只负责心跳，不承载每项 Watch 语义。
+- 先以 systemd timer 默认每5分钟调用 `companion tick`；调度器只负责兜底心跳，不承载每项 Watch 语义。需要低延迟的推送入口在持久化后主动触发合并执行，不依赖提高全局轮询频率。
 
 验收：用沙盒 Watch 完成价格跨越、解除、再次跨越；非交易日和停牌不误报。
 

@@ -63,7 +63,7 @@ V2 必须解决：
         ▲
         │
   systemd timer：唯一固定心跳
-  每分钟执行 companion tick
+  默认每5分钟执行 companion tick
 ```
 
 ## 4. 核心对象与生命周期
@@ -132,13 +132,15 @@ Case 不等于 Agent 会话。每次需要工作时，Primary Codex重新派遣�
 
 ### 5.1 技术决策
 
-使用 systemd timer 作为唯一、固定、每分钟一次的粗粒度心跳：
+使用 systemd timer 作为唯一、固定、默认每5分钟一次的粗粒度心跳：
 
 ```text
-systemd timer → companion tick → Schedule Manager
+systemd timer（默认5分钟）→ companion tick → Schedule Manager
 ```
 
-不自行实现系统计时器，不让 systemd 理解任何投资任务。Schedule Manager 负责时区、交易日、活动窗口、冷却、预算、任务合并、Misfire 和 `next_run_at`。
+不自行实现系统计时器，不让 systemd 理解任何投资任务。Schedule Manager 负责时区、交易日、活动窗口、冷却、预算、任务合并、Misfire 和 `next_run_at`。5分钟只是调度精度，不代表每5分钟调用数据源或 AI；没有到期任务时，Tick 只完成一次本地 SQLite 查询并退出。
+
+需要更低延迟的 webhook、用户材料和未来消息订阅不等待下一次心跳：入口先原子写入 Inbox/Event 与 Outbox，再触发一次合并执行；5分钟心跳只承担兜底恢复。行情巡视、新闻增量扫描和园丁任务分别按自身 Schedule 运行，典型频率应是15分钟、小时、日、周或月，而不是跟随系统心跳。
 
 ### 5.2 AI 友好的管理接口
 
@@ -208,7 +210,7 @@ companion-recover.service 执行一次
   ├─ 根据 Misfire 生成最多一次补跑
   └─ 恢复未发送 Outbox
   ↓
-companion.timer 开始每分钟 Tick
+companion.timer 开始默认每5分钟 Tick
 ```
 
 systemd 单元应配置：
