@@ -36,12 +36,18 @@ class Companion:
         self.state = self.root / ".state"
         self.db = Database(db_path or self.state / "companion.db")
         self.investigations = self.root / "investigations"
+        from .financial import FinancialKernel
+        from .cognition import CognitiveLedger
+        from .attention import AttentionEngine
+        self.financial=FinancialKernel(self)
+        self.cognition=CognitiveLedger(self)
+        self.attention=AttentionEngine(self)
 
     def initialize(self) -> dict[str, Any]:
-        for path in [self.state, self.investigations / "inbox", self.investigations / "patrols", self.investigations / "cases", self.investigations / "maintenance", self.investigations / "archive"]:
+        for path in [self.state, self.investigations / "inbox", self.investigations / "patrols", self.investigations / "cases", self.investigations / "maintenance", self.investigations / "archive",self.root/"policies"/"mandate",self.root/"policies"/"attention",self.root/"calculations",self.root/"reconciliations",self.root/"portfolio"/"exports",self.root/"portfolio"/"statements"]:
             path.mkdir(parents=True, exist_ok=True)
         self.db.initialize()
-        return {"ok": True, "database": str(self.db.path), "root": str(self.root), "schema_version": 1}
+        return {"ok": True, "database": str(self.db.path), "root": str(self.root), "schema_version": 3}
 
     def _audit(self, con, actor: str, action: str, entity_type: str, entity_id: str, before: Any = None, after: Any = None, reason: str | None = None) -> None:
         con.execute(
@@ -194,7 +200,8 @@ class Companion:
             ingested=[]
             for source in schedule["scope"].get("inbox_sources",[]):
                 try: ingested.append(self.ingest_directory(source["path"],source.get("source","filesystem"),source.get("glob","*.md"),source.get("recursive",True),source.get("limit",200)))
-                except Exception as e: ingested.append({"path":source.get("path"),"error":str(e)})
+                except Exception as e:
+                    self.source_health_record(source.get("source","filesystem"),"failed",str(e),coverage={"path":source.get("path")});ingested.append({"path":source.get("path"),"error":str(e)})
             prompt=self._run_prompt(run,schedule)
             if ingested: prompt += "\n\n本次到期扫描的信息源摄入结果："+canonical(ingested)
             queued.append(self.outbox_enqueue(kind="codex_turn",destination="investment-companion",payload={"message":prompt,"run_id":run_id},idempotency_key=f"run-dispatch:{run_id}")["id"])
@@ -371,7 +378,24 @@ Schedule ID: {schedule['id']}
             except (UnicodeDecodeError,OSError):continue
         if candidates:
             with self.db.transaction() as con:con.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)",(cursor_key,str(max_mtime)))
+        self.source_health_record(source,"healthy",cursor=str(max_mtime),coverage={"path":str(base),"matched":len(candidates)})
         return {"source":source,"path":str(base),"cursor_before":cursor,"matched":len(candidates),"added":len(set(added)),"cursor_after":max_mtime}
+
+    def source_health_record(self,source:str,status:str,error:str|None=None,cursor:str|None=None,coverage:dict[str,Any]|None=None)->dict[str,Any]:
+        if status not in {"healthy","stale","partial","unauthorized","failed","unknown"}:raise CompanionError("invalid source health")
+        now=iso()
+        with self.db.transaction() as con:
+            previous=con.execute("SELECT consecutive_failures FROM source_health WHERE source=?",(source,)).fetchone();failures=(previous[0] if previous else 0)+1 if status in {"failed","unauthorized"} else 0
+            con.execute("INSERT INTO source_health(source,status,last_success_at,last_attempt_at,cursor,coverage_json,consecutive_failures,last_error,updated_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(source) DO UPDATE SET status=excluded.status,last_success_at=CASE WHEN excluded.status='healthy' THEN excluded.last_success_at ELSE source_health.last_success_at END,last_attempt_at=excluded.last_attempt_at,cursor=COALESCE(excluded.cursor,source_health.cursor),coverage_json=excluded.coverage_json,consecutive_failures=excluded.consecutive_failures,last_error=excluded.last_error,updated_at=excluded.updated_at",(source,status,now if status=="healthy" else None,now,cursor,canonical(coverage or {}),failures,error,now))
+        return self.source_health_get(source)
+
+    def source_health_get(self,source:str)->dict[str,Any]:
+        with self.db.connect() as con:item=row_dict(con.execute("SELECT * FROM source_health WHERE source=?",(source,)).fetchone())
+        if not item:raise CompanionError(f"source health not found: {source}")
+        return item
+
+    def source_health_list(self)->list[dict[str,Any]]:
+        with self.db.connect() as con:return rows_dict(con.execute("SELECT * FROM source_health ORDER BY source").fetchall())
 
     def bootstrap_defaults(self,finance_source:str|None=None)->dict[str,Any]:
         existing=self.schedule_list();created=[]
@@ -386,8 +410,13 @@ Schedule ID: {schedule['id']}
         return {"created":created,"schedules":self.schedule_list()}
 
     def workspace_init(self,finance_source:str|None=None)->dict[str,Any]:
-        initialized=self.initialize();defaults=self.bootstrap_defaults(finance_source)
-        return {"ok":True,"workspace":initialized,"created_schedules":[x["id"] for x in defaults["created"]],"schedules":defaults["schedules"]}
+        initialized=self.initialize();defaults=self.bootstrap_defaults(finance_source);contexts=[]
+        if not self.cognition.context_list("investor"):contexts.append(self.cognition.context_create("investor",{"status":"uninitialized","confirmed_facts":[]},"workspace bootstrap; requires user confirmation"))
+        if not self.cognition.context_list("mandate"):contexts.append(self.cognition.context_create("mandate",{"status":"uninitialized","hard_constraints":{},"soft_preferences":{}},"workspace bootstrap; requires user confirmation"))
+        if not self.cognition.context_current("attention"):
+            draft=self.cognition.context_create("attention",{"timezone":"Asia/Shanghai","quiet_hours":{"start":"22:00","end":"08:00"},"daily_notification_budget":3,"topic_cooldown_seconds":21600,"quiet_bypass_materiality":["critical"],"budget_bypass_materiality":["critical"],"channels":{"material":"notify_now","normal":"queue_digest","low":"file_only"}},"conservative system default")
+            contexts.append(self.cognition.context_confirm(draft["id"]))
+        return {"ok":True,"workspace":initialized,"created_schedules":[x["id"] for x in defaults["created"]],"created_context_revisions":[x["id"] for x in contexts],"schedules":defaults["schedules"]}
 
     def case_create(self, *, title:str, brief:str, subject:dict[str,Any]|None=None, origin:dict[str,Any]|None=None, actor:str="primary-codex")->dict[str,Any]:
         cid=new_id("case");root=self.investigations/"cases"/cid
@@ -555,7 +584,12 @@ Schedule ID: {schedule['id']}
         integrity=self.db.integrity_check()
         with self.db.connect() as con:
             meta={r["key"]:r["value"] for r in con.execute("SELECT * FROM meta").fetchall()}
-            counts={table:con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for table in ["schedules","runs","watches","events","cases","patrols","source_items","artifacts","outbox"]}
+            counts={table:con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for table in ["schedules","runs","watches","events","cases","patrols","source_items","artifacts","outbox","accounts","assets","ledger_entries","calculations","context_revisions","cognitive_objects","cognitive_revisions","executions","attention_decisions","source_health"]}
             failures=con.execute("SELECT COUNT(*) FROM runs WHERE status='failed'").fetchone()[0]
             pending=con.execute("SELECT COUNT(*) FROM outbox WHERE status IN ('pending','retry','sending')").fetchone()[0]
         return {"ok":integrity=="ok","integrity":integrity,"database":str(self.db.path),"meta":meta,"counts":counts,"failed_runs":failures,"pending_outbox":pending,"now":iso()}
+
+    def doctor(self)->dict[str,Any]:
+        status=self.system_status();checks={"database_integrity":status["integrity"]=="ok","workspace_writable":os.access(self.root,os.W_OK),"attention_policy":self.cognition.context_current("attention") is not None,"investor_confirmed":bool(self.cognition.context_current("investor")),"mandate_confirmed":bool(self.cognition.context_current("mandate"))}
+        checks["financial_facts_ready"]=status["counts"]["accounts"]>0 and status["counts"]["ledger_entries"]>0
+        return {"ok":all(v for k,v in checks.items() if k not in {"investor_confirmed","mandate_confirmed","financial_facts_ready"}),"checks":checks,"warnings":[k for k,v in checks.items() if not v],"status":status}

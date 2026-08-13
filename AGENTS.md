@@ -16,9 +16,10 @@
 ## 工具与研究
 
 - 投资研究使用 `$research-investment`；买卖、持有、仓位和资产配置使用 `$decide-investment`。
+- 账户、成交、入出金、真实持仓、精确计算、对账、Investor/Mandate/Attention Policy、Thesis/Decision/Execution/Review 和跨对话恢复使用 `$manage-investment-lifecycle`。禁止用模型心算替代 Financial Kernel。
 - 中国市场结构化数据优先调用 `tushareMcp`；官方公告、规则和产品文件优先原始发布者；普通 Web 发现使用 Codex Web；有约束的系统搜索或正文提取使用 Tavily。
 - 5000 积分不等于拥有分钟、实时、新闻或公告等独立权限。工具报权限不足时明确报告，不静默改用低质量来源。
-- 当前事实必须联网或调用数据工具核验。写明截至时间、口径和来源，区分事实、计算、估计、解释与未知。
+- 当前事实必须联网或调用数据工具核验。写明截至时间、口径和来源，区分用户确认事实、市场事实、Calculation、估计、解释与未知；材料性组合数字引用 Calculation ID。
 - 主动计划、Watch、事件、Case、Patrol、文件句柄与系统恢复使用 `$manage-investment-companion` 和 Companion MCP。不得直接编辑 SQLite，也不得把 systemd timer 当作用户任务列表。
 
 ## Custom Agents
@@ -37,7 +38,7 @@
 
 ## 长期维护
 
-- 只有用户明确确认的个人事实才能写入 `memory/investor.md`、`memory/mandate.md` 或 `portfolio/current.md`。
+- 只有用户明确确认的个人事实才能发布为 Investor/Mandate Revision；只有 confirmed Ledger Entry 能改变组合。Markdown current 文件是可读视图，不是精确事实源。
 - 新研究更新相应 `theses/`；材料性建议写入 `decisions/`；事后学习写入 `reviews/`；当前未决问题和下一观察点维护在 `memory/now.md`。
 - 不回填猜测，不根据后来结果改写旧决策。引用文件时使用相对路径。
 - 默认中文回答，第一行先给结论；只展开影响判断的内容。

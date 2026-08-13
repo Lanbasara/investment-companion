@@ -9,7 +9,7 @@ from typing import Any, Iterator
 
 from .timeutil import iso
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 
 SCHEMA = r"""
 CREATE TABLE IF NOT EXISTS meta (
@@ -211,6 +211,100 @@ CREATE TABLE IF NOT EXISTS locks (
 );
 """
 
+V3_SCHEMA = r"""
+CREATE TABLE IF NOT EXISTS accounts (
+  id TEXT PRIMARY KEY, name TEXT NOT NULL, institution TEXT, base_currency TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active','closed')),
+  metadata_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS assets (
+  id TEXT PRIMARY KEY, asset_type TEXT NOT NULL, name TEXT NOT NULL, currency TEXT NOT NULL,
+  identifiers_json TEXT NOT NULL DEFAULT '{}', metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ledger_entries (
+  id TEXT PRIMARY KEY, account_id TEXT NOT NULL, entry_type TEXT NOT NULL,
+  asset_id TEXT, occurred_at TEXT NOT NULL, settled_at TEXT, quantity_text TEXT,
+  price_text TEXT, amount_text TEXT NOT NULL, currency TEXT NOT NULL,
+  fee_text TEXT NOT NULL DEFAULT '0', status TEXT NOT NULL CHECK(status IN ('draft','needs_confirmation','confirmed','reversed')),
+  source TEXT NOT NULL, external_id TEXT, reversal_of TEXT, metadata_json TEXT NOT NULL DEFAULT '{}',
+  fingerprint TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL, confirmed_at TEXT,
+  FOREIGN KEY(account_id) REFERENCES accounts(id), FOREIGN KEY(asset_id) REFERENCES assets(id),
+  FOREIGN KEY(reversal_of) REFERENCES ledger_entries(id)
+);
+CREATE INDEX IF NOT EXISTS idx_ledger_account_time ON ledger_entries(account_id,status,occurred_at);
+CREATE TABLE IF NOT EXISTS market_snapshots (
+  id TEXT PRIMARY KEY, asset_id TEXT NOT NULL, metric TEXT NOT NULL, value_text TEXT NOT NULL,
+  currency TEXT, observed_at TEXT NOT NULL, source TEXT NOT NULL, quality TEXT NOT NULL,
+  metadata_json TEXT NOT NULL DEFAULT '{}', fingerprint TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL,
+  FOREIGN KEY(asset_id) REFERENCES assets(id)
+);
+CREATE TABLE IF NOT EXISTS calculations (
+  id TEXT PRIMARY KEY, kind TEXT NOT NULL, purpose TEXT NOT NULL, engine_version TEXT NOT NULL,
+  as_of TEXT NOT NULL, inputs_json TEXT NOT NULL, assumptions_json TEXT NOT NULL DEFAULT '{}',
+  formulas_json TEXT NOT NULL, outputs_json TEXT NOT NULL, warnings_json TEXT NOT NULL DEFAULT '[]',
+  reproducibility_hash TEXT NOT NULL UNIQUE, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS reconciliations (
+  id TEXT PRIMARY KEY, account_id TEXT NOT NULL, as_of TEXT NOT NULL, statement_json TEXT NOT NULL,
+  computed_json TEXT NOT NULL, differences_json TEXT NOT NULL, status TEXT NOT NULL,
+  source_ref TEXT, created_at TEXT NOT NULL, resolved_at TEXT,
+  FOREIGN KEY(account_id) REFERENCES accounts(id)
+);
+CREATE TABLE IF NOT EXISTS context_revisions (
+  id TEXT PRIMARY KEY, context_type TEXT NOT NULL CHECK(context_type IN ('investor','mandate','attention')),
+  revision INTEGER NOT NULL, status TEXT NOT NULL CHECK(status IN ('draft','current','trial','superseded','expired')),
+  content_json TEXT NOT NULL, effective_from TEXT, expires_at TEXT, parent_id TEXT,
+  reason TEXT, content_hash TEXT NOT NULL, created_at TEXT NOT NULL, confirmed_at TEXT,
+  UNIQUE(context_type,revision), FOREIGN KEY(parent_id) REFERENCES context_revisions(id)
+);
+CREATE INDEX IF NOT EXISTS idx_context_current ON context_revisions(context_type,status);
+CREATE TABLE IF NOT EXISTS cognitive_objects (
+  id TEXT PRIMARY KEY, object_type TEXT NOT NULL CHECK(object_type IN ('thesis','decision','review')),
+  subject_json TEXT NOT NULL DEFAULT '{}', status TEXT NOT NULL, current_revision_id TEXT,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS cognitive_revisions (
+  id TEXT PRIMARY KEY, object_id TEXT NOT NULL, revision INTEGER NOT NULL, status TEXT NOT NULL,
+  path TEXT NOT NULL UNIQUE, content_hash TEXT NOT NULL, parent_id TEXT, knowledge_cutoff TEXT,
+  context_refs_json TEXT NOT NULL DEFAULT '{}', calculation_ids_json TEXT NOT NULL DEFAULT '[]',
+  metadata_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL,
+  UNIQUE(object_id,revision), FOREIGN KEY(object_id) REFERENCES cognitive_objects(id),
+  FOREIGN KEY(parent_id) REFERENCES cognitive_revisions(id)
+);
+CREATE TABLE IF NOT EXISTS cognitive_links (
+  id TEXT PRIMARY KEY, from_id TEXT NOT NULL, to_id TEXT NOT NULL, link_type TEXT NOT NULL,
+  metadata_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL,
+  UNIQUE(from_id,to_id,link_type)
+);
+CREATE TABLE IF NOT EXISTS executions (
+  id TEXT PRIMARY KEY, decision_id TEXT, status TEXT NOT NULL CHECK(status IN ('proposed','accepted','ordered','partially_filled','filled','cancelled','expired')),
+  details_json TEXT NOT NULL DEFAULT '{}', ledger_entry_ids_json TEXT NOT NULL DEFAULT '[]',
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, FOREIGN KEY(decision_id) REFERENCES cognitive_objects(id)
+);
+CREATE TABLE IF NOT EXISTS attention_decisions (
+  id TEXT PRIMARY KEY, event_id TEXT, policy_revision_id TEXT NOT NULL, action TEXT NOT NULL,
+  topic TEXT NOT NULL, materiality TEXT NOT NULL, confidence TEXT NOT NULL,
+  reason TEXT NOT NULL, evidence_json TEXT NOT NULL DEFAULT '[]', notification_key TEXT UNIQUE,
+  status TEXT NOT NULL, created_at TEXT NOT NULL, delivered_at TEXT,
+  FOREIGN KEY(event_id) REFERENCES events(id), FOREIGN KEY(policy_revision_id) REFERENCES context_revisions(id)
+);
+CREATE TABLE IF NOT EXISTS attention_feedback (
+  id TEXT PRIMARY KEY, attention_decision_id TEXT NOT NULL, feedback TEXT NOT NULL,
+  note TEXT, created_at TEXT NOT NULL, FOREIGN KEY(attention_decision_id) REFERENCES attention_decisions(id)
+);
+CREATE TABLE IF NOT EXISTS recovery_packages (
+  id TEXT PRIMARY KEY, purpose TEXT NOT NULL, subject_json TEXT NOT NULL DEFAULT '{}',
+  as_of TEXT NOT NULL, handles_json TEXT NOT NULL, included_reason_json TEXT NOT NULL,
+  warnings_json TEXT NOT NULL DEFAULT '[]', content_hash TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS source_health (
+  source TEXT PRIMARY KEY, status TEXT NOT NULL, last_success_at TEXT, last_attempt_at TEXT,
+  cursor TEXT, coverage_json TEXT NOT NULL DEFAULT '{}', consecutive_failures INTEGER NOT NULL DEFAULT 0,
+  last_error TEXT, updated_at TEXT NOT NULL
+);
+"""
+
 
 class Database:
     def __init__(self, path: str | Path):
@@ -229,6 +323,7 @@ class Database:
     def initialize(self) -> None:
         with self.connect() as con:
             con.executescript(SCHEMA)
+            con.executescript(V3_SCHEMA)
             con.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version',?)", (str(SCHEMA_VERSION),))
             con.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('created_at',?)", (iso(),))
 

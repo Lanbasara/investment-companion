@@ -26,6 +26,7 @@ cd investment-companion
 ```bash
 cd /home/ghk/investment-home
 ./bin/companion status
+./bin/companion doctor
 ./bin/companion schedule-list
 ./bin/companion run-list
 systemctl --user status companion-tick.timer companion-backup.timer
@@ -43,6 +44,10 @@ systemd timer → companion tick → 持久化 Run/Outbox
 ```
 
 无到期 Run 或不满足 Schedule 通知策略时，唤醒回合严格返回 `NO_REPLY`。材料性结论、故障或需要用户决策时才通过原飞书会话联系用户。
+
+## V3 个人事实初始化
+
+`doctor` 中的 `investor_confirmed`、`mandate_confirmed` 和 `financial_facts_ready` 是业务准备度，不是服务故障。用户通过飞书确认个人事实、投资约束、账户和首批流水后才会变为真。未确认前，系统可以研究和一般巡视，但不得给出伪精确的个性化仓位建议。
 
 ## 安全边界
 
