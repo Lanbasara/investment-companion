@@ -23,7 +23,7 @@ systemd timer → Companion Schedule/Run/Outbox → cc-connect
               → Markdown 文件句柄与 SQLite 精确状态
 ```
 
-详细设计、运行节奏、恢复机制和安全边界见 [V2 设计](docs/V2-DESIGN.md) 与 [运维手册](docs/V2-OPERATIONS.md)。
+当前实现、运行节奏、恢复机制和安全边界见 [V2 设计](docs/V2-DESIGN.md) 与 [运维手册](docs/V2-OPERATIONS.md)；下一阶段的 Financial Kernel、长期认知和个性化主动治理见 [V3 设计](docs/V3-DESIGN.md)。
 
 ## 验证
 
