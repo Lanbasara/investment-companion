@@ -38,7 +38,7 @@ class Companion:
         self.investigations = self.root / "investigations"
 
     def initialize(self) -> dict[str, Any]:
-        for path in [self.state, self.investigations / "inbox", self.investigations / "patrols", self.investigations / "cases", self.investigations / "archive"]:
+        for path in [self.state, self.investigations / "inbox", self.investigations / "patrols", self.investigations / "cases", self.investigations / "maintenance", self.investigations / "archive"]:
             path.mkdir(parents=True, exist_ok=True)
         self.db.initialize()
         return {"ok": True, "database": str(self.db.path), "root": str(self.root), "schema_version": 1}
@@ -136,7 +136,9 @@ class Companion:
         with self.db.transaction() as con:
             con.execute("INSERT INTO runs(id,schedule_id,kind,status,due_at,idempotency_key,payload_json,created_at) VALUES(?,?,?,?,?,?,?,?)", (run_id,schedule_id,schedule["kind"],"queued",due,key,canonical({"manual":True,"mission":schedule["mission"]}),due))
             self._audit(con, actor, "run_now", "schedule", schedule_id, after={"run_id":run_id})
-        return self.run_get(run_id)
+        run=self.run_get(run_id)
+        self.outbox_enqueue(kind="codex_turn",destination="investment-companion",payload={"message":self._run_prompt(run,schedule),"run_id":run_id},idempotency_key=f"run-dispatch:{run_id}")
+        return run
 
     def schedule_history(self, schedule_id: str, limit: int = 20) -> list[dict[str, Any]]:
         with self.db.connect() as con:
@@ -166,11 +168,12 @@ class Companion:
         except Exception:
             return False
 
-    def tick(self, owner: str | None = None, limit: int = 10) -> dict[str, Any]:
+    def tick(self, owner: str | None = None, limit: int = 1) -> dict[str, Any]:
         owner = owner or f"{socket.gethostname()}:{os.getpid()}"
         now = iso(); created=[]
         with self.db.transaction() as con:
             if not self._acquire_lock(con,"tick",owner,300): return {"ok":True,"skipped":"tick already leased","created_runs":[]}
+            con.execute("UPDATE watches SET status='expired',version=version+1,updated_at=? WHERE status='active' AND ((ttl_at IS NOT NULL AND ttl_at<=?) OR (max_runs IS NOT NULL AND run_count>=max_runs))",(now,now))
             due = con.execute("SELECT * FROM schedules WHERE status='active' AND next_run_at IS NOT NULL AND next_run_at<=? ORDER BY next_run_at LIMIT ?",(now,limit)).fetchall()
             for raw in due:
                 schedule=row_dict(raw); due_at=schedule["next_run_at"]
@@ -265,6 +268,20 @@ Schedule ID: {schedule['id']}
             con.execute("UPDATE watches SET status=?,version=version+1,updated_at=? WHERE id=?",(status,iso(),watch_id));self._audit(con,actor,status,"watch",watch_id,before,{**before,"status":status})
         return self.watch_get(watch_id)
 
+    def watch_patch(self, watch_id: str, expected_version: int, changes: dict[str, Any], actor: str = "primary-codex", reason: str | None = None) -> dict[str, Any]:
+        allowed={"name","intent","condition","schedule_id","origin","ttl_at","max_runs"}
+        unknown=set(changes)-allowed
+        if unknown:raise CompanionError(f"unsupported watch fields: {sorted(unknown)}")
+        with self.db.transaction() as con:
+            before=row_dict(con.execute("SELECT * FROM watches WHERE id=?",(watch_id,)).fetchone())
+            if not before:raise CompanionError(f"watch not found: {watch_id}")
+            if before["version"]!=expected_version:raise CompanionError(f"version conflict: expected {expected_version}, current {before['version']}")
+            after={**before,**changes}
+            if after["origin"].get("type") in {"case","patrol","system"} and not after.get("ttl_at"):raise CompanionError("automatically derived watch requires ttl_at")
+            con.execute("UPDATE watches SET name=?,intent=?,condition_json=?,schedule_id=?,origin_json=?,ttl_at=?,max_runs=?,version=version+1,updated_at=? WHERE id=? AND version=?",(after["name"],after["intent"],canonical(after["condition"]),after.get("schedule_id"),canonical(after["origin"]),after.get("ttl_at"),after.get("max_runs"),iso(),watch_id,expected_version))
+            self._audit(con,actor,"patch","watch",watch_id,before,after,reason)
+        return self.watch_get(watch_id)
+
     def observation_add(self, *, subject_type: str, subject_id: str, metric: str, value: Any, observed_at: str, source: str, source_ref: str | None = None, quality: dict[str,Any] | None = None, watch_id: str | None = None) -> dict[str, Any]:
         fp=digest(subject_type,subject_id,metric,value,observed_at,source);oid=new_id("obs");now=iso()
         with self.db.transaction() as con:
@@ -284,7 +301,12 @@ Schedule ID: {schedule['id']}
         with self.db.transaction() as con:
             current=con.execute("SELECT last_state FROM watches WHERE id=?",(watch_id,)).fetchone()[0]
             con.execute("UPDATE watches SET last_observation_json=?,last_state=?,last_success_at=?,run_count=run_count+1,updated_at=? WHERE id=?",(canonical(obs),1 if matches else 0,now,now,watch_id))
-        if matches and not current:
+        cooldown_ok=True
+        cooldown=int(cond.get("cooldown_seconds",0))
+        if matches and not current and cooldown:
+            with self.db.connect() as con:last=con.execute("SELECT detected_at FROM events WHERE watch_id=? ORDER BY detected_at DESC LIMIT 1",(watch_id,)).fetchone()
+            cooldown_ok=not last or parse(last[0])+timedelta(seconds=cooldown)<=utc_now()
+        if matches and not current and cooldown_ok:
             event=self.event_create(kind="watch_triggered",subject_type=watch["subject_type"],subject_id=watch["subject_id"],watch_id=watch_id,occurred_at=obs["observed_at"],summary=f"{watch['name']}：{obs['metric']}={value} {op} {threshold}",payload={"watch":watch,"observation":obs})
         return {"watch_id":watch_id,"matched":bool(matches),"transition":bool(matches and not current),"event":event}
 
@@ -326,6 +348,14 @@ Schedule ID: {schedule['id']}
         with self.db.connect() as con:
             rows=con.execute("SELECT * FROM source_items"+(" WHERE status=?" if status else "")+" ORDER BY captured_at LIMIT ?",((status,limit) if status else (limit,))).fetchall()
         return rows_dict(rows)
+
+    def inbox_set_status(self,item_id:str,status:str,actor:str="primary-codex")->dict[str,Any]:
+        if status not in {"new","triaged","linked","archived","duplicate"}:raise CompanionError("invalid inbox status")
+        with self.db.transaction() as con:
+            before=row_dict(con.execute("SELECT * FROM source_items WHERE id=?",(item_id,)).fetchone())
+            if not before:raise CompanionError(f"source item not found: {item_id}")
+            con.execute("UPDATE source_items SET status=? WHERE id=?",(status,item_id));self._audit(con,actor,"status","source_item",item_id,before,{**before,"status":status})
+        with self.db.connect() as con:return row_dict(con.execute("SELECT * FROM source_items WHERE id=?",(item_id,)).fetchone())
 
     def ingest_directory(self,path:str,source:str,glob_pattern:str="*.md",recursive:bool=True,limit:int=200)->dict[str,Any]:
         base=Path(path).expanduser().resolve()
@@ -383,6 +413,17 @@ Schedule ID: {schedule['id']}
             con.execute("UPDATE cases SET status=?,version=version+1,updated_at=?,closed_at=?,close_reason=? WHERE id=?",(status,now,closed,reason,case_id));self._audit(con,actor,"status","case",case_id,before,{"status":status,"reason":reason})
         return self.case_get(case_id)
 
+    def case_patch(self,case_id:str,expected_version:int,changes:dict[str,Any],actor:str="primary-codex",reason:str|None=None)->dict[str,Any]:
+        allowed={"title","subject","origin"};unknown=set(changes)-allowed
+        if unknown:raise CompanionError(f"unsupported case fields: {sorted(unknown)}")
+        with self.db.transaction() as con:
+            before=row_dict(con.execute("SELECT * FROM cases WHERE id=?",(case_id,)).fetchone())
+            if not before:raise CompanionError(f"case not found: {case_id}")
+            if before["version"]!=expected_version:raise CompanionError(f"version conflict: expected {expected_version}, current {before['version']}")
+            after={**before,**changes}
+            con.execute("UPDATE cases SET title=?,subject_json=?,origin_json=?,version=version+1,updated_at=? WHERE id=? AND version=?",(after["title"],canonical(after["subject"]),canonical(after["origin"]),iso(),case_id,expected_version));self._audit(con,actor,"patch","case",case_id,before,after,reason)
+        return self.case_get(case_id)
+
     def patrol_commission(self, *, brief_path:str,case_id:str|None=None,schedule_id:str|None=None,budget:dict[str,Any]|None=None,actor:str="primary-codex")->dict[str,Any]:
         full=(self.root/brief_path).resolve()
         if not full.is_file() or self.root not in full.parents:raise CompanionError("brief_path must be an existing file inside workspace")
@@ -423,6 +464,11 @@ Schedule ID: {schedule['id']}
         q+=" ORDER BY effective_at DESC,created_at DESC LIMIT ?";p.append(limit)
         with self.db.connect() as con:return rows_dict(con.execute(q,p).fetchall())
 
+    def artifact_get(self,artifact_id:str)->dict[str,Any]:
+        with self.db.connect() as con:item=row_dict(con.execute("SELECT * FROM artifacts WHERE id=?",(artifact_id,)).fetchone())
+        if not item:raise CompanionError(f"artifact not found: {artifact_id}")
+        return item
+
     def outbox_enqueue(self, *, kind:str,destination:str,payload:dict[str,Any],event_id:str|None=None,idempotency_key:str|None=None)->dict[str,Any]:
         oid=new_id("out");now=iso();key=idempotency_key or digest(kind,destination,event_id,payload)
         with self.db.transaction() as con:
@@ -453,7 +499,7 @@ Schedule ID: {schedule['id']}
                 con.execute("UPDATE outbox SET status=?,available_at=?,last_error=?,lease_owner=NULL,lease_until=NULL,updated_at=? WHERE id=?",(status,iso(utc_now()+timedelta(seconds=delay)),error,now,outbox_id))
         with self.db.connect() as con:return row_dict(con.execute("SELECT * FROM outbox WHERE id=?",(outbox_id,)).fetchone())
 
-    def dispatch_outbox(self,dry_run:bool=False,limit:int=3)->dict[str,Any]:
+    def dispatch_outbox(self,dry_run:bool=False,limit:int=1)->dict[str,Any]:
         owner=f"dispatcher:{socket.gethostname()}:{os.getpid()}";results=[]
         for _ in range(limit):
             item=self.outbox_claim(owner)
@@ -462,7 +508,15 @@ Schedule ID: {schedule['id']}
                 results.append({"id":item["id"],"dry_run":True,"destination":item["destination"],"payload":item["payload"]});self.outbox_finish(item["id"],False,"dry-run: delivery intentionally not attempted");continue
             try:
                 if item["kind"]!="codex_turn":raise CompanionError(f"unsupported outbox kind: {item['kind']}")
-                proc=subprocess.run(["cc-connect","send","-p",item["destination"],"--message",item["payload"]["message"]],capture_output=True,text=True,timeout=60,check=False)
+                wake_cron=os.environ.get("COMPANION_CC_WAKE_CRON")
+                if wake_cron:
+                    command=["/home/ghk/.local/bin/cc-connect","cron","exec",wake_cron]
+                else:
+                    command=["/home/ghk/.local/bin/cc-connect","send","-p",item["destination"]]
+                    session_key=os.environ.get("COMPANION_CC_SESSION")
+                    if session_key:command.extend(["-s",session_key])
+                    command.extend(["--message",item["payload"]["message"]])
+                proc=subprocess.run(command,capture_output=True,text=True,timeout=60,check=False)
                 if proc.returncode!=0:raise CompanionError((proc.stderr or proc.stdout).strip() or f"cc-connect exited {proc.returncode}")
                 self.outbox_finish(item["id"],True);results.append({"id":item["id"],"sent":True,"output":proc.stdout.strip()})
             except Exception as e:
@@ -474,11 +528,22 @@ Schedule ID: {schedule['id']}
         integrity=self.db.integrity_check()
         if integrity!="ok":raise CompanionError(f"database integrity check failed: {integrity}")
         with self.db.transaction() as con:
-            recovered["runs"]=con.execute("UPDATE runs SET status='recoverable',lease_owner=NULL,lease_until=NULL WHERE status='leased' AND lease_until<?",(now,)).rowcount
-            recovered["patrols"]=con.execute("UPDATE patrols SET status='commissioned',lease_owner=NULL,lease_until=NULL WHERE status='scanning' AND lease_until<?",(now,)).rowcount
-            recovered["outbox"]=con.execute("UPDATE outbox SET status='retry',lease_owner=NULL,lease_until=NULL,available_at=?,updated_at=? WHERE status='sending' AND lease_until<?",(now,now,now)).rowcount
+            recovered["runs"]=con.execute("UPDATE runs SET status='recoverable',lease_owner=NULL,lease_until=NULL WHERE status='leased' AND lease_until<=?",(now,)).rowcount
+            recovered["patrols"]=con.execute("UPDATE patrols SET status='commissioned',lease_owner=NULL,lease_until=NULL WHERE status='scanning' AND lease_until<=?",(now,)).rowcount
+            recovered["outbox"]=con.execute("UPDATE outbox SET status='retry',lease_owner=NULL,lease_until=NULL,available_at=?,updated_at=? WHERE status='sending' AND lease_until<=?",(now,now,now)).rowcount
             con.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('last_recovery_at',?)",(now,))
         return {"ok":True,"integrity":integrity,"recovered":recovered,"at":now}
+
+    def backup(self,destination:str|Path)->dict[str,Any]:
+        target=self.db.backup(destination);now=iso()
+        with self.db.transaction() as con:
+            con.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('last_backup_at',?)",(now,))
+            con.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('last_backup_path',?)",(str(target),))
+        return {"ok":True,"path":str(target),"at":now}
+
+    def backup_auto(self,directory:str|Path)->dict[str,Any]:
+        base=Path(directory).expanduser().resolve();base.mkdir(parents=True,exist_ok=True)
+        return self.backup(base/f"companion-{utc_now().strftime('%Y%m%dT%H%M%SZ')}.db")
 
     def system_status(self)->dict[str,Any]:
         integrity=self.db.integrity_check()

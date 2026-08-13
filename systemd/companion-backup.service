@@ -5,4 +5,4 @@ After=companion-recover.service
 [Service]
 Type=oneshot
 WorkingDirectory=/home/ghk/investment-home
-ExecStart=/bin/bash -lc '/home/ghk/investment-home/bin/companion backup /home/ghk/.local/share/investment-companion/backups/companion-latest.db'
+ExecStart=/home/ghk/investment-home/bin/companion backup-auto /home/ghk/.local/share/investment-companion/backups

@@ -35,6 +35,7 @@ TOOLS={
  "watch_create":("创建观察意图。系统派生的观察必须有到期时间。",schema({"name":S,"subject_type":S,"subject_id":S,"intent":S,"condition":O,"schedule_id":S,"origin":O,"ttl_at":S,"max_runs":I},["name","subject_type","subject_id","intent","condition"])),
  "watch_list":("列出观察项。",schema({"status":S,"subject_id":S})),
  "watch_get":("读取观察项。",schema({"watch_id":S},["watch_id"])),
+ "watch_patch":("按字段精确修改观察项，使用版本号防止覆盖。",schema({"watch_id":S,"expected_version":I,"changes":O,"reason":S},["watch_id","expected_version","changes"])),
  "watch_pause":("暂停观察项。",schema({"watch_id":S},["watch_id"])),
  "watch_resume":("恢复观察项。",schema({"watch_id":S},["watch_id"])),
  "watch_archive":("归档观察项。",schema({"watch_id":S},["watch_id"])),
@@ -42,12 +43,14 @@ TOOLS={
  "watch_evaluate":("用一项已登记 Observation 判断 Watch 条件，只在未成立到成立的跨越时产生事件。",schema({"watch_id":S,"observation_id":S},["watch_id","observation_id"])),
  "inbox_add":("登记用户文章、链接或调查材料，返回稳定文件句柄。",schema({"source":S,"title":S,"content":S,"url":S,"published_at":S,"source_key":S,"metadata":O},["source","title"])),
  "inbox_list":("读取增量信息 Inbox。",schema({"status":S,"limit":I})),
+ "inbox_set_status":("标记一项材料已分流、关联、归档或判重。",schema({"item_id":S,"status":{"type":"string","enum":["new","triaged","linked","archived","duplicate"]}},["item_id","status"])),
  "event_list":("列出事件。",schema({"status":S,"limit":I})),
  "event_get":("读取事件事实与来源。",schema({"event_id":S},["event_id"])),
  "event_acknowledge":("记录 Primary Codex 对事件的处理结论。",schema({"event_id":S,"note":S},["event_id","note"])),
  "case_create":("建立跨会话调查案件并落盘调查委托。",schema({"title":S,"brief":S,"subject":O,"origin":O},["title","brief"])),
  "case_list":("列出调查案件。",schema({"status":S})),
  "case_get":("读取案件及文件句柄。",schema({"case_id":S},["case_id"])),
+ "case_patch":("精确修改案件标题、标的或来源。",schema({"case_id":S,"expected_version":I,"changes":O,"reason":S},["case_id","expected_version","changes"])),
  "case_set_status":("由 Primary Codex 推进或结案。",schema({"case_id":S,"status":S,"reason":S},["case_id","status"])),
  "patrol_commission":("基于现有委托文件登记一次短命哨骑行动。此工具不直接派遣 Agent。",schema({"brief_path":S,"case_id":S,"schedule_id":S,"budget":O},["brief_path"])),
  "patrol_list":("列出哨骑行动。",schema({"status":S})),
@@ -55,6 +58,7 @@ TOOLS={
  "patrol_complete":("登记哨骑返回的工作材料。",schema({"patrol_id":S,"result_path":S,"disposition":S},["patrol_id","result_path","disposition"])),
  "artifact_register":("登记工作目录中的认知材料句柄。",schema({"path":S,"kind":S,"subject":O,"case_id":S,"watch_id":S,"event_id":S,"status":S,"effective_at":S,"supersedes":S},["path","kind"])),
  "artifact_list":("按案件和状态取得少量文件句柄。",schema({"case_id":S,"status":S,"limit":I})),
+ "artifact_get":("读取一个认知材料的稳定文件句柄。",schema({"artifact_id":S},["artifact_id"])),
  "system_status":("查看数据库、调度、投递和恢复状态。",schema()),
 }
 
@@ -76,17 +80,20 @@ def call(name:str,a:dict[str,Any]):
     if name=="watch_create":return C.watch_create(**a,actor=actor)
     if name=="watch_list":return C.watch_list(a.get("status"),a.get("subject_id"))
     if name=="watch_get":return C.watch_get(a["watch_id"])
+    if name=="watch_patch":return C.watch_patch(a["watch_id"],a["expected_version"],a["changes"],actor,a.get("reason"))
     if name in {"watch_pause","watch_resume","watch_archive"}:return C.watch_set_status(a["watch_id"],{"watch_pause":"paused","watch_resume":"active","watch_archive":"archived"}[name],actor)
     if name=="observation_add":return C.observation_add(**a)
     if name=="watch_evaluate":return C.evaluate_watch(a["watch_id"],a["observation_id"])
     if name=="inbox_add":return C.inbox_add(**a)
     if name=="inbox_list":return C.inbox_list(a.get("status","new"),a.get("limit",100))
+    if name=="inbox_set_status":return C.inbox_set_status(a["item_id"],a["status"],actor)
     if name=="event_list":return C.event_list(a.get("status"),a.get("limit",50))
     if name=="event_get":return C.event_get(a["event_id"])
     if name=="event_acknowledge":return C.event_acknowledge(a["event_id"],a["note"],actor)
     if name=="case_create":return C.case_create(**a,actor=actor)
     if name=="case_list":return C.case_list(a.get("status"))
     if name=="case_get":return C.case_get(a["case_id"])
+    if name=="case_patch":return C.case_patch(a["case_id"],a["expected_version"],a["changes"],actor,a.get("reason"))
     if name=="case_set_status":return C.case_set_status(a["case_id"],a["status"],a.get("reason"),actor)
     if name=="patrol_commission":return C.patrol_commission(**a,actor=actor)
     if name=="patrol_list":return C.patrol_list(a.get("status"))
@@ -94,6 +101,7 @@ def call(name:str,a:dict[str,Any]):
     if name=="patrol_complete":return C.patrol_complete(a["patrol_id"],a["result_path"],a["disposition"])
     if name=="artifact_register":return C.artifact_register(**a)
     if name=="artifact_list":return C.artifact_list(a.get("case_id"),a.get("status"),a.get("limit",100))
+    if name=="artifact_get":return C.artifact_get(a["artifact_id"])
     if name=="system_status":return C.system_status()
     raise CompanionError(f"unknown tool: {name}")
 

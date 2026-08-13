@@ -7,6 +7,7 @@ RequiresMountsFor=/home/ghk/investment-home
 [Service]
 Type=oneshot
 WorkingDirectory=/home/ghk/investment-home
+Environment="COMPANION_CC_WAKE_CRON=cce0678e"
 ExecStart=/home/ghk/investment-home/bin/companion recover
 ExecStart=/home/ghk/investment-home/bin/companion dispatch
 TimeoutStartSec=180

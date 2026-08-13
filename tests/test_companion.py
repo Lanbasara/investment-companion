@@ -66,5 +66,21 @@ class CompanionTest(unittest.TestCase):
         self.assertEqual(first["added"],1);self.assertEqual(second["added"],0)
         a=self.c.bootstrap_defaults();b=self.c.bootstrap_defaults();self.assertEqual(len(a["schedules"]),3);self.assertEqual(len(b["schedules"]),3)
 
+    def test_granular_management_and_expiry(self):
+        w=self.c.watch_create(name="temporary",subject_type="etf",subject_id="159101.SZ",intent="test",condition={"operator":"gt","threshold":1},origin={"type":"case","id":"x"},ttl_at=iso(utc_now()+timedelta(days=1)),max_runs=1)
+        patched=self.c.watch_patch(w["id"],w["version"],{"intent":"precise intent"})
+        self.assertEqual(patched["intent"],"precise intent")
+        with self.assertRaises(CompanionError):self.c.watch_patch(w["id"],w["version"],{"intent":"stale"})
+        obs=self.c.observation_add(subject_type="etf",subject_id="159101.SZ",metric="close",value=0,observed_at=iso(),source="test",watch_id=w["id"])
+        self.c.evaluate_watch(w["id"],obs["id"]);self.c.tick()
+        self.assertEqual(self.c.watch_get(w["id"])["status"],"expired")
+        item=self.c.inbox_add(source="user",title="done",content="content")
+        self.assertEqual(self.c.inbox_set_status(item["id"],"triaged")["status"],"triaged")
+        case=self.c.case_create(title="old",brief="# brief")
+        changed=self.c.case_patch(case["id"],case["version"],{"title":"new"})
+        self.assertEqual(changed["title"],"new")
+        backup=self.c.backup_auto(self.root/"backups")
+        self.assertTrue(Path(backup["path"]).is_file())
+
 
 if __name__=="__main__":unittest.main()
