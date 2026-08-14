@@ -24,6 +24,7 @@ systemd timer → Companion Schedule/Run/Outbox → cc-connect
 ```
 
 从 [项目状态与交棒入口](docs/PROJECT-STATUS.md) 开始阅读。当前架构见 [V3 设计](docs/V3-DESIGN.md)，运行与恢复见 [运维手册](docs/V2-OPERATIONS.md)，历史决策见 [V2 设计](docs/V2-DESIGN.md)。
+浏览器阅读入口为 [docs/index.html](docs/index.html)；它直接渲染上述权威 Markdown，不维护第二份易过期的文档副本。
 
 ## 验证
 

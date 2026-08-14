@@ -25,6 +25,8 @@ codex plugin list
 4. [V2-OPERATIONS.md](V2-OPERATIONS.md)：本机运行、恢复和备份；
 5. `AGENTS.md` 与已安装 Plugin Skills：Codex 实际行为契约。
 
+可视化文档中心位于 [index.html](index.html)，它直接渲染本目录的权威 Markdown；交棒时仍以本文的状态与验收记录为准。
+
 不要从旧聊天、`memory/*.md` 或 `portfolio/current.md` 推断真实持仓和个人事实。
 
 ## 2. 当前架构真相

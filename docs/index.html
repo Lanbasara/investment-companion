@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="Investment Companion V3 架构、使用与维护文档">
+  <title>Investment Companion · 文档中心</title>
+  <link rel="stylesheet" href="site.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#overview" aria-label="返回总览">
+      <span class="brand-mark">IC</span>
+      <span><strong>Investment Companion</strong><small>V3 文档中心</small></span>
+    </a>
+    <button id="nav-toggle" class="nav-toggle" aria-label="展开目录">目录</button>
+  </header>
+
+  <div class="layout">
+    <aside id="sidebar" class="sidebar">
+      <nav>
+        <p class="nav-label">开始</p>
+        <a href="#overview" data-route="overview">系统总览</a>
+        <a href="#doc=PROJECT-STATUS.md" data-doc="PROJECT-STATUS.md">项目状态与交棒</a>
+        <a href="#doc=V2-OPERATIONS.md" data-doc="V2-OPERATIONS.md">使用与运维手册</a>
+        <p class="nav-label">架构与验收</p>
+        <a href="#doc=V3-DESIGN.md" data-doc="V3-DESIGN.md">V3 完整架构设计</a>
+        <a href="#doc=V3-ACCEPTANCE.md" data-doc="V3-ACCEPTANCE.md">V3 验收与边界</a>
+        <p class="nav-label">历史决策</p>
+        <a href="#doc=V2-DESIGN.md" data-doc="V2-DESIGN.md">V2 主动系统设计</a>
+        <a href="#doc=V2-ACCEPTANCE.md" data-doc="V2-ACCEPTANCE.md">V2 验收记录</a>
+        <a href="#doc=EVENT-SYSTEM-PLAN.md" data-doc="EVENT-SYSTEM-PLAN.md">早期事件系统基线</a>
+      </nav>
+      <div class="sidebar-note">权威状态：<code>v3.0.1</code><br>文档日期：2026-08-13</div>
+    </aside>
+
+    <main id="main" class="main" tabindex="-1">
+      <section id="overview" class="overview">
+        <div class="hero">
+          <p class="eyebrow">CODEX-NATIVE · EVENT-DRIVEN · HUMAN-IN-CONTROL</p>
+          <h1>个人全生命周期<br>投资伴侣</h1>
+          <p class="lede">系统生长在 Codex 内：服务保存不可模糊的事实与事件，Primary Codex 恢复认知、组织调查、形成判断并通过飞书与用户协作。</p>
+          <div class="hero-actions">
+            <a class="button primary" href="#doc=PROJECT-STATUS.md">从当前状态开始</a>
+            <a class="button" href="#doc=V2-OPERATIONS.md">查看使用手册</a>
+          </div>
+        </div>
+
+        <section class="section">
+          <div class="section-heading"><span>01</span><div><h2>一张图理解系统</h2><p>Codex 是主体，Companion 是可靠的事实、事件与工具层。</p></div></div>
+          <div class="architecture" role="img" aria-label="Investment Companion 分层架构图">
+            <div class="arch-row human"><div class="node accent"><b>用户</b><small>飞书 · 自然语言 · 最终确认</small></div></div>
+            <div class="connector">↕</div>
+            <div class="arch-row"><div class="node wide primary-node"><b>Primary Investment Codex</b><small>唯一最终判断 · 专业调查组织 · 认知更新 · 用户沟通</small></div></div>
+            <div class="connector split">↙　↓　↘</div>
+            <div class="arch-grid three">
+              <div class="node"><b>Investment Skills</b><small>研究 · 决策 · 生命周期 · 主动系统</small></div>
+              <div class="node"><b>短命专业 Agents</b><small>研究员 · 财务分析 · 反证审查 · 哨骑</small></div>
+              <div class="node"><b>数据工具</b><small>Tushare MCP · Web · Tavily · 官方来源</small></div>
+            </div>
+            <div class="connector">↕</div>
+            <div class="arch-grid four">
+              <div class="node layer"><b>Financial Kernel</b><small>账本与确定性计算</small></div>
+              <div class="node layer"><b>Cognitive Ledger</b><small>Thesis · Decision · Review</small></div>
+              <div class="node layer"><b>Attention Engine</b><small>预算 · 冷却 · 通知治理</small></div>
+              <div class="node layer"><b>Event Runtime</b><small>Schedule · Watch · Run · Outbox</small></div>
+            </div>
+            <div class="connector">↕</div>
+            <div class="arch-grid two">
+              <div class="node muted"><b>SQLite Schema 3</b><small>精确事实 · 幂等 · 恢复 · 审计</small></div>
+              <div class="node muted"><b>Markdown 工作材料</b><small>可读认知 · 证据句柄 · 长期交棒</small></div>
+            </div>
+            <div class="connector">↑</div>
+            <div class="arch-row"><div class="node infra"><b>systemd 30 分钟 Tick</b><small>仅检查到期任务；工作日巡视、周度与月度园丁由 Schedule 决定</small></div></div>
+          </div>
+        </section>
+
+        <section class="section">
+          <div class="section-heading"><span>02</span><div><h2>一次主动工作的完整循环</h2><p>事件描述世界发生了什么，不预先规定 Codex 必须做什么。</p></div></div>
+          <ol class="flow">
+            <li><b>感知</b><span>定时巡视、数据变化、文件或用户输入形成事件</span></li>
+            <li><b>恢复</b><span>按主题加载最少必要的事实、Thesis 与未决问题</span></li>
+            <li><b>调查</b><span>按需调用结构化数据、Web 和短命专业 Agent</span></li>
+            <li><b>判断</b><span>增量更新认知，并由确定性内核完成组合计算</span></li>
+            <li><b>治理</b><span>根据重要性、预算、冷却和偏好决定通知或静默</span></li>
+            <li><b>延续</b><span>保存结果、审计理由与下一观察条件</span></li>
+          </ol>
+        </section>
+
+        <section class="section cards-section">
+          <div class="section-heading"><span>03</span><div><h2>从这里使用</h2><p>不用管理数据库或定时器，直接在飞书里说出意图。</p></div></div>
+          <div class="cards">
+            <article><em>管理主动性</em><h3>“现在观察什么？”</h3><p>列出 Schedule、Watch、最近触发及下一运行时间，并可自然语言启停或修改。</p></article>
+            <article><em>维护真实组合</em><h3>“记录这笔成交”</h3><p>先生成 Draft，经确认后进入只追加账本；未确认信息绝不改变持仓。</p></article>
+            <article><em>专业研究</em><h3>“分析这个标的”</h3><p>使用结构化市场数据、官方材料和独立反证审查，报告来源、口径和分歧。</p></article>
+            <article><em>长期决策</em><h3>“我应该调仓吗？”</h3><p>恢复个人目标、约束、组合与 Thesis，用精确计算评估选择和机会成本。</p></article>
+          </div>
+        </section>
+
+        <section class="section boundary">
+          <div class="section-heading"><span>04</span><div><h2>当前能力边界</h2><p>V3 Core 已可开始真实使用，但长期托付仍需要真实数据和运行时间验证。</p></div></div>
+          <div class="status-grid">
+            <div><b>已经具备</b><p>可靠主动调度、事实账本、认知版本、注意力治理、崩溃恢复、专业 Agent 协作。</p></div>
+            <div><b>等待真实初始化</b><p>Investor、Mandate、账户、现金、持仓、首笔成交和实际 Thesis。</p></div>
+            <div><b>尚未完整交付</b><p>复杂收益率与税务、通用 FX、专用公告/财报 Adapter、90 天长期验证。</p></div>
+          </div>
+        </section>
+      </section>
+
+      <article id="document" class="document" hidden>
+        <div id="doc-loading" class="loading">正在载入文档…</div>
+        <div id="doc-content" class="markdown"></div>
+      </article>
+    </main>
+  </div>
+  <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
+  <script src="site.js"></script>
+</body>
+</html>
