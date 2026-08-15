@@ -1,0 +1,58 @@
+model_reasoning_effort = "max"
+
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 3
+default_subagent_reasoning_effort = "high"
+
+[mcp_servers.investmentCompanion]
+command = "/home/ghk/investment-home/bin/companion-mcp"
+enabled = true
+startup_timeout_sec = 10
+tool_timeout_sec = 60
+
+[mcp_servers.openaiDeveloperDocs]
+url = "https://developers.openai.com/mcp"
+enabled = false
+
+[mcp_servers.tushareMcp]
+command = "/home/ghk/investment-home/bin/launch-tushare-mcp"
+enabled = true
+startup_timeout_sec = 20
+tool_timeout_sec = 90
+enabled_tools = [
+  "stock_basic",
+  "stock_company",
+  "etf_basic",
+  "fund_basic",
+  "fund_company",
+  "index_basic",
+  "adj_factor",
+  "daily",
+  "daily_basic",
+  "income",
+  "balancesheet",
+  "cashflow",
+  "fina_indicator",
+  "fina_mainbz",
+  "forecast",
+  "express",
+  "dividend",
+  "fund_nav",
+  "fund_daily",
+  "fund_adj",
+  "fund_portfolio",
+  "fund_share",
+  "etf_index",
+  "index_daily",
+  "index_weight",
+  "index_dailybasic",
+  "disclosure_date",
+]
+
+[mcp_servers.tavily]
+command = "/home/ghk/investment-home/bin/launch-tavily-mcp"
+enabled = true
+startup_timeout_sec = 30
+tool_timeout_sec = 120
+enabled_tools = ["tavily_search", "tavily_extract"]

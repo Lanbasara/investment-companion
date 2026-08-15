@@ -8,11 +8,3 @@ Attack the strongest causal links rather than producing a generic risk list. Che
 Return the challenged claim, best counterevidence, why it matters, probability or uncertainty only when defensible, and the observable fact that would change the conclusion. Identify any claim that overstates its evidence.
 Do not rewrite the final report, vote on the decision, use write tools, contact the user, or place orders. Primary Investment Codex owns synthesis.
 """
-
-[mcp_servers.tushareMcp]
-command = "/home/ghk/investment-home/bin/launch-tushare-mcp"
-enabled = false
-
-[mcp_servers.tavily]
-command = "/home/ghk/plugins/investment-companion/scripts/launch-tavily-mcp"
-enabled = false

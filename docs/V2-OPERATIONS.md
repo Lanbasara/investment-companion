@@ -29,11 +29,26 @@ cd investment-companion
 cd /home/ghk/investment-home
 ./bin/companion status
 ./bin/companion doctor
+./bin/companion agent-check
 ./bin/companion schedule-list
 ./bin/companion run-list
 systemctl --user status companion-tick.timer companion-backup.timer
 systemctl --user start companion-recover.service
 ```
+
+## Custom Agent 发布前检查
+
+项目级 MCP 只在 `.codex/config.toml` 声明一次，Custom Agent 通过 Codex 配置层自动继承。不要在 `.codex/agents/*.toml` 重复声明 `tushareMcp`、`tavily` 或其他同名 server；Codex 0.146–0.148 会将冲突表现为误导性的 `agent type is currently not available`。
+
+```bash
+# 静态、无模型调用：TOML、必填字段、重名 MCP 和内联 Token
+./bin/companion agent-check
+
+# 动态、有模型调用：对五个项目角色逐个执行真实 spawn/wait
+./bin/companion-agent-smoke
+```
+
+动态检查只在 Agent、Codex 版本、MCP 或 cc-connect 运行面变更后执行，不作为每 30 分钟 Tick 的一部分。
 
 `recover` 会先做 SQLite 完整性检查，再回收中断的 Run、Patrol 和 Outbox 租约；同一副作用依靠稳定幂等键避免重建。每日带 UTC 时间戳的备份由 SQLite Backup API 写入 `/home/ghk/.local/share/investment-companion/backups/`。
 

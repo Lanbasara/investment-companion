@@ -36,6 +36,8 @@
 
 `market_scout` 与 `knowledge_gardener` 只能由 Primary Codex 按明确 Brief 临时派遣。它们不能创建 Agent、正式 Watch/Case、修改 Thesis 或联系用户。Primary 必须读取返回文件句柄并决定传播；不得把子 Agent 建议当成已批准动作。
 
+Custom Agent 默认继承项目 `.codex/config.toml` 中的 MCP。不得在 `.codex/agents/*.toml` 重复声明同名 MCP server；当前 Codex 会因配置层冲突拒绝该 Agent。修改 Agent 或 MCP 后必须先运行 `./bin/companion agent-check`，材料性发布前再运行 `./bin/companion-agent-smoke`。
+
 ## 长期维护
 
 - 只有用户明确确认的个人事实才能发布为 Investor/Mandate Revision；只有 confirmed Ledger Entry 能改变组合。Markdown current 文件是可读视图，不是精确事实源。

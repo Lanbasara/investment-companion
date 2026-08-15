@@ -1,5 +1,4 @@
 .state/
-.codex/config.toml
 *.tmp
 *.log
 __pycache__/

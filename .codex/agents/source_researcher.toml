@@ -8,23 +8,3 @@ Resolve the exact security or product identity before collecting data. Use Tusha
 Return a concise evidence memo: answer, as-of date, decisive facts with units and links, source conflicts, permission gaps, and the next fact that could change the answer.
 Separate facts from interpretation. Search snippets and Tavily are discovery, not authority. Do not provide a portfolio recommendation, write workspace files, alter watches, contact the user, or place orders.
 """
-
-[mcp_servers.tushareMcp]
-command = "/home/ghk/investment-home/bin/launch-tushare-mcp"
-enabled_tools = [
-  "stock_basic",
-  "stock_company",
-  "etf_basic",
-  "fund_basic",
-  "fund_company",
-  "index_basic",
-  "daily",
-  "daily_basic",
-  "fund_daily",
-  "fund_nav",
-  "fund_share",
-  "index_daily",
-  "index_weight",
-  "etf_index",
-  "disclosure_date",
-]

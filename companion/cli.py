@@ -6,6 +6,7 @@ import os
 import sys
 from pathlib import Path
 
+from .agent_config import validate_agent_config
 from .core import Companion, CompanionError
 
 
@@ -16,7 +17,7 @@ def emit(value):
 def parser() -> argparse.ArgumentParser:
     p=argparse.ArgumentParser(prog="companion",description="Investment Companion V3 operational CLI")
     p.add_argument("--root",default=os.environ.get("COMPANION_ROOT","/home/ghk/investment-home"));sub=p.add_subparsers(dest="command",required=True)
-    for name in ["init","status","doctor","tick","recover","bootstrap"]:sub.add_parser(name)
+    for name in ["init","status","doctor","tick","recover","bootstrap","agent-check"]:sub.add_parser(name)
     wi=sub.add_parser("workspace-init");wi.add_argument("--finance-source")
     dispatch=sub.add_parser("dispatch");dispatch.add_argument("--dry-run",action="store_true");dispatch.add_argument("--limit",type=int,default=1)
     b=sub.add_parser("backup");b.add_argument("destination")
@@ -39,6 +40,7 @@ def main(argv=None) -> int:
     try:
         if a.command=="init":result=c.initialize()
         elif a.command=="workspace-init":result=c.workspace_init(a.finance_source)
+        elif a.command=="agent-check":result=validate_agent_config(Path(a.root))
         else:
             c.initialize()
             if a.command=="status":result=c.system_status()
@@ -60,7 +62,8 @@ def main(argv=None) -> int:
             elif a.command=="inbox-list":result=c.inbox_list(a.status)
             elif a.command=="inbox-add":result=c.inbox_add(source=a.source,title=a.title,url=a.url,content=Path(a.file).read_text(encoding="utf-8") if a.file else None)
             else:raise CompanionError("unsupported command")
-        emit(result);return 0
+        emit(result)
+        return 2 if a.command=="agent-check" and not result["ok"] else 0
     except (CompanionError,ValueError,KeyError) as e:
         emit({"ok":False,"error":str(e)});return 2
 

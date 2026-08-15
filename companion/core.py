@@ -592,4 +592,8 @@ Schedule ID: {schedule['id']}
     def doctor(self)->dict[str,Any]:
         status=self.system_status();checks={"database_integrity":status["integrity"]=="ok","workspace_writable":os.access(self.root,os.W_OK),"attention_policy":self.cognition.context_current("attention") is not None,"investor_confirmed":bool(self.cognition.context_current("investor")),"mandate_confirmed":bool(self.cognition.context_current("mandate"))}
         checks["financial_facts_ready"]=status["counts"]["accounts"]>0 and status["counts"]["ledger_entries"]>0
+        project_config=self.root/".codex"/"config.toml"
+        if project_config.is_file():
+            from .agent_config import validate_agent_config
+            checks["custom_agent_config"]=validate_agent_config(self.root)["ok"]
         return {"ok":all(v for k,v in checks.items() if k not in {"investor_confirmed","mandate_confirmed","financial_facts_ready"}),"checks":checks,"warnings":[k for k,v in checks.items() if not v],"status":status}

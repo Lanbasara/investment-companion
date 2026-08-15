@@ -30,8 +30,11 @@ systemd timer → Companion Schedule/Run/Outbox → cc-connect
 
 ```bash
 python3 -m pytest -q
+./bin/companion agent-check
 ./bin/companion recover
 ./bin/companion doctor
 ```
+
+修改 Custom Agent 或 MCP 配置后，运行 `./bin/companion-agent-smoke` 完成一次真实 Codex 派遣验收；该检查会产生模型调用，不放入普通单元测试。
 
 项目不连接券商、不自动交易、不维持常驻 Subagent。

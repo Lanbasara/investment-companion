@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+project_root="${COMPANION_ROOT:-/home/ghk/investment-home}"
+codex_bin="${CODEX_BIN:-codex}"
+roles=(market_scout knowledge_gardener source_researcher financial_analyst thesis_critic)
+
+"$project_root/bin/companion" --root "$project_root" agent-check >/dev/null
+
+failed=0
+for role in "${roles[@]}"; do
+  marker="${role^^}_SMOKE_OK"
+  prompt="Custom Agent capability smoke test. Spawn exactly the named ${role} agent with fork_turns none. The child must only reply ${marker}, must not call tools, and must not read or write files. Wait for completion, then reply ${marker} only if the child returned it; otherwise report the exact failure."
+  if output=$("$codex_bin" exec --ephemeral --json -C "$project_root" "$prompt" 2>&1) \
+    && python3 -c 'import json, sys
+marker = sys.argv[1]
+messages = []
+for line in sys.stdin:
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    item = event.get("item") or {}
+    if event.get("type") == "item.completed" and item.get("type") == "agent_message":
+        messages.append(item.get("text"))
+raise SystemExit(0 if messages and messages[-1] == marker else 1)' "$marker" <<<"$output" \
+    && ! grep -q "agent type is currently not available" <<<"$output"; then
+    printf '%s\n' "PASS $role"
+  else
+    printf '%s\n' "FAIL $role"
+    printf '%s\n' "$output" | tail -20
+    failed=1
+  fi
+done
+exit "$failed"

@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+credential_file="${TAVILY_API_KEY_FILE:-$HOME/.config/tavily/api_key}"
+node_bin_dir="${NODE_BIN_DIR:-$HOME/.nvm/versions/node/v24.18.0/bin}"
+
+if [[ ! -r "$credential_file" ]]; then
+  echo "Tavily credential is not readable: $credential_file" >&2
+  exit 1
+fi
+
+IFS= read -r TAVILY_API_KEY < "$credential_file"
+if [[ -z "$TAVILY_API_KEY" ]]; then
+  echo "Tavily credential file is empty" >&2
+  exit 1
+fi
+
+export TAVILY_API_KEY
+export PATH="$node_bin_dir:$PATH"
+exec npx -y tavily-mcp@0.2.22
