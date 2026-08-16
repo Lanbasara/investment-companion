@@ -4,6 +4,13 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+.cc-connect/
+decisions/*
+reviews/*
+theses/*
+!decisions/.gitkeep
+!reviews/.gitkeep
+!theses/.gitkeep
 investigations/inbox/*
 investigations/patrols/*
 investigations/cases/*
