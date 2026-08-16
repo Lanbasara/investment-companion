@@ -17,7 +17,7 @@ def emit(value):
 def parser() -> argparse.ArgumentParser:
     p=argparse.ArgumentParser(prog="companion",description="Investment Companion V3 operational CLI")
     p.add_argument("--root",default=os.environ.get("COMPANION_ROOT","/home/ghk/investment-home"));sub=p.add_subparsers(dest="command",required=True)
-    for name in ["init","status","doctor","tick","recover","bootstrap","agent-check"]:sub.add_parser(name)
+    for name in ["init","status","doctor","tick","recover","bootstrap","agent-check","session-brief"]:sub.add_parser(name)
     wi=sub.add_parser("workspace-init");wi.add_argument("--finance-source")
     dispatch=sub.add_parser("dispatch");dispatch.add_argument("--dry-run",action="store_true");dispatch.add_argument("--limit",type=int,default=1)
     b=sub.add_parser("backup");b.add_argument("destination")
@@ -44,6 +44,7 @@ def main(argv=None) -> int:
         else:
             c.initialize()
             if a.command=="status":result=c.system_status()
+            elif a.command=="session-brief":result=c.session_brief()
             elif a.command=="doctor":result=c.doctor()
             elif a.command=="tick":result=c.tick()
             elif a.command=="recover":result=c.recover()

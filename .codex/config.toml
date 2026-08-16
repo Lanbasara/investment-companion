@@ -1,5 +1,18 @@
 model_reasoning_effort = "max"
 
+[features]
+hooks = true
+
+[[hooks.SessionStart]]
+matcher = "^(startup|resume|clear|compact)$"
+
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = "/home/ghk/investment-home/bin/companion-session-start"
+timeout = 5
+statusMessage = "Loading Investment Companion workspace brief"
+additionalContextLimit = 800
+
 [agents]
 enabled = true
 max_concurrent_threads_per_session = 3

@@ -37,4 +37,6 @@ python3 -m pytest -q
 
 修改 Custom Agent 或 MCP 配置后，运行 `./bin/companion-agent-smoke` 完成一次真实 Codex 派遣验收；该检查会产生模型调用，不放入普通单元测试。
 
+新 Codex 会话由项目级 `SessionStart` Hook 注入一个有界 `session-brief`。它只包含数据库健康、Context 初始化状态和活跃对象计数；具体投资材料仍由 Lifecycle Skill 按问题创建 Recovery Package 后加载。
+
 项目不连接券商、不自动交易、不维持常驻 Subagent。

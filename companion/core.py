@@ -589,6 +589,36 @@ Schedule ID: {schedule['id']}
             pending=con.execute("SELECT COUNT(*) FROM outbox WHERE status IN ('pending','retry','sending')").fetchone()[0]
         return {"ok":integrity=="ok","integrity":integrity,"database":str(self.db.path),"meta":meta,"counts":counts,"failed_runs":failures,"pending_outbox":pending,"now":iso()}
 
+    def session_brief(self)->dict[str,Any]:
+        """Return a small, deterministic orientation payload for a new Codex session."""
+        status=self.system_status()
+        contexts={}
+        for kind in ("investor","mandate","attention"):
+            current=self.cognition.context_current(kind)
+            revisions=self.cognition.context_list(kind)
+            contexts[kind]={
+                "state":"confirmed" if current else "draft" if revisions else "missing",
+                "revision_id":current["id"] if current else None,
+            }
+        with self.db.connect() as con:
+            active={
+                "schedules":con.execute("SELECT COUNT(*) FROM schedules WHERE status='active'").fetchone()[0],
+                "watches":con.execute("SELECT COUNT(*) FROM watches WHERE status='active'").fetchone()[0],
+                "cases":con.execute("SELECT COUNT(*) FROM cases WHERE status NOT IN ('resolved','rejected','superseded','expired')").fetchone()[0],
+                "pending_runs":con.execute("SELECT COUNT(*) FROM runs WHERE status IN ('queued','recoverable','leased')").fetchone()[0],
+                "theses":con.execute("SELECT COUNT(*) FROM cognitive_objects WHERE object_type='thesis' AND status='active'").fetchone()[0],
+            }
+        lines=[
+            "Investment Companion workspace detected.",
+            f"Database integrity: {status['integrity']}; schema: {status['meta'].get('schema_version','unknown')}.",
+            "Contexts: "+", ".join(f"{kind}={item['state']}" for kind,item in contexts.items())+".",
+            "Active state: "+", ".join(f"{key}={value}" for key,value in active.items())+".",
+            f"Financial facts: accounts={status['counts']['accounts']}, ledger_entries={status['counts']['ledger_entries']}.",
+            "This is orientation, not investment evidence. Do not infer facts from chat history or Markdown current views.",
+            "For an investment task, use manage-investment-lifecycle and create a bounded Recovery Package for the user's subject before analysis.",
+        ]
+        return {"ok":status["ok"],"workspace":str(self.root),"contexts":contexts,"active":active,"financial":{"accounts":status["counts"]["accounts"],"ledger_entries":status["counts"]["ledger_entries"]},"text":"\n".join(lines)}
+
     def doctor(self)->dict[str,Any]:
         status=self.system_status();checks={"database_integrity":status["integrity"]=="ok","workspace_writable":os.access(self.root,os.W_OK),"attention_policy":self.cognition.context_current("attention") is not None,"investor_confirmed":bool(self.cognition.context_current("investor")),"mandate_confirmed":bool(self.cognition.context_current("mandate"))}
         checks["financial_facts_ready"]=status["counts"]["accounts"]>0 and status["counts"]["ledger_entries"]>0

@@ -89,5 +89,15 @@ class CompanionTest(unittest.TestCase):
         self.assertEqual(len(second["schedules"]),3)
         self.assertEqual(self.c.case_list(),[])
 
+    def test_session_brief_is_bounded_and_reports_authoritative_state(self):
+        self.c.workspace_init()
+        brief=self.c.session_brief()
+        self.assertTrue(brief["ok"])
+        self.assertEqual(brief["contexts"]["attention"]["state"],"confirmed")
+        self.assertEqual(brief["contexts"]["investor"]["state"],"draft")
+        self.assertEqual(brief["active"]["schedules"],3)
+        self.assertIn("create a bounded Recovery Package",brief["text"])
+        self.assertLess(len(brief["text"]),1200)
+
 
 if __name__=="__main__":unittest.main()

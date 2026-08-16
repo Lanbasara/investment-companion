@@ -50,6 +50,15 @@ systemctl --user start companion-recover.service
 
 动态检查只在 Agent、Codex 版本、MCP 或 cc-connect 运行面变更后执行，不作为每 30 分钟 Tick 的一部分。
 
+## 新会话定向
+
+项目 `.codex/config.toml` 注册 `SessionStart` Hook，调用 `bin/companion-session-start`。Hook 只注入 `session-brief` 的确定性摘要，不读取研究正文，也不替代按主题创建 Recovery Package。首次安装或 Hook 内容发生变化后，在 Codex `/hooks` 中审核并信任其精确定义。
+
+```bash
+./bin/companion session-brief
+printf '%s\n' '{"hook_event_name":"SessionStart","source":"startup"}' | ./bin/companion-session-start
+```
+
 `recover` 会先做 SQLite 完整性检查，再回收中断的 Run、Patrol 和 Outbox 租约；同一副作用依靠稳定幂等键避免重建。每日带 UTC 时间戳的备份由 SQLite Backup API 写入 `/home/ghk/.local/share/investment-companion/backups/`。
 
 ## 投递链
