@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import sqlite3
 from contextlib import contextmanager
@@ -9,7 +10,7 @@ from typing import Any, Iterator
 
 from .timeutil import iso
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = r"""
 CREATE TABLE IF NOT EXISTS meta (
@@ -306,6 +307,438 @@ CREATE TABLE IF NOT EXISTS source_health (
 """
 
 
+MIGRATION_TABLE_SCHEMA = r"""
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  migration_id TEXT PRIMARY KEY,
+  version INTEGER NOT NULL UNIQUE,
+  checksum TEXT NOT NULL,
+  applied_at TEXT NOT NULL
+);
+"""
+
+
+MIGRATION_004_ID = "0004_v4_research_platform"
+MIGRATION_004_SQL = r"""
+ALTER TABLE schedules ADD COLUMN dispatch_type TEXT NOT NULL DEFAULT 'codex_turn'
+  CHECK(dispatch_type IN ('codex_turn','deterministic_pipeline'));
+ALTER TABLE schedules ADD COLUMN job_definition_id TEXT;
+ALTER TABLE runs ADD COLUMN dispatch_type TEXT NOT NULL DEFAULT 'codex_turn'
+  CHECK(dispatch_type IN ('codex_turn','deterministic_pipeline'));
+ALTER TABLE runs ADD COLUMN job_run_id TEXT;
+
+CREATE TABLE executions_v4 (
+  id TEXT PRIMARY KEY,
+  decision_id TEXT,
+  decision_revision_id TEXT,
+  manual_action_spec_hash TEXT,
+  status TEXT NOT NULL CHECK(status IN (
+    'proposed','presented','accepted','rejected','ordered','partially_filled','filled',
+    'cancelled','expired','superseded','deviated'
+  )),
+  details_json TEXT NOT NULL DEFAULT '{}',
+  ledger_entry_ids_json TEXT NOT NULL DEFAULT '[]',
+  idempotency_key TEXT UNIQUE,
+  status_reason TEXT,
+  presented_at TEXT,
+  accepted_at TEXT,
+  ordered_at TEXT,
+  finished_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(decision_id) REFERENCES cognitive_objects(id),
+  FOREIGN KEY(decision_revision_id) REFERENCES cognitive_revisions(id)
+);
+INSERT INTO executions_v4(
+  id,decision_id,status,details_json,ledger_entry_ids_json,created_at,updated_at
+) SELECT id,decision_id,status,details_json,ledger_entry_ids_json,created_at,updated_at FROM executions;
+DROP TABLE executions;
+ALTER TABLE executions_v4 RENAME TO executions;
+CREATE INDEX idx_executions_decision_revision ON executions(decision_revision_id,status);
+
+CREATE TABLE feature_flags (
+  key TEXT PRIMARY KEY,
+  enabled INTEGER NOT NULL DEFAULT 0 CHECK(enabled IN (0,1)),
+  config_json TEXT NOT NULL DEFAULT '{}',
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE gate_assessments (
+  id TEXT PRIMARY KEY,
+  gate TEXT NOT NULL CHECK(gate IN ('G0','G1','G2','G3','G4','G5','G6')),
+  status TEXT NOT NULL CHECK(status IN ('go','conditional_go','no_go','pending')),
+  scope TEXT NOT NULL CHECK(scope IN ('production','test_fixture')),
+  evidence_manifest_id TEXT NOT NULL,
+  conditions_json TEXT NOT NULL DEFAULT '[]',
+  code_version TEXT NOT NULL,
+  schema_version INTEGER NOT NULL,
+  assessed_by TEXT NOT NULL,
+  approval_ref TEXT,
+  supersedes TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(evidence_manifest_id) REFERENCES artifact_manifests(id),
+  FOREIGN KEY(supersedes) REFERENCES gate_assessments(id)
+);
+CREATE INDEX idx_gate_assessments_latest ON gate_assessments(gate,created_at);
+
+CREATE TABLE job_definitions (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL UNIQUE,
+  handler TEXT NOT NULL,
+  handler_version TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'inactive' CHECK(status IN ('inactive','active','paused','archived')),
+  input_schema_json TEXT NOT NULL DEFAULT '{}',
+  output_schema_json TEXT NOT NULL DEFAULT '{}',
+  resource_budget_json TEXT NOT NULL DEFAULT '{}',
+  config_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE job_runs (
+  id TEXT PRIMARY KEY,
+  parent_run_id TEXT NOT NULL UNIQUE,
+  job_definition_id TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('queued','leased','running','succeeded','failed','cancelled','recoverable','blocked')),
+  idempotency_key TEXT NOT NULL UNIQUE,
+  inputs_json TEXT NOT NULL DEFAULT '{}',
+  output_manifest_id TEXT,
+  attempt INTEGER NOT NULL DEFAULT 0,
+  lease_owner TEXT,
+  lease_until TEXT,
+  started_at TEXT,
+  finished_at TEXT,
+  error TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(parent_run_id) REFERENCES runs(id),
+  FOREIGN KEY(job_definition_id) REFERENCES job_definitions(id)
+);
+CREATE INDEX idx_job_runs_due ON job_runs(status,created_at);
+CREATE TABLE job_steps (
+  id TEXT PRIMARY KEY,
+  job_run_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  ordinal INTEGER NOT NULL,
+  handler TEXT NOT NULL,
+  handler_version TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('pending','leased','running','succeeded','failed','cancelled','recoverable','blocked')),
+  idempotency_key TEXT NOT NULL UNIQUE,
+  input_refs_json TEXT NOT NULL DEFAULT '[]',
+  output_refs_json TEXT NOT NULL DEFAULT '[]',
+  result_json TEXT NOT NULL DEFAULT '{}',
+  attempt INTEGER NOT NULL DEFAULT 0,
+  lease_owner TEXT,
+  lease_until TEXT,
+  started_at TEXT,
+  finished_at TEXT,
+  duration_ms INTEGER,
+  resource_usage_json TEXT NOT NULL DEFAULT '{}',
+  error TEXT,
+  created_at TEXT NOT NULL,
+  UNIQUE(job_run_id,name),
+  FOREIGN KEY(job_run_id) REFERENCES job_runs(id)
+);
+
+CREATE TABLE data_objects (
+  id TEXT PRIMARY KEY,
+  data_root_id TEXT NOT NULL,
+  relative_path TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  media_type TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('ready','quarantined','missing')),
+  metadata_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  verified_at TEXT,
+  UNIQUE(data_root_id,relative_path,kind,media_type,metadata_json)
+);
+CREATE INDEX idx_data_objects_hash ON data_objects(content_hash,status);
+CREATE TABLE artifact_manifests (
+  id TEXT PRIMARY KEY,
+  kind TEXT NOT NULL,
+  schema_version TEXT NOT NULL,
+  manifest_json TEXT NOT NULL,
+  content_hash TEXT NOT NULL UNIQUE,
+  supersedes TEXT,
+  status TEXT NOT NULL DEFAULT 'ready' CHECK(status IN ('ready','superseded','invalid')),
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(supersedes) REFERENCES artifact_manifests(id)
+);
+
+CREATE TABLE source_capabilities (
+  id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  capability TEXT NOT NULL,
+  connector TEXT NOT NULL,
+  account_scope TEXT NOT NULL DEFAULT 'default',
+  status TEXT NOT NULL CHECK(status IN (
+    'unknown','healthy','connector_missing','unauthorized','invalid_request','rate_limited',
+    'stale','partial','empty_valid','failed'
+  )),
+  permission_json TEXT NOT NULL DEFAULT '{}',
+  limits_json TEXT NOT NULL DEFAULT '{}',
+  history_json TEXT NOT NULL DEFAULT '{}',
+  latency_json TEXT NOT NULL DEFAULT '{}',
+  fields_json TEXT NOT NULL DEFAULT '{}',
+  revision_json TEXT NOT NULL DEFAULT '{}',
+  license_json TEXT NOT NULL DEFAULT '{}',
+  failure_json TEXT NOT NULL DEFAULT '{}',
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  checked_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE TABLE adapter_streams (
+  id TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  capability TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('inactive','canary','active','paused','blocked','archived')),
+  schema_version TEXT NOT NULL,
+  config_json TEXT NOT NULL DEFAULT '{}',
+  cursor TEXT,
+  watermark TEXT,
+  last_success_at TEXT,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(provider,capability)
+);
+CREATE TABLE adapter_batches (
+  id TEXT PRIMARY KEY,
+  stream_id TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('fetching','raw_ready','normalizing','ready','blocked','failed','empty_valid')),
+  idempotency_key TEXT NOT NULL UNIQUE,
+  request_range_json TEXT NOT NULL DEFAULT '{}',
+  cursor_before TEXT,
+  cursor_after TEXT,
+  raw_object_ids_json TEXT NOT NULL DEFAULT '[]',
+  canonical_object_ids_json TEXT NOT NULL DEFAULT '[]',
+  row_count INTEGER NOT NULL DEFAULT 0,
+  error TEXT,
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  FOREIGN KEY(stream_id) REFERENCES adapter_streams(id)
+);
+CREATE TABLE asset_identifiers (
+  id TEXT PRIMARY KEY,
+  asset_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  identifier_type TEXT NOT NULL,
+  identifier_value TEXT NOT NULL,
+  effective_at TEXT NOT NULL,
+  effective_to TEXT,
+  first_known_at TEXT NOT NULL,
+  ingested_at TEXT NOT NULL,
+  revision_id TEXT NOT NULL,
+  supersedes TEXT,
+  raw_hash TEXT NOT NULL,
+  parser_version TEXT NOT NULL,
+  quality_json TEXT NOT NULL DEFAULT '{}',
+  FOREIGN KEY(asset_id) REFERENCES assets(id),
+  FOREIGN KEY(supersedes) REFERENCES asset_identifiers(id),
+  UNIQUE(provider,identifier_type,identifier_value,revision_id)
+);
+CREATE INDEX idx_asset_identifiers_pit ON asset_identifiers(provider,identifier_value,first_known_at,effective_at);
+CREATE TABLE dataset_snapshots (
+  id TEXT PRIMARY KEY,
+  status TEXT NOT NULL CHECK(status IN ('building','ready','blocked','superseded','invalid')),
+  knowledge_cutoff TEXT NOT NULL,
+  manifest_id TEXT NOT NULL UNIQUE,
+  content_hash TEXT NOT NULL UNIQUE,
+  denominator_hash TEXT NOT NULL,
+  universe_hash TEXT NOT NULL,
+  quality_json TEXT NOT NULL DEFAULT '{}',
+  code_version TEXT NOT NULL,
+  supersedes TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(manifest_id) REFERENCES artifact_manifests(id),
+  FOREIGN KEY(supersedes) REFERENCES dataset_snapshots(id)
+);
+CREATE TABLE data_quality_issues (
+  id TEXT PRIMARY KEY,
+  scope_type TEXT NOT NULL,
+  scope_id TEXT NOT NULL,
+  severity TEXT NOT NULL CHECK(severity IN ('info','warning','error','critical')),
+  code TEXT NOT NULL,
+  message TEXT NOT NULL,
+  blocker INTEGER NOT NULL DEFAULT 0 CHECK(blocker IN (0,1)),
+  status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','acknowledged','resolved','waived')),
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  resolved_by TEXT,
+  created_at TEXT NOT NULL,
+  resolved_at TEXT
+);
+
+CREATE TABLE research_hypotheses (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('draft','preregistered','rejected','retired')),
+  spec_json TEXT NOT NULL,
+  content_hash TEXT NOT NULL UNIQUE,
+  experiment_budget INTEGER NOT NULL,
+  experiment_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE TABLE strategy_versions (
+  id TEXT PRIMARY KEY,
+  hypothesis_id TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('preregistered','research_passed','shadow','rejected','retired')),
+  spec_json TEXT NOT NULL,
+  content_hash TEXT NOT NULL UNIQUE,
+  parent_id TEXT,
+  code_ref TEXT NOT NULL,
+  environment_ref TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(hypothesis_id,version),
+  FOREIGN KEY(hypothesis_id) REFERENCES research_hypotheses(id),
+  FOREIGN KEY(parent_id) REFERENCES strategy_versions(id)
+);
+CREATE TABLE experiment_runs (
+  id TEXT PRIMARY KEY,
+  strategy_version_id TEXT NOT NULL,
+  dataset_snapshot_id TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('queued','running','succeeded','failed','rejected','cancelled')),
+  idempotency_key TEXT NOT NULL UNIQUE,
+  split_json TEXT NOT NULL,
+  params_json TEXT NOT NULL DEFAULT '{}',
+  seed INTEGER NOT NULL,
+  job_run_id TEXT,
+  spec_object_id TEXT,
+  execution_lineage_hash TEXT,
+  bundle_manifest_id TEXT,
+  metrics_json TEXT NOT NULL DEFAULT '{}',
+  holdout_accessed_at TEXT,
+  started_at TEXT,
+  finished_at TEXT,
+  error TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(strategy_version_id) REFERENCES strategy_versions(id),
+  FOREIGN KEY(dataset_snapshot_id) REFERENCES dataset_snapshots(id),
+  FOREIGN KEY(bundle_manifest_id) REFERENCES artifact_manifests(id)
+  ,FOREIGN KEY(job_run_id) REFERENCES job_runs(id)
+);
+CREATE TABLE promotion_decisions (
+  id TEXT PRIMARY KEY,
+  experiment_run_id TEXT NOT NULL,
+  decision TEXT NOT NULL CHECK(decision IN ('reject','revise','research_passed','shadow','retire')),
+  reason TEXT NOT NULL,
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  actor TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(experiment_run_id) REFERENCES experiment_runs(id)
+);
+CREATE TABLE agent_invocations (
+  id TEXT PRIMARY KEY,
+  invocation_ref TEXT NOT NULL UNIQUE,
+  role TEXT NOT NULL,
+  model TEXT NOT NULL,
+  prompt_template TEXT NOT NULL,
+  input_refs_json TEXT NOT NULL,
+  output_manifest_id TEXT NOT NULL,
+  output_hash TEXT NOT NULL,
+  token_usage_json TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('succeeded','failed','rejected')),
+  adopted INTEGER NOT NULL DEFAULT 0 CHECK(adopted IN (0,1)),
+  adoption_reason TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  finished_at TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(output_manifest_id) REFERENCES artifact_manifests(id)
+);
+
+CREATE TABLE shadow_books (
+  id TEXT PRIMARY KEY,
+  strategy_version_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('draft','active','paused','completed','retired','insufficient_evidence')),
+  base_currency TEXT NOT NULL,
+  initial_cash_text TEXT NOT NULL,
+  reality_spec_json TEXT NOT NULL,
+  sample_gate_json TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(strategy_version_id) REFERENCES strategy_versions(id)
+);
+CREATE TABLE shadow_rebalances (
+  id TEXT PRIMARY KEY,
+  book_id TEXT NOT NULL,
+  signal_snapshot_id TEXT NOT NULL,
+  execution_snapshot_id TEXT NOT NULL,
+  experiment_run_id TEXT NOT NULL,
+  as_of TEXT NOT NULL,
+  target_manifest_id TEXT NOT NULL,
+  denominator_hash TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('proposed','simulated','partially_filled','filled','blocked','cancelled')),
+  result_json TEXT NOT NULL DEFAULT '{}',
+  idempotency_key TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(book_id) REFERENCES shadow_books(id),
+  FOREIGN KEY(signal_snapshot_id) REFERENCES dataset_snapshots(id),
+  FOREIGN KEY(execution_snapshot_id) REFERENCES dataset_snapshots(id),
+  FOREIGN KEY(experiment_run_id) REFERENCES experiment_runs(id),
+  FOREIGN KEY(target_manifest_id) REFERENCES artifact_manifests(id)
+);
+CREATE TABLE shadow_fills (
+  id TEXT PRIMARY KEY,
+  rebalance_id TEXT NOT NULL,
+  asset_id TEXT NOT NULL,
+  side TEXT NOT NULL CHECK(side IN ('buy','sell')),
+  quantity_text TEXT NOT NULL,
+  price_text TEXT NOT NULL,
+  gross_text TEXT NOT NULL,
+  fee_text TEXT NOT NULL,
+  tax_text TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('simulated','blocked','expired')),
+  reason TEXT,
+  trade_date TEXT NOT NULL,
+  settle_date TEXT,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(rebalance_id) REFERENCES shadow_rebalances(id),
+  FOREIGN KEY(asset_id) REFERENCES assets(id)
+);
+CREATE TABLE shadow_metrics (
+  id TEXT PRIMARY KEY,
+  book_id TEXT NOT NULL,
+  as_of TEXT NOT NULL,
+  nav_text TEXT NOT NULL,
+  cash_text TEXT NOT NULL,
+  metrics_json TEXT NOT NULL DEFAULT '{}',
+  content_hash TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(book_id) REFERENCES shadow_books(id),
+  UNIQUE(book_id,as_of)
+);
+
+CREATE TABLE manual_action_specs (
+  id TEXT PRIMARY KEY,
+  decision_revision_id TEXT NOT NULL,
+  content_hash TEXT NOT NULL UNIQUE,
+  spec_json TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('draft','presented','accepted','rejected','expired','cancelled','superseded','invalid')),
+  valid_until TEXT NOT NULL,
+  supersedes TEXT,
+  notification_key TEXT NOT NULL UNIQUE,
+  invalidation_reason TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(decision_revision_id) REFERENCES cognitive_revisions(id),
+  FOREIGN KEY(supersedes) REFERENCES manual_action_specs(id)
+);
+
+INSERT OR IGNORE INTO feature_flags(key,enabled,config_json,updated_at) VALUES
+  ('v4_jobs',0,'{}',CURRENT_TIMESTAMP),
+  ('v4_live_data',0,'{}',CURRENT_TIMESTAMP),
+  ('v4_shadow',0,'{}',CURRENT_TIMESTAMP),
+  ('v4_decision_support',0,'{}',CURRENT_TIMESTAMP),
+  ('v4_agent_research',0,'{}',CURRENT_TIMESTAMP);
+"""
+
+
+BASELINE_MIGRATION_ID = "0003_v3_baseline"
+BASELINE_CHECKSUM = hashlib.sha256((SCHEMA + "\n" + V3_SCHEMA).encode("utf-8")).hexdigest()
+MIGRATION_004_CHECKSUM = hashlib.sha256(MIGRATION_004_SQL.encode("utf-8")).hexdigest()
+
+
 class Database:
     def __init__(self, path: str | Path):
         self.path = Path(path).expanduser().resolve()
@@ -320,12 +753,83 @@ class Database:
         con.execute("PRAGMA busy_timeout=10000")
         return con
 
-    def initialize(self) -> None:
+    def initialize(self, *, allow_migrate: bool = False) -> None:
+        """Create or migrate the database without ever lowering an unknown schema.
+
+        V1-V3 predated ordered migrations.  We register their exact DDL as a
+        baseline, then apply every later migration atomically and verify its
+        checksum on each startup.
+        """
         with self.connect() as con:
+            has_meta = con.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='meta'"
+            ).fetchone()
+            current = None
+            if has_meta:
+                row = con.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+                current = int(row[0]) if row else None
+                if current is not None and current > SCHEMA_VERSION:
+                    raise RuntimeError(
+                        f"database schema {current} is newer than supported {SCHEMA_VERSION}"
+                    )
+                if current is not None and current < SCHEMA_VERSION and not allow_migrate:
+                    raise RuntimeError(
+                        f"database schema {current} requires explicit migration to {SCHEMA_VERSION}"
+                    )
+
             con.executescript(SCHEMA)
             con.executescript(V3_SCHEMA)
-            con.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('schema_version',?)", (str(SCHEMA_VERSION),))
+            con.executescript(MIGRATION_TABLE_SCHEMA)
             con.execute("INSERT OR IGNORE INTO meta(key,value) VALUES('created_at',?)", (iso(),))
+            if current is None:
+                current = 3
+                con.execute(
+                    "INSERT INTO meta(key,value) VALUES('schema_version',?)",
+                    (str(current),),
+                )
+
+            baseline = con.execute(
+                "SELECT checksum FROM schema_migrations WHERE migration_id=?",
+                (BASELINE_MIGRATION_ID,),
+            ).fetchone()
+            if baseline and baseline[0] != BASELINE_CHECKSUM:
+                raise RuntimeError("V3 baseline migration checksum mismatch")
+            if not baseline:
+                con.execute(
+                    "INSERT INTO schema_migrations(migration_id,version,checksum,applied_at) VALUES(?,?,?,?)",
+                    (BASELINE_MIGRATION_ID, 3, BASELINE_CHECKSUM, iso()),
+                )
+
+            applied = con.execute(
+                "SELECT checksum FROM schema_migrations WHERE migration_id=?",
+                (MIGRATION_004_ID,),
+            ).fetchone()
+            if applied and applied[0] != MIGRATION_004_CHECKSUM:
+                raise RuntimeError("Schema 4 migration checksum mismatch")
+            if current == 4:
+                if not applied:
+                    raise RuntimeError("schema version 4 is missing its ordered migration record")
+                return
+            if current != 3:
+                raise RuntimeError(f"unsupported source schema version: {current}")
+
+            migration_id = MIGRATION_004_ID.replace("'", "''")
+            checksum = MIGRATION_004_CHECKSUM.replace("'", "''")
+            applied_at = iso().replace("'", "''")
+            script = (
+                "BEGIN IMMEDIATE;\n"
+                + MIGRATION_004_SQL
+                + "\nINSERT INTO schema_migrations(migration_id,version,checksum,applied_at) "
+                + f"VALUES('{migration_id}',4,'{checksum}','{applied_at}');\n"
+                + "UPDATE meta SET value='4' WHERE key='schema_version';\n"
+                + "COMMIT;"
+            )
+            try:
+                con.executescript(script)
+            except Exception:
+                if con.in_transaction:
+                    con.execute("ROLLBACK")
+                raise
 
     @contextmanager
     def transaction(self, immediate: bool = True) -> Iterator[sqlite3.Connection]:

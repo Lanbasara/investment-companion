@@ -1,0 +1,12 @@
+[Unit]
+Description=Poll Investment Companion deterministic jobs every five minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+Persistent=true
+RandomizedDelaySec=30
+Unit=companion-job-worker.service
+
+[Install]
+WantedBy=timers.target

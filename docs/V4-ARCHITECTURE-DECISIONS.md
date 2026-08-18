@@ -1,6 +1,6 @@
 # Investment Companion V4：架构决策与开源借鉴边界
 
-状态：V4 架构基线，实施前必须遵守
+状态：V4 架构基线 v1.1；已由工程实现，生产 Gate 仍须逐项验证
 日期：2026-08-18
 适用基线：`v3.0.4` / Schema 3
 关联文档：[V4-DESIGN.md](V4-DESIGN.md)、[V4-IMPLEMENTATION-PLAN.md](V4-IMPLEMENTATION-PLAN.md)、[V4-ACCEPTANCE.md](V4-ACCEPTANCE.md)
@@ -10,6 +10,8 @@
 V4 会学习 Qlib、LEAN、RD-Agent(Q)、FinRL-X 等项目，但不会把它们拼成另一个平台。本文固定每项外部能力为何进入、进入哪一层、谁拥有事实、如何移除，以及什么情况下拒绝采用。
 
 任何未来实现如果只能回答“这个开源项目有这个模块”，却不能回答“它解决了 Investment Companion 的哪个既有问题”，均不得合并。
+
+当前实现结论：采用项目自有 NativeQuantRuntime，不引入 Qlib/LEAN/FinRL/RD-Agent 运行时；只吸收其时间前沿、target weights、实验治理和职责分离思想。外部框架以后仍必须通过本文定义的替换边界和同一 official golden cases，不能因知名度进入核心。
 
 ## 2. 先从当前项目出发
 
@@ -81,7 +83,7 @@ V4 新增的是可审计的数据与量化研究能力，不是替换上述主�
 - 内容寻址文件：原始响应、不可变 Manifest、研究产物；
 - Parquet + DuckDB：批量规范化市场数据和查询；
 - Qlib 数据目录：由 Canonical Snapshot 可重建的缓存；
-- 独立量化环境：固定依赖、无默认外网和无生产写权限。
+- 量化计算边界：Native stdlib 内核在受控子进程内追加 I/O guard；未来第三方运行时使用固定依赖的独立环境、无默认外网和无生产写权限。
 
 ## 7. ADR-003：Canonical 数据与 PIT 语义由项目拥有
 
@@ -174,6 +176,8 @@ FinRL-X 将策略输出统一为目标权重，能隔离选股、组合和执行
 
 **决策**：V4 的量化层不输出“买入 100 股”的最终指令，而输出带时间、现金和约束语义的目标组合产物。Financial Kernel 使用真实账户、整手、价格与 Mandate 联合求解可行方案；不能简单先生成权重、再由“风险层”事后裁剪。
 
+**实现**：`portfolio_rebalance_plan` 冻结 target manifest、Market Snapshot IDs、RealitySpec、Mandate 与真实账户，显式返回 `feasible/infeasible`、冲突、目标偏离、费用、T+1、流动性/集中度与人工行动。Decision 和 ManualAction 必须分别引用方案 Calculation 与其中一条精确行动。
+
 FinRL-X 的数据源、回测器、Alpaca 执行与宣传结果不进入 V4 依赖。
 
 ## 14. ADR-010：RD-Agent(Q) 只作为后期受限研究实验室
@@ -183,6 +187,8 @@ FinRL-X 的数据源、回测器、Alpaca 执行与宣传结果不进入 V4 依�
 **拒绝**：V4.0 不引入 RD-Agent 常驻循环，不允许 Agent 自动扩张实验、不自动晋级策略，也不让生成代码访问生产数据库或凭据。
 
 在确定性基线、实验登记、多重试验预算和 Sandbox 已稳定后，才可以实现一个更窄的 Codex Research Loop。每个假设族必须预注册最大试验次数；测试集一旦被模型或 Agent 看过，就不再是未见样本。
+
+V4 当前只实现材料性 Agent 调用的不可变 provenance 与 `thesis_critic` Decision Gate；5 个现有 Custom Agent 使用只读沙箱，并在角色配置中以完整同身份 transport 显式禁用可写 Companion MCP，所有持久化由 Primary 完成。自主假设—代码循环继续硬禁用，不属于本次发布。
 
 ## 15. ADR-011：不自研通用 Backtester，但保留独立参考计算
 
@@ -223,6 +229,8 @@ FinRL-X 的数据源、回测器、Alpaca 执行与宣传结果不进入 V4 依�
 | Strategy Shadow Book | StrategyVersion 的前向目标组合、成交假设与净值 | 组合收益、回撤、换手、成本、容量和基准差 |
 | Decision/Execution Shadow | Decision 与用户人工执行之间的选择、延迟和偏离 | 决策过程、实际成交与机会成本 |
 | Attention Shadow Mode | 本应通知或静默的事件 | 误报、漏报和通知负担 |
+
+Strategy Shadow 的实现进一步把 `signal_snapshot_id` 与 `execution_snapshot_id` 分开：前者证明信号当时可知，后者只提供执行日市场事实；生产路径禁止同快照、回填和开盘后生成信号。
 
 候选的 selected/rejected/deferred 仍可用于覆盖率和假阴性分析，但不作为策略有效性的主要证据。
 

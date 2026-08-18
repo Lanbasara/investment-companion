@@ -10,7 +10,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
-from .db import Database, row_dict, rows_dict
+from .db import SCHEMA_VERSION, Database, row_dict, rows_dict
 from .timeutil import iso, next_interval, next_local_time, parse, utc_now
 
 
@@ -31,29 +31,251 @@ def digest(*parts: Any) -> str:
 
 
 class Companion:
-    def __init__(self, root: str | Path, db_path: str | Path | None = None):
+    def __init__(self, root: str | Path, db_path: str | Path | None = None, *, gate_scope: str | None = None):
         self.root = Path(root).expanduser().resolve()
+        self.gate_scope = gate_scope or os.environ.get("COMPANION_GATE_SCOPE", "production")
+        if self.gate_scope not in {"production", "test_fixture"}:
+            raise CompanionError("COMPANION_GATE_SCOPE must be production or test_fixture")
+        resolved_db = Path(db_path).expanduser().resolve() if db_path is not None else self.root / ".state" / "companion.db"
+        if self.gate_scope == "test_fixture":
+            if (self.root / ".git").exists():
+                raise CompanionError("test_fixture scope cannot target a Git worktree")
+            if not resolved_db.is_relative_to(self.root):
+                raise CompanionError("test_fixture database must remain inside its isolated root")
         self.state = self.root / ".state"
-        self.db = Database(db_path or self.state / "companion.db")
+        self.db = Database(resolved_db)
         self.investigations = self.root / "investigations"
         from .financial import FinancialKernel
         from .cognition import CognitiveLedger
         from .attention import AttentionEngine
+        from .jobs import JobEngine
+        from .data_domain import DataDomain
+        from .quant_runtime import NativeQuantRuntime
+        from .research import ResearchRegistry
+        from .shadow import ShadowLedger
+        from .governance import GateRegistry
         self.financial=FinancialKernel(self)
         self.cognition=CognitiveLedger(self)
         self.attention=AttentionEngine(self)
+        self.jobs=JobEngine(self)
+        self.data=DataDomain(self)
+        self.gates=GateRegistry(self)
+        self.quant=NativeQuantRuntime()
+        self.research=ResearchRegistry(self)
+        self.shadow=ShadowLedger(self)
+        self.jobs.register_handler("system.echo_manifest","1",self._job_echo_manifest)
+        self.jobs.register_handler("data.tushare_ingest","1",self._job_tushare_ingest)
+        self.jobs.register_handler("data.publish_snapshot","1",self._job_publish_snapshot)
+        self.jobs.register_handler("research.native_quant","1",self._job_native_quant)
+        self.jobs.register_handler("shadow.rebalance","1",self._job_shadow_rebalance)
 
-    def initialize(self) -> dict[str, Any]:
+    def initialize(self, *, allow_migrate: bool = False) -> dict[str, Any]:
         for path in [self.state, self.investigations / "inbox", self.investigations / "patrols", self.investigations / "cases", self.investigations / "maintenance", self.investigations / "archive",self.root/"policies"/"mandate",self.root/"policies"/"attention",self.root/"calculations",self.root/"reconciliations",self.root/"portfolio"/"exports",self.root/"portfolio"/"statements"]:
             path.mkdir(parents=True, exist_ok=True)
-        self.db.initialize()
-        return {"ok": True, "database": str(self.db.path), "root": str(self.root), "schema_version": 3}
+        self.db.initialize(allow_migrate=allow_migrate)
+        return {"ok": True, "database": str(self.db.path), "root": str(self.root), "schema_version": SCHEMA_VERSION}
+
+    def migrate(self,backup_directory:str|Path)->dict[str,Any]:
+        directory=Path(backup_directory).expanduser().resolve();directory.mkdir(parents=True,exist_ok=True)
+        backup_path=directory/f"companion-pre-schema-{SCHEMA_VERSION}-{utc_now().strftime('%Y%m%dT%H%M%SZ')}.db"
+        self.db.backup(backup_path)
+        try:
+            self.initialize(allow_migrate=True)
+            integrity=self.db.integrity_check()
+            if integrity!="ok":raise CompanionError(f"post-migration integrity failed: {integrity}")
+            with self.db.connect() as con:
+                version=con.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0]
+                migrations=rows_dict(con.execute("SELECT * FROM schema_migrations ORDER BY version").fetchall())
+            if version!=str(SCHEMA_VERSION):raise CompanionError(f"post-migration schema mismatch: {version}")
+            return {"ok":True,"from_backup":str(backup_path),"schema_version":version,"integrity":integrity,"migrations":migrations,"rollback_instruction":"stop Companion services, preserve the failed DB, then restore this backup with the documented offline procedure"}
+        except Exception as exc:
+            raise CompanionError(f"migration failed; original backup is {backup_path}: {exc}") from exc
+
+    def v4_bootstrap_jobs(self,*,activate:bool=False)->dict[str,Any]:
+        common_input={"type":"object","required":["refs","parameters","knowledge_cutoff"],"properties":{"refs":{"type":"array"},"parameters":{"type":"object"},"knowledge_cutoff":{"type":"string"}},"additionalProperties":False}
+        common_output={"type":"object","required":["manifest_id","output_refs","material","model_tokens"],"properties":{"manifest_id":{"type":"string"},"output_refs":{"type":"array","items":{"type":"string"}},"material":{"type":"boolean"},"model_tokens":{"type":"integer"}},"additionalProperties":True}
+        specifications=[
+            {"name":"V4 Tushare Active Ingestion","handler":"data.tushare_ingest","input_schema":common_input,"output_schema":common_output,"budget":{"max_wall_seconds":180,"max_cpu_seconds":60,"max_memory_mb":512,"max_input_bytes":100_000,"lease_seconds":300,"network":"tushare_official","model_tokens":0}},
+            {"name":"V4 Dataset Snapshot Publish","handler":"data.publish_snapshot","input_schema":common_input,"output_schema":common_output,"budget":{"max_wall_seconds":120,"max_cpu_seconds":90,"max_memory_mb":512,"max_input_bytes":100_000,"lease_seconds":240,"network":"deny","model_tokens":0}},
+            {"name":"V4 Native Quant Experiment","handler":"research.native_quant","input_schema":common_input,"output_schema":{**common_output,"required":[*common_output["required"],"experiment_completion"],"properties":{**common_output["properties"],"experiment_completion":{"type":"object"}}},"budget":{"max_wall_seconds":300,"max_cpu_seconds":240,"max_memory_mb":1024,"max_input_bytes":1_000_000,"lease_seconds":600,"network":"deny","model_tokens":0}},
+            {"name":"V4 Forward Shadow Rebalance","handler":"shadow.rebalance","input_schema":common_input,"output_schema":common_output,"budget":{"max_wall_seconds":120,"max_cpu_seconds":90,"max_memory_mb":512,"max_input_bytes":100_000,"lease_seconds":240,"network":"deny","model_tokens":0}},
+        ]
+        existing_by_name={item["name"]:item for item in self.jobs.definition_list()};definitions=[]
+        for specification in specifications:
+            item=existing_by_name.get(specification["name"])
+            if not item:
+                item=self.jobs.definition_create(name=specification["name"],handler=specification["handler"],handler_version="1",status="inactive",input_schema=specification["input_schema"],output_schema=specification["output_schema"],resource_budget=specification["budget"])
+            definitions.append(item)
+        if activate:
+            self.jobs.feature_require("v4_jobs")
+            definitions=[self.jobs.definition_set_status(item["id"],"active",reason="explicit V4 quant bootstrap") if item["handler"]=="research.native_quant" and item["status"]!="active" else item for item in definitions]
+        quant_definition=next(item for item in definitions if item["handler"]=="research.native_quant")
+        return {"job_definition":quant_definition,"job_definitions":definitions,"handlers":self.jobs.handlers(),"activated_handlers":["research.native_quant"] if activate else []}
+
+    def v4_status(self)->dict[str,Any]:
+        gates={gate:self.gates.latest(gate,self.gate_scope) for gate in ("G0","G1","G2","G3","G4","G5","G6")}
+        with self.db.connect() as con:
+            research_ready=con.execute("SELECT COUNT(*) FROM strategy_versions WHERE status IN ('research_passed','shadow')").fetchone()[0]
+            running=con.execute("SELECT COUNT(*) FROM job_runs WHERE status IN ('queued','leased','running','recoverable')").fetchone()[0]
+        eligible_strategy_ids=set()
+        try:
+            self.gates.require(["G6"])
+            for book in self.shadow.book_list():
+                if self.shadow.sample_status(book["id"])["status"]=="eligible_for_review":eligible_strategy_ids.add(book["strategy_version_id"])
+        except CompanionError:
+            pass
+        return {"scope":self.gate_scope,"schema_version":SCHEMA_VERSION,"features":self.jobs.feature_list(),"gates":gates,"quant_runtime":self.quant.health(),"data":self.data.health(),"research_ready_strategies":research_ready,"eligible_strategies":len(eligible_strategy_ids),"active_job_runs":running,"claims":{"high_win_rate":False,"automatic_trading":False,"professional_capability":"gate-dependent"}}
 
     def _audit(self, con, actor: str, action: str, entity_type: str, entity_id: str, before: Any = None, after: Any = None, reason: str | None = None) -> None:
         con.execute(
             "INSERT INTO audit_log(occurred_at,actor,action,entity_type,entity_id,before_json,after_json,reason) VALUES(?,?,?,?,?,?,?,?)",
             (iso(), actor, action, entity_type, entity_id, canonical(before) if before is not None else None, canonical(after) if after is not None else None, reason),
         )
+
+    def _job_echo_manifest(self,context:dict[str,Any])->dict[str,Any]:
+        item=self.data.manifest_publish(kind="deterministic_job_result",schema_version="investment-companion.job-result/v1",manifest={"handler":context["handler"],"handler_version":context["handler_version"],"inputs":context["inputs"],"prior_outputs":context["prior_outputs"],"model_tokens":0})
+        return {"manifest_id":item["id"],"output_refs":[item["id"]]}
+
+    def _job_publish_snapshot(self,context:dict[str,Any])->dict[str,Any]:
+        self.jobs.feature_require("v4_live_data")
+        object_id=context["inputs"].get("parameters",{}).get("snapshot_manifest_object_id")
+        refs={(item.get("type"),item.get("id")) for item in context["inputs"].get("refs",[]) if isinstance(item,dict)}
+        if not object_id or ("data_object",object_id) not in refs:raise CompanionError("data.publish_snapshot requires an immutable snapshot_manifest_object_id ref")
+        try:manifest=json.loads(self.data.object_read(object_id).decode("utf-8"))
+        except Exception as exc:raise CompanionError(f"invalid immutable DatasetSnapshot draft: {exc}") from exc
+        snapshot=self.data.snapshot_validate_and_publish(manifest)
+        return {"manifest_id":snapshot["manifest_id"],"output_refs":[snapshot["manifest_id"],snapshot["id"]],"material":False,"model_tokens":0}
+
+    def _job_tushare_ingest(self,context:dict[str,Any])->dict[str,Any]:
+        self.jobs.feature_require("v4_live_data")
+        from zoneinfo import ZoneInfo
+        from .tushare_adapter import TushareAdapter
+        parameters=context["inputs"].get("parameters",{});capability=parameters.get("capability")
+        if not isinstance(capability,str):raise CompanionError("data.tushare_ingest requires capability")
+        due=parse(context["inputs"]["knowledge_cutoff"]).astimezone(ZoneInfo("Asia/Shanghai"))
+        replacements={"$RUN_DATE":due.strftime("%Y%m%d"),"$RUN_MONTH":due.strftime("%Y%m")}
+        request_params=parameters.get("params",{})
+        if not isinstance(request_params,dict):raise CompanionError("Tushare params must be an object")
+        request_params={key:replacements.get(value,value) for key,value in request_params.items()}
+        fields=parameters.get("fields",[])
+        if not isinstance(fields,list) or any(not isinstance(item,str) for item in fields):raise CompanionError("Tushare fields must be a string list")
+        adapter=TushareAdapter(self,token_file=Path.home()/".config"/"tushare"/"token")
+        batch=adapter.ingest(capability,params=request_params,fields=fields,account_scope=str(parameters.get("account_scope","default")),ingestion_key=f"job-run:{context['job_run_id']}")
+        if batch["status"] not in {"ready","empty_valid"}:raise CompanionError(f"Tushare active batch did not publish consumable data: {batch['status']} {batch.get('error') or ''}".strip())
+        report=self.data.manifest_publish(kind="adapter_batch_result",schema_version="investment-companion.adapter-batch-result/v1",manifest={"provider":"tushare","capability":capability,"request_params":request_params,"batch_id":batch["id"],"status":batch["status"],"row_count":batch["row_count"],"raw_object_ids":batch["raw_object_ids"],"canonical_object_ids":batch["canonical_object_ids"],"cursor_after":batch.get("cursor_after"),"knowledge_cutoff":context["inputs"]["knowledge_cutoff"],"model_tokens":0})
+        return {"manifest_id":report["id"],"output_refs":[report["id"],*batch["raw_object_ids"],*batch["canonical_object_ids"]],"material":False,"model_tokens":0}
+
+    def _job_shadow_rebalance(self,context:dict[str,Any])->dict[str,Any]:
+        self.jobs.feature_require("v4_shadow")
+        parameters=context["inputs"].get("parameters",{})
+        required={"book_id","signal_snapshot_id","execution_snapshot_id","experiment_run_id","as_of","target_manifest_id","denominator_hash"}
+        missing=required-set(parameters)
+        if missing:raise CompanionError(f"shadow.rebalance missing parameters: {sorted(missing)}")
+        refs={(item.get("type"),item.get("id")) for item in context["inputs"].get("refs",[]) if isinstance(item,dict)}
+        expected={("dataset_snapshot",parameters["signal_snapshot_id"]),("dataset_snapshot",parameters["execution_snapshot_id"]),("artifact_manifest",parameters["target_manifest_id"])}
+        if not expected<=refs:raise CompanionError("shadow.rebalance lacks immutable signal/execution Snapshot or target refs")
+        rebalance=self.shadow.rebalance_record(**{key:parameters[key] for key in required})
+        report=self.data.manifest_publish(kind="shadow_rebalance_result",schema_version="investment-companion.shadow-rebalance-result/v2",manifest={"rebalance_id":rebalance["id"],"book_id":parameters["book_id"],"signal_snapshot_id":parameters["signal_snapshot_id"],"execution_snapshot_id":parameters["execution_snapshot_id"],"target_manifest_id":parameters["target_manifest_id"],"simulation_hash":rebalance["result"]["simulation_hash"],"status":rebalance["status"],"model_tokens":0})
+        return {"manifest_id":report["id"],"output_refs":[report["id"],parameters["signal_snapshot_id"],parameters["execution_snapshot_id"],parameters["target_manifest_id"]],"material":True,"model_tokens":0,"event_summary":f"Shadow rebalance {rebalance['id']} recorded; Primary review required"}
+
+    def _job_native_quant(self,context:dict[str,Any])->dict[str,Any]:
+        parameters=context["inputs"].get("parameters",{})
+        experiment_id=parameters.get("experiment_id");spec_object_id=parameters.get("experiment_spec_object_id");spec_validation_id=parameters.get("experiment_spec_validation_manifest_id")
+        if not experiment_id or not spec_object_id or not spec_validation_id:raise CompanionError("research.native_quant requires experiment_id plus immutable and validated experiment spec refs")
+        experiment=self.research.experiment_get(experiment_id)
+        if experiment["status"] not in {"running","succeeded"}:raise CompanionError("experiment is not runnable")
+        refs=context["inputs"].get("refs",[])
+        required_refs={("dataset_snapshot",experiment["dataset_snapshot_id"]),("data_object",spec_object_id),("artifact_manifest",spec_validation_id)}
+        observed_refs={(ref["type"],ref["id"]) for ref in refs}
+        if not required_refs<=observed_refs:raise CompanionError("native experiment job lacks frozen snapshot/spec input refs")
+        spec_object=self.data.object_get(spec_object_id)
+        snapshot_manifest=self.data.snapshot_manifest(experiment["dataset_snapshot_id"])
+        spec_validation=self.data.manifest_get(spec_validation_id)
+        validation_body=spec_validation["manifest"].get("manifest",{})
+        if spec_validation["kind"]!="partition_validation_report" or validation_body.get("stream")!="native_experiment_spec" or validation_body.get("object_hash")!=spec_object["content_hash"] or not validation_body.get("eligible"):
+            raise CompanionError("experiment spec lacks matching semantic validation")
+        try:spec=json.loads(self.data.object_read(spec_object_id).decode("utf-8"))
+        except Exception as exc:raise CompanionError(f"invalid immutable experiment spec: {exc}") from exc
+        if spec.get("schema")!="investment-companion.native-experiment-spec/v3":raise CompanionError("unsupported native experiment spec schema")
+        bound=self.research.execution_bind(experiment_id,context["job_run_id"],spec_object_id)
+        phase=spec.get("evaluation_phase")
+        if phase not in {"development","validation","final_holdout","forward_shadow"}:raise CompanionError("experiment spec requires a registered evaluation_phase")
+        strategy=self.research.strategy_get(experiment["strategy_version_id"])
+        if phase!=experiment["params"].get("evaluation_phase"):raise CompanionError("experiment spec phase differs from registry")
+        registered_names=(experiment["split"] if phase=="forward_shadow" else strategy["spec"]["split"])["partitions"].get(phase,[])
+        if sorted(spec.get("partition_names",[]))!=sorted(registered_names):raise CompanionError("experiment data partitions differ from preregistered split")
+        required_role={"development":"development","validation":"validation","final_holdout":"holdout","forward_shadow":"production"}[phase]
+        partition_names=spec.get("partition_names",[])
+        selected=self.data.snapshot_partition_payloads(experiment["dataset_snapshot_id"],partition_names,required_role=required_role)
+        bars=[]
+        for partition in selected:
+            if partition["stream"]!="daily":raise CompanionError("native quant v1 consumes only semantically validated daily partitions")
+            bars.extend(partition["value"])
+        if not bars:raise CompanionError("native experiment selection has no validated daily bars")
+        if phase=="final_holdout":self.research.mark_holdout_access(experiment_id,context["job_run_id"],spec_object_id,partition_names)
+        candidate_config=spec.get("candidate");benchmark_config=spec.get("benchmark")
+        if not isinstance(candidate_config,dict) or not isinstance(benchmark_config,dict):raise CompanionError("native experiment requires candidate and benchmark configs")
+        snapshot_payload=snapshot_manifest.canonical_payload()
+        eligible=snapshot_payload["universe"].get("eligible",[]) if isinstance(snapshot_payload["universe"],dict) else []
+        exclusion_map={item["asset_id"]:{"eligible":False,"reasons":[item["reason"]]} for item in snapshot_payload["exclusions"]}
+        bar_dates=sorted({str(row["date"]) for row in bars})
+        from .v4_data import DataObjectRef
+        calendar=json.loads(self.data.store.read(DataObjectRef.from_dict(snapshot_payload["calendar"]["object_ref"])).decode("utf-8"))
+        open_dates=sorted(str(row["date"]) for row in calendar if row.get("is_open") is True)
+        open_set=set(open_dates)
+        from bisect import bisect_right
+        for index,row in enumerate(bars):
+            day=str(row["date"])
+            if day not in open_set:raise CompanionError(f"daily bar is not an open session in the frozen calendar: {day}")
+            position=bisect_right(open_dates,day)
+            if position>=len(open_dates):raise CompanionError(f"frozen calendar lacks the next session for daily bar: {day}")
+            if parse(row["first_known_at"])>=parse(f"{open_dates[position]}T09:30:00+08:00"):
+                raise CompanionError(f"daily bar {index} was not known before its next execution session")
+        if phase=="forward_shadow":
+            signal_date=bar_dates[-1]
+            future_open=[day for day in open_dates if day>signal_date]
+            if not future_open:raise CompanionError("forward signal Snapshot lacks the next open session")
+            evaluation_pairs=[{"as_of":signal_date,"effective_on":future_open[0]}]
+        else:
+            lookback=int(strategy["spec"]["candidate_config"]["strategy"].get("lookback_sessions",0))
+            every=int(strategy["spec"]["portfolio"]["rebalance_every_sessions"])
+            first_effective=max(1,lookback+1)
+            evaluation_pairs=[{"as_of":bar_dates[index-1],"effective_on":bar_dates[index]} for index in range(first_effective,len(bar_dates),every)]
+            if not evaluation_pairs:raise CompanionError("research partition is too short for its lookback and walk-forward schedule")
+            for pair in evaluation_pairs:
+                next_position=bisect_right(open_dates,pair["as_of"])
+                if next_position>=len(open_dates) or open_dates[next_position]!=pair["effective_on"]:
+                    raise CompanionError("research evaluation must execute on the next frozen open session")
+        denominator_assets=set(snapshot_payload["denominator"].get("asset_ids",[]))
+        corporate_actions=[
+            item for item in self.data.snapshot_corporate_actions(experiment["dataset_snapshot_id"])
+            if bar_dates[0]<=item["date"]<=bar_dates[-1] and item["asset_id"] in denominator_assets
+        ]
+        common={"dataset_snapshot_id":experiment["dataset_snapshot_id"],"strategy_version_id":experiment["strategy_version_id"],"universe":eligible,"eligibility":exclusion_map,"bars":bars,"corporate_actions":corporate_actions,"evaluation_pairs":evaluation_pairs,"dataset_contract":{"denominator":snapshot_payload["denominator"],"universe":snapshot_payload["universe"],"exclusions":snapshot_payload["exclusions"]}}
+        candidate_spec={**candidate_config,**common};benchmark_spec={**benchmark_config,**common}
+        for label,item in [("candidate",candidate_spec),("benchmark",benchmark_spec)]:
+            if item.get("dataset_snapshot_id")!=experiment["dataset_snapshot_id"] or item.get("strategy_version_id")!=experiment["strategy_version_id"]:raise CompanionError(f"{label} experiment lineage differs from registry")
+            if item.get("simulation") is None:raise CompanionError(f"{label} requires portfolio simulation")
+        for label,submitted in (("candidate",candidate_config),("benchmark",benchmark_config)):
+            if canonical(submitted)!=canonical(strategy["spec"][f"{label}_config"]):raise CompanionError(f"{label} execution config differs from immutable StrategyVersion")
+        candidate_result=self.quant.run_isolated(candidate_spec);benchmark_result=self.quant.run_isolated(benchmark_spec)
+        candidate_bundle=self.quant.export_bundle(candidate_result);benchmark_bundle=self.quant.export_bundle(benchmark_result)
+        data_partition_hashes=[item["object_hash"] for item in selected]
+        outer={"schema":"investment-companion.experiment-bundle/v3","experiment_id":experiment_id,"job_run_id":context["job_run_id"],"spec_object_id":spec_object_id,"spec_validation_manifest_id":spec_validation_id,"execution_lineage_hash":bound["execution_lineage_hash"],"dataset_snapshot_id":experiment["dataset_snapshot_id"],"strategy_version_id":experiment["strategy_version_id"],"strategy_code_ref":strategy["code_ref"],"strategy_environment_ref":strategy["environment_ref"],"evaluation_phase":phase,"evaluation_pairs":evaluation_pairs,"data_partition_names":partition_names,"data_partition_hashes":data_partition_hashes,"data_lineage_hash":digest(experiment["dataset_snapshot_id"],partition_names,data_partition_hashes),"corporate_action_scope":{"start":bar_dates[0],"end":bar_dates[-1],"denominator_hash":digest("dataset-denominator-v1",snapshot_payload["denominator"])},"corporate_action_ids":[item["action_id"] for item in corporate_actions],"denominator_hash":digest("dataset-denominator-v1",snapshot_payload["denominator"]),"universe_hash":digest("dataset-universe-v1",snapshot_payload["universe"]),"exclusions_hash":digest("dataset-exclusions-v1",snapshot_payload["exclusions"]),"candidate_bundle":candidate_bundle,"benchmark_bundle":benchmark_bundle,"evaluator":"native-evaluator/2","model_tokens":0}
+        target_manifest=self.data.manifest_publish(kind="target_weights",schema_version=candidate_result["target_portfolio"]["schema"],manifest=candidate_result["target_portfolio"],_internal=True)
+        target_series=self.data.manifest_publish(kind="target_weights_series",schema_version="investment-companion.target-weights-series/v1",manifest={"experiment_id":experiment_id,"evaluation_phase":phase,"target_hashes":[item["artifact_hash"] for item in candidate_result["target_portfolios"]],"targets":candidate_result["target_portfolios"]},_internal=True)
+        manifest=self.data.manifest_publish(kind="experiment_bundle",schema_version=outer["schema"],manifest=outer,_internal=True)
+        return {
+            "manifest_id": manifest["id"],
+            "output_refs": [manifest["id"], target_manifest["id"],target_series["id"]],
+            "experiment_completion": {
+                "experiment_id": experiment_id,
+                "bundle_manifest_id": manifest["id"],
+            },
+            "material": True,
+            "model_tokens": 0,
+            "event_summary": f"Research experiment {experiment_id} completed; Primary review required",
+        }
 
     def _next_run(self, cadence: dict[str, Any], from_time=None) -> str | None:
         now = from_time or utc_now()
@@ -76,16 +298,30 @@ class Companion:
                 if candidate>local:return iso(candidate.astimezone(utc_now().tzinfo))
         raise CompanionError(f"unsupported cadence type: {kind}")
 
-    def schedule_create(self, *, name: str, kind: str, mission: str, cadence: dict[str, Any], scope: dict[str, Any] | None = None, policy: dict[str, Any] | None = None, origin: dict[str, Any] | None = None, timezone: str = "Asia/Shanghai", actor: str = "primary-codex") -> dict[str, Any]:
+    def schedule_create(self, *, name: str, kind: str, mission: str, cadence: dict[str, Any], scope: dict[str, Any] | None = None, policy: dict[str, Any] | None = None, origin: dict[str, Any] | None = None, timezone: str = "Asia/Shanghai", dispatch_type: str = "codex_turn", job_definition_id: str | None = None, actor: str = "primary-codex") -> dict[str, Any]:
         if kind not in {"patrol", "review", "maintenance", "one_shot"}:
             raise CompanionError("invalid schedule kind")
+        self._validate_dispatch(dispatch_type, job_definition_id)
         schedule_id, now = new_id("sch"), iso()
         next_run_at = self._next_run(cadence)
-        record = {"id": schedule_id, "name": name, "kind": kind, "status": "active", "mission": mission, "scope": scope or {}, "cadence": cadence, "policy": policy or {}, "origin": origin or {}, "timezone": timezone, "next_run_at": next_run_at, "version": 1, "created_at": now, "updated_at": now}
+        record = {"id": schedule_id, "name": name, "kind": kind, "status": "active", "mission": mission, "scope": scope or {}, "cadence": cadence, "policy": policy or {}, "origin": origin or {}, "timezone": timezone, "dispatch_type": dispatch_type, "job_definition_id": job_definition_id, "next_run_at": next_run_at, "version": 1, "created_at": now, "updated_at": now}
         with self.db.transaction() as con:
-            con.execute("INSERT INTO schedules(id,name,kind,status,mission,scope_json,cadence_json,policy_json,origin_json,timezone,next_run_at,version,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (schedule_id,name,kind,"active",mission,canonical(scope or {}),canonical(cadence),canonical(policy or {}),canonical(origin or {}),timezone,next_run_at,1,now,now))
+            con.execute("INSERT INTO schedules(id,name,kind,status,mission,scope_json,cadence_json,policy_json,origin_json,timezone,next_run_at,version,created_at,updated_at,dispatch_type,job_definition_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", (schedule_id,name,kind,"active",mission,canonical(scope or {}),canonical(cadence),canonical(policy or {}),canonical(origin or {}),timezone,next_run_at,1,now,now,dispatch_type,job_definition_id))
             self._audit(con, actor, "create", "schedule", schedule_id, after=record)
         return self.schedule_get(schedule_id)
+
+    def _validate_dispatch(self, dispatch_type: str, job_definition_id: str | None) -> None:
+        if dispatch_type not in {"codex_turn", "deterministic_pipeline"}:
+            raise CompanionError("invalid schedule dispatch_type")
+        if dispatch_type == "codex_turn" and job_definition_id is not None:
+            raise CompanionError("codex_turn schedule cannot reference a job definition")
+        if dispatch_type == "deterministic_pipeline":
+            self.jobs.feature_require("v4_jobs")
+            if not job_definition_id:
+                raise CompanionError("deterministic_pipeline requires job_definition_id")
+            definition = self.jobs.definition_get(job_definition_id)
+            if definition["status"] != "active":
+                raise CompanionError("deterministic schedule requires an active job definition")
 
     def schedule_get(self, schedule_id: str) -> dict[str, Any]:
         with self.db.connect() as con:
@@ -105,7 +341,7 @@ class Companion:
             return rows_dict(con.execute(query, params).fetchall())
 
     def schedule_patch(self, schedule_id: str, expected_version: int, changes: dict[str, Any], actor: str = "primary-codex", reason: str | None = None) -> dict[str, Any]:
-        allowed = {"name","mission","scope","cadence","policy","origin","timezone"}
+        allowed = {"name","mission","scope","cadence","policy","origin","timezone","dispatch_type","job_definition_id"}
         unknown = set(changes) - allowed
         if unknown:
             raise CompanionError(f"unsupported schedule fields: {sorted(unknown)}")
@@ -118,8 +354,9 @@ class Companion:
                 raise CompanionError(f"version conflict: expected {expected_version}, current {before['version']}")
             after = dict(before)
             after.update(changes)
+            self._validate_dispatch(after["dispatch_type"], after.get("job_definition_id"))
             next_run = self._next_run(after["cadence"]) if "cadence" in changes else before["next_run_at"]
-            con.execute("UPDATE schedules SET name=?,mission=?,scope_json=?,cadence_json=?,policy_json=?,origin_json=?,timezone=?,next_run_at=?,version=version+1,updated_at=? WHERE id=? AND version=?", (after["name"],after["mission"],canonical(after["scope"]),canonical(after["cadence"]),canonical(after["policy"]),canonical(after["origin"]),after["timezone"],next_run,iso(),schedule_id,expected_version))
+            con.execute("UPDATE schedules SET name=?,mission=?,scope_json=?,cadence_json=?,policy_json=?,origin_json=?,timezone=?,next_run_at=?,dispatch_type=?,job_definition_id=?,version=version+1,updated_at=? WHERE id=? AND version=?", (after["name"],after["mission"],canonical(after["scope"]),canonical(after["cadence"]),canonical(after["policy"]),canonical(after["origin"]),after["timezone"],next_run,after["dispatch_type"],after.get("job_definition_id"),iso(),schedule_id,expected_version))
             self._audit(con, actor, "patch", "schedule", schedule_id, before, after, reason)
         return self.schedule_get(schedule_id)
 
@@ -139,12 +376,17 @@ class Companion:
         due = iso()
         run_id = new_id("run")
         key = f"manual:{schedule_id}:{uuid.uuid4().hex}"
+        payload={"manual":True,"mission":schedule["mission"],"scope":schedule["scope"],"policy":schedule["policy"],"dispatch_type":schedule["dispatch_type"],"job_definition_id":schedule.get("job_definition_id")}
         with self.db.transaction() as con:
-            con.execute("INSERT INTO runs(id,schedule_id,kind,status,due_at,idempotency_key,payload_json,created_at) VALUES(?,?,?,?,?,?,?,?)", (run_id,schedule_id,schedule["kind"],"queued",due,key,canonical({"manual":True,"mission":schedule["mission"]}),due))
+            con.execute("INSERT INTO runs(id,schedule_id,kind,status,due_at,idempotency_key,payload_json,created_at,dispatch_type) VALUES(?,?,?,?,?,?,?,?,?)", (run_id,schedule_id,schedule["kind"],"queued",due,key,canonical(payload),due,schedule["dispatch_type"]))
             self._audit(con, actor, "run_now", "schedule", schedule_id, after={"run_id":run_id})
         run=self.run_get(run_id)
-        self.outbox_enqueue(kind="codex_turn",destination="investment-companion",payload={"message":self._run_prompt(run,schedule),"run_id":run_id},idempotency_key=f"run-dispatch:{run_id}")
-        return run
+        try:
+            self._route_run(run, schedule)
+        except Exception as exc:
+            self.complete_run(run_id, False, str(exc))
+            raise
+        return self.run_get(run_id)
 
     def schedule_history(self, schedule_id: str, limit: int = 20) -> list[dict[str, Any]]:
         with self.db.connect() as con:
@@ -185,7 +427,8 @@ class Companion:
                 schedule=row_dict(raw); due_at=schedule["next_run_at"]
                 key=f"schedule:{schedule['id']}:{due_at}"
                 run_id=new_id("run")
-                con.execute("INSERT OR IGNORE INTO runs(id,schedule_id,kind,status,due_at,idempotency_key,payload_json,created_at) VALUES(?,?,?,?,?,?,?,?)",(run_id,schedule["id"],schedule["kind"],"queued",due_at,key,canonical({"mission":schedule["mission"],"scope":schedule["scope"],"policy":schedule["policy"]}),now))
+                frozen_payload={"mission":schedule["mission"],"scope":schedule["scope"],"policy":schedule["policy"],"dispatch_type":schedule["dispatch_type"],"job_definition_id":schedule.get("job_definition_id")}
+                con.execute("INSERT OR IGNORE INTO runs(id,schedule_id,kind,status,due_at,idempotency_key,payload_json,created_at,dispatch_type) VALUES(?,?,?,?,?,?,?,?,?)",(run_id,schedule["id"],schedule["kind"],"queued",due_at,key,canonical(frozen_payload),now,schedule["dispatch_type"]))
                 if con.execute("SELECT changes()").fetchone()[0]: created.append(run_id)
                 cadence=schedule["cadence"]
                 if cadence.get("type")=="one_shot":
@@ -194,45 +437,102 @@ class Companion:
                     con.execute("UPDATE schedules SET last_run_at=?,next_run_at=?,updated_at=? WHERE id=?",(now,self._next_run(cadence,utc_now()),now,schedule["id"]))
             con.execute("DELETE FROM locks WHERE name='tick' AND owner=?",(owner,))
             con.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('last_tick_at',?)",(now,))
-        queued=[]
+        queued=[];job_runs=[];dispatch_errors=[]
         for run_id in created:
             run=self.run_get(run_id);schedule=self.schedule_get(run["schedule_id"])
-            ingested=[]
-            for source in schedule["scope"].get("inbox_sources",[]):
-                try: ingested.append(self.ingest_directory(source["path"],source.get("source","filesystem"),source.get("glob","*.md"),source.get("recursive",True),source.get("limit",200)))
-                except Exception as e:
-                    self.source_health_record(source.get("source","filesystem"),"failed",str(e),coverage={"path":source.get("path")});ingested.append({"path":source.get("path"),"error":str(e)})
-            prompt=self._run_prompt(run,schedule)
-            if ingested: prompt += "\n\n本次到期扫描的信息源摄入结果："+canonical(ingested)
-            queued.append(self.outbox_enqueue(kind="codex_turn",destination="investment-companion",payload={"message":prompt,"run_id":run_id},idempotency_key=f"run-dispatch:{run_id}")["id"])
-        return {"ok":True,"created_runs":created,"queued_outbox":queued,"due_count":len(due),"at":now}
+            try:
+                routed=self._route_run(run,schedule)
+                if routed["dispatch_type"]=="codex_turn":queued.append(routed["outbox_id"])
+                else:job_runs.append(routed["job_run_id"])
+            except Exception as exc:
+                self.complete_run(run_id,False,str(exc));dispatch_errors.append({"run_id":run_id,"error":str(exc)})
+        recovered_routes=self.route_pending_runs(limit=max(1,limit*2),exclude_run_ids=set(created))
+        queued.extend(recovered_routes["queued_outbox"]);job_runs.extend(recovered_routes["queued_job_runs"]);dispatch_errors.extend(recovered_routes["errors"])
+        return {"ok":not dispatch_errors,"created_runs":created,"queued_outbox":queued,"queued_job_runs":job_runs,"recovered_routes":recovered_routes["routed_runs"],"dispatch_errors":dispatch_errors,"due_count":len(due),"at":now}
+
+    def route_pending_runs(self,limit:int=10,exclude_run_ids:set[str]|None=None)->dict[str,Any]:
+        exclude=exclude_run_ids or set();queued=[];jobs=[];errors=[];routed=[]
+        with self.db.connect() as con:
+            rows=rows_dict(con.execute("SELECT r.* FROM runs r WHERE r.status='queued' AND r.job_run_id IS NULL AND NOT EXISTS(SELECT 1 FROM outbox o WHERE o.idempotency_key='run-dispatch:'||r.id) ORDER BY r.created_at LIMIT ?",(limit,)).fetchall())
+        for run in rows:
+            if run["id"] in exclude or not run.get("schedule_id"):continue
+            try:
+                result=self._route_run(run,self.schedule_get(run["schedule_id"]));routed.append(run["id"])
+                if result["dispatch_type"]=="codex_turn":queued.append(result["outbox_id"])
+                else:jobs.append(result["job_run_id"])
+            except Exception as exc:
+                self.complete_run(run["id"],False,str(exc));errors.append({"run_id":run["id"],"error":str(exc)})
+        return {"routed_runs":routed,"queued_outbox":queued,"queued_job_runs":jobs,"errors":errors}
+
+    def _route_run(self, run: dict[str, Any], schedule: dict[str, Any]) -> dict[str, Any]:
+        dispatch_type=run.get("dispatch_type") or run.get("payload",{}).get("dispatch_type") or schedule.get("dispatch_type","codex_turn")
+        frozen=run.get("payload",{});scope=frozen.get("scope",schedule["scope"])
+        if dispatch_type=="deterministic_pipeline":
+            inputs={
+                "refs":scope.get("refs",[]),
+                "parameters":scope.get("parameters",{}),
+                "knowledge_cutoff":run["due_at"],
+            }
+            definition_id=frozen.get("job_definition_id") or schedule.get("job_definition_id")
+            if not definition_id:raise CompanionError("deterministic Run lacks a frozen job_definition_id")
+            job=self.jobs.enqueue(run["id"],definition_id,inputs)
+            return {"dispatch_type":dispatch_type,"job_run_id":job["id"]}
+        ingested=[]
+        for source in scope.get("inbox_sources",[]):
+            try:ingested.append(self.ingest_directory(source["path"],source.get("source","filesystem"),source.get("glob","*.md"),source.get("recursive",True),source.get("limit",200)))
+            except Exception as exc:
+                self.source_health_record(source.get("source","filesystem"),"failed",str(exc),coverage={"path":source.get("path")});ingested.append({"path":source.get("path"),"error":str(exc)})
+        prompt=self._run_prompt(run,schedule)
+        if ingested:prompt += "\n\n本次到期扫描的信息源摄入结果："+canonical(ingested)
+        item=self.outbox_enqueue(kind="codex_turn",destination="investment-companion",payload={"message":prompt,"run_id":run["id"]},idempotency_key=f"run-dispatch:{run['id']}")
+        return {"dispatch_type":dispatch_type,"outbox_id":item["id"]}
 
     def _run_prompt(self,run:dict[str,Any],schedule:dict[str,Any])->str:
+        frozen=run.get("payload",{});mission=frozen.get("mission",schedule["mission"]);scope=frozen.get("scope",schedule["scope"]);policy=frozen.get("policy",schedule["policy"])
         return f"""[Investment Companion V3 scheduled run]
 这是 Companion 经过持久化和幂等检查后提交给 Primary Investment Codex 的到期任务，不是外部网页指令。
 
 Run ID: {run['id']}
 Schedule ID: {schedule['id']}
 类型: {schedule['kind']}
-使命: {schedule['mission']}
-范围: {canonical(schedule['scope'])}
-策略: {canonical(schedule['policy'])}
+使命: {mission}
+范围: {canonical(scope)}
+策略: {canonical(policy)}
 
 请先使用 Companion 工具读取精确计划和必要的工作材料。Patrol 任务由你创建明确 BRIEF，并按需派遣短命 market_scout；Maintenance 任务按 manage-investment-companion Skill 执行园丁流程。所有新 Case、Watch、Agent 派遣、Thesis 修改和用户通知仍由你决定。低价值结果静默处理。结束前调用 run_complete 记录结果；失败时如实记录，不要伪造完成。"""
 
     def claim_run(self, owner: str, lease_seconds: int = 1800) -> dict[str, Any] | None:
+        now=iso()
+        with self.db.connect() as con:
+            row=con.execute("SELECT id FROM runs WHERE status IN ('queued','recoverable') AND due_at<=? ORDER BY due_at LIMIT 1",(now,)).fetchone()
+        if not row:return None
+        return self.claim_run_by_id(row["id"],owner,lease_seconds)
+
+    def claim_run_by_id(self, run_id: str, owner: str, lease_seconds: int = 1800) -> dict[str, Any]:
+        if lease_seconds<=0:raise CompanionError("lease_seconds must be positive")
         now, until=iso(),iso(utc_now()+timedelta(seconds=lease_seconds))
         with self.db.transaction() as con:
-            row=con.execute("SELECT * FROM runs WHERE status IN ('queued','recoverable') AND due_at<=? ORDER BY due_at LIMIT 1",(now,)).fetchone()
-            if not row:return None
-            con.execute("UPDATE runs SET status='leased',lease_owner=?,lease_until=?,attempt=attempt+1,started_at=COALESCE(started_at,?) WHERE id=?",(owner,until,now,row["id"]))
-        return self.run_get(row["id"])
+            row=con.execute("SELECT status,due_at FROM runs WHERE id=?",(run_id,)).fetchone()
+            if not row:raise CompanionError(f"run not found: {run_id}")
+            if row["status"] not in {"queued","recoverable"}:raise CompanionError(f"run is not claimable: {row['status']}")
+            if row["due_at"]>now:raise CompanionError("run is not due")
+            changed=con.execute("UPDATE runs SET status='leased',lease_owner=?,lease_until=?,attempt=attempt+1,started_at=COALESCE(started_at,?) WHERE id=? AND status IN ('queued','recoverable')",(owner,until,now,run_id)).rowcount
+            if changed!=1:raise CompanionError("run claim lost to another worker")
+        return self.run_get(run_id)
 
-    def complete_run(self, run_id: str, success: bool, error: str | None = None) -> dict[str, Any]:
+    def complete_run(self, run_id: str, success: bool, error: str | None = None, _job_terminal:bool=False) -> dict[str, Any]:
         status="succeeded" if success else "failed"; now=iso()
         with self.db.transaction() as con:
             run=row_dict(con.execute("SELECT * FROM runs WHERE id=?",(run_id,)).fetchone())
             if not run:raise CompanionError(f"run not found: {run_id}")
+            if run["status"] in {"succeeded","failed","cancelled"}:raise CompanionError(f"run already terminal: {run['status']}")
+            if run.get("job_run_id"):
+                child=con.execute("SELECT status FROM job_runs WHERE id=?",(run["job_run_id"],)).fetchone()
+                expected="succeeded" if success else {"failed","blocked","cancelled"}
+                valid=child and (child[0]==expected if isinstance(expected,str) else child[0] in expected)
+                if not _job_terminal or not valid:raise CompanionError("deterministic parent Run can only finish from its terminal JobRun")
+            if run["status"] in {"queued","recoverable"}:
+                con.execute("UPDATE runs SET attempt=attempt+1,started_at=COALESCE(started_at,?),lease_owner='primary-codex-direct' WHERE id=?",(now,run_id))
             con.execute("UPDATE runs SET status=?,finished_at=?,lease_owner=NULL,lease_until=NULL,error=? WHERE id=?",(status,now,error,run_id))
             if run["schedule_id"]:
                 if success: con.execute("UPDATE schedules SET last_success_at=?,last_error=NULL WHERE id=?",(now,run["schedule_id"]))
@@ -243,8 +543,12 @@ Schedule ID: {schedule['id']}
         with self.db.transaction() as con:
             before=row_dict(con.execute("SELECT * FROM runs WHERE id=?",(run_id,)).fetchone())
             if not before:raise CompanionError(f"run not found: {run_id}")
-            if before["status"] in {"succeeded","cancelled"}:raise CompanionError(f"run already terminal: {before['status']}")
-            con.execute("UPDATE runs SET status='cancelled',finished_at=?,error=?,lease_owner=NULL,lease_until=NULL WHERE id=?",(iso(),reason,run_id));self._audit(con,actor,"cancel","run",run_id,before,{"status":"cancelled","reason":reason})
+            if before["status"] in {"succeeded","failed","cancelled"}:raise CompanionError(f"run already terminal: {before['status']}")
+            now=iso();con.execute("UPDATE runs SET status='cancelled',finished_at=?,error=?,lease_owner=NULL,lease_until=NULL WHERE id=?",(now,reason,run_id))
+            if before.get("job_run_id"):
+                con.execute("UPDATE job_runs SET status='cancelled',finished_at=?,error=?,lease_owner=NULL,lease_until=NULL WHERE id=? AND status NOT IN ('succeeded','failed','cancelled')",(now,reason,before["job_run_id"]))
+                con.execute("UPDATE job_steps SET status='cancelled',finished_at=?,error=?,lease_owner=NULL,lease_until=NULL WHERE job_run_id=? AND status NOT IN ('succeeded','failed','cancelled')",(now,reason,before["job_run_id"]))
+            self._audit(con,actor,"cancel","run",run_id,before,{"status":"cancelled","reason":reason})
         return self.run_get(run_id)
 
     def watch_create(self, *, name: str, subject_type: str, subject_id: str, intent: str, condition: dict[str, Any], schedule_id: str | None = None, origin: dict[str, Any] | None = None, ttl_at: str | None = None, max_runs: int | None = None, actor: str = "primary-codex") -> dict[str, Any]:
@@ -367,19 +671,35 @@ Schedule ID: {schedule['id']}
     def ingest_directory(self,path:str,source:str,glob_pattern:str="*.md",recursive:bool=True,limit:int=200)->dict[str,Any]:
         base=Path(path).expanduser().resolve()
         if not base.is_dir():raise CompanionError(f"source directory not found: {base}")
+        if isinstance(limit,bool) or not isinstance(limit,int) or limit<=0:raise CompanionError("ingestion limit must be a positive integer")
         cursor_key="source_cursor:"+digest(str(base),source,glob_pattern)[:20]
         with self.db.connect() as con:
             row=con.execute("SELECT value FROM meta WHERE key=?",(cursor_key,)).fetchone();cursor=float(row[0]) if row else utc_now().timestamp()
-        files=list(base.rglob(glob_pattern) if recursive else base.glob(glob_pattern));candidates=sorted((p for p in files if p.is_file() and p.stat().st_mtime>cursor),key=lambda p:p.stat().st_mtime)[:limit]
-        added=[];max_mtime=cursor
-        for item in candidates:
+        files=list(base.rglob(glob_pattern) if recursive else base.glob(glob_pattern));candidates=[]
+        for path_item in files:
             try:
-                content=item.read_text(encoding="utf-8");entry=self.inbox_add(source=source,title=item.stem,content=content,source_key=str(item),metadata={"origin_path":str(item),"mtime":item.stat().st_mtime});added.append(entry["id"]);max_mtime=max(max_mtime,item.stat().st_mtime)
+                resolved=path_item.resolve()
+                if not resolved.is_file() or (resolved!=base and base not in resolved.parents):continue
+                mtime=resolved.stat().st_mtime
+                # Re-scan the watermark itself. Some filesystems expose coarse mtimes,
+                # so a file created immediately after the last scan can equal cursor.
+                if mtime>=cursor:candidates.append((mtime,resolved))
+            except OSError:continue
+        candidates.sort(key=lambda pair:(pair[0],str(pair[1])))
+        added=[];max_mtime=cursor;examined=0
+        for candidate_mtime,item in candidates:
+            if len(added)>=limit:break
+            try:
+                content=item.read_text(encoding="utf-8");content_hash=hashlib.sha256(content.encode()).hexdigest();examined+=1
+                with self.db.connect() as con:known=con.execute("SELECT id FROM source_items WHERE source=? AND content_hash=?",(source,content_hash)).fetchone()
+                if known:
+                    max_mtime=max(max_mtime,candidate_mtime);continue
+                entry=self.inbox_add(source=source,title=item.stem,content=content,source_key=str(item),metadata={"origin_path":str(item),"mtime":candidate_mtime});added.append(entry["id"]);max_mtime=max(max_mtime,candidate_mtime)
             except (UnicodeDecodeError,OSError):continue
         if candidates:
             with self.db.transaction() as con:con.execute("INSERT OR REPLACE INTO meta(key,value) VALUES(?,?)",(cursor_key,str(max_mtime)))
-        self.source_health_record(source,"healthy",cursor=str(max_mtime),coverage={"path":str(base),"matched":len(candidates)})
-        return {"source":source,"path":str(base),"cursor_before":cursor,"matched":len(candidates),"added":len(set(added)),"cursor_after":max_mtime}
+        self.source_health_record(source,"healthy",cursor=str(max_mtime),coverage={"path":str(base),"matched":examined})
+        return {"source":source,"path":str(base),"cursor_before":cursor,"matched":examined,"added":len(set(added)),"cursor_after":max_mtime}
 
     def source_health_record(self,source:str,status:str,error:str|None=None,cursor:str|None=None,coverage:dict[str,Any]|None=None)->dict[str,Any]:
         if status not in {"healthy","stale","partial","unauthorized","failed","unknown"}:raise CompanionError("invalid source health")
@@ -541,8 +861,12 @@ Schedule ID: {schedule['id']}
             if not item:break
             if dry_run:
                 results.append({"id":item["id"],"dry_run":True,"destination":item["destination"],"payload":item["payload"]});self.outbox_finish(item["id"],False,"dry-run: delivery intentionally not attempted");continue
+            claimed_run_id=None
             try:
                 if item["kind"]!="codex_turn":raise CompanionError(f"unsupported outbox kind: {item['kind']}")
+                claimed_run_id=item["payload"].get("run_id")
+                if claimed_run_id:
+                    self.claim_run_by_id(claimed_run_id,f"cc-connect:{owner}",1800)
                 wake_cron=os.environ.get("COMPANION_CC_WAKE_CRON")
                 if wake_cron:
                     command=["/home/ghk/.local/bin/cc-connect","cron","exec",wake_cron]
@@ -555,11 +879,17 @@ Schedule ID: {schedule['id']}
                 if proc.returncode!=0:raise CompanionError((proc.stderr or proc.stdout).strip() or f"cc-connect exited {proc.returncode}")
                 self.outbox_finish(item["id"],True);results.append({"id":item["id"],"sent":True,"output":proc.stdout.strip()})
             except Exception as e:
+                if claimed_run_id:
+                    self._release_run_for_retry(claimed_run_id,str(e))
                 self.outbox_finish(item["id"],False,str(e));results.append({"id":item["id"],"sent":False,"error":str(e)})
         return {"ok":all(r.get("sent",r.get("dry_run",False)) for r in results),"results":results}
 
+    def _release_run_for_retry(self,run_id:str,error:str)->None:
+        with self.db.transaction() as con:
+            con.execute("UPDATE runs SET status='recoverable',lease_owner=NULL,lease_until=NULL,error=? WHERE id=? AND status='leased'",(error,run_id))
+
     def recover(self)->dict[str,Any]:
-        now=iso();recovered={"runs":0,"patrols":0,"outbox":0}
+        now=iso();recovered={"runs":0,"patrols":0,"outbox":0,"job_runs":0,"job_steps":0}
         integrity=self.db.integrity_check()
         if integrity!="ok":raise CompanionError(f"database integrity check failed: {integrity}")
         with self.db.transaction() as con:
@@ -567,6 +897,7 @@ Schedule ID: {schedule['id']}
             recovered["patrols"]=con.execute("UPDATE patrols SET status='commissioned',lease_owner=NULL,lease_until=NULL WHERE status='scanning' AND lease_until<=?",(now,)).rowcount
             recovered["outbox"]=con.execute("UPDATE outbox SET status='retry',lease_owner=NULL,lease_until=NULL,available_at=?,updated_at=? WHERE status='sending' AND lease_until<=?",(now,now,now)).rowcount
             con.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('last_recovery_at',?)",(now,))
+        job_recovery=self.jobs.recover();recovered.update(job_recovery)
         return {"ok":True,"integrity":integrity,"recovered":recovered,"at":now}
 
     def backup(self,destination:str|Path)->dict[str,Any]:
@@ -584,10 +915,11 @@ Schedule ID: {schedule['id']}
         integrity=self.db.integrity_check()
         with self.db.connect() as con:
             meta={r["key"]:r["value"] for r in con.execute("SELECT * FROM meta").fetchall()}
-            counts={table:con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for table in ["schedules","runs","watches","events","cases","patrols","source_items","artifacts","outbox","accounts","assets","ledger_entries","calculations","context_revisions","cognitive_objects","cognitive_revisions","executions","attention_decisions","source_health"]}
+            counts={table:con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for table in ["schedules","runs","watches","events","cases","patrols","source_items","artifacts","outbox","accounts","assets","ledger_entries","calculations","context_revisions","cognitive_objects","cognitive_revisions","executions","attention_decisions","source_health","job_definitions","job_runs","data_objects","artifact_manifests","dataset_snapshots","research_hypotheses","strategy_versions","experiment_runs","agent_invocations","shadow_books","manual_action_specs"]}
             failures=con.execute("SELECT COUNT(*) FROM runs WHERE status='failed'").fetchone()[0]
             pending=con.execute("SELECT COUNT(*) FROM outbox WHERE status IN ('pending','retry','sending')").fetchone()[0]
-        return {"ok":integrity=="ok","integrity":integrity,"database":str(self.db.path),"meta":meta,"counts":counts,"failed_runs":failures,"pending_outbox":pending,"now":iso()}
+            migrations=rows_dict(con.execute("SELECT * FROM schema_migrations ORDER BY version").fetchall())
+        return {"ok":integrity=="ok","integrity":integrity,"database":str(self.db.path),"meta":meta,"migrations":migrations,"feature_flags":self.jobs.feature_list(),"counts":counts,"failed_runs":failures,"pending_outbox":pending,"now":iso()}
 
     def session_brief(self)->dict[str,Any]:
         """Return a small, deterministic orientation payload for a new Codex session."""
@@ -622,6 +954,8 @@ Schedule ID: {schedule['id']}
     def doctor(self)->dict[str,Any]:
         status=self.system_status();checks={"database_integrity":status["integrity"]=="ok","workspace_writable":os.access(self.root,os.W_OK),"attention_policy":self.cognition.context_current("attention") is not None,"investor_confirmed":bool(self.cognition.context_current("investor")),"mandate_confirmed":bool(self.cognition.context_current("mandate"))}
         checks["financial_facts_ready"]=status["counts"]["accounts"]>0 and status["counts"]["ledger_entries"]>0
+        checks["schema_current"]=status["meta"].get("schema_version")==str(SCHEMA_VERSION)
+        checks["ordered_migrations"]=len(status.get("migrations",[]))>=2
         project_config=self.root/".codex"/"config.toml"
         if project_config.is_file():
             from .agent_config import validate_agent_config

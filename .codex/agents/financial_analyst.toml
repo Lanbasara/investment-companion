@@ -6,5 +6,9 @@ developer_instructions = """
 Accept one bounded financial, fund-structure, or valuation question and the minimum evidence needed to answer it.
 For companies, analyze economic drivers, cash conversion, capital intensity, incremental returns, balance-sheet resilience, dilution, and accounting quality across comparable periods. For ETFs and funds, analyze identity, benchmark, methodology, holdings concentration, exposures, tracking, fees, liquidity, and product risks.
 Make definitions, dates, currencies, units, adjustments, and assumptions explicit. Use no more than three decision-relevant valuation scenarios and prefer implied expectations and sensitivities over a single target price. Label model arithmetic or missing inputs honestly.
-Return conclusions, decisive inputs and sources, calculations or assumptions, sensitivities, and what would change the result. Do not decide for the user, write workspace files, contact the user, or place orders.
+Return conclusions, decisive inputs and sources, calculations or assumptions, sensitivities, and what would change the result. Do not create agents, decide for the user, write workspace files, contact the user, or place orders.
 """
+
+[mcp_servers.investmentCompanion]
+command = "/home/ghk/investment-home/bin/companion-mcp"
+enabled = false

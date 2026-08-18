@@ -1,9 +1,27 @@
 # Investment Companion V4：验收与发布契约
 
-状态：V4 强制验收基线 v1.0
+状态：V4 强制验收基线 v1.0；工程实现完成，生产 Gate 未通过
 日期：2026-08-18
 适用设计：[V4-DESIGN.md](V4-DESIGN.md)
 实施顺序：[V4-IMPLEMENTATION-PLAN.md](V4-IMPLEMENTATION-PLAN.md)
+
+## 0. 当前验收记录（2026-08-18）
+
+当前不存在任何 production scope 的 `Go` assessment，所有 V4 feature flags 默认关闭，生产数据库未从 Schema 3 升级。下面的“工程通过”来自隔离 Fixture 或数据库副本，不能替代生产 Gate：
+
+| Gate | 当前结论 | 已有证据 | 尚缺证据 |
+|---|---|---|---|
+| G0 | Pending / fail closed | 有序 Schema 3→4、重复迁移、失败回滚、备份哈希、V3 恢复与回归测试 | 干净发布 commit 的生产评审与用户 approval ref |
+| G1 | **No-Go** | Tushare 白名单 Adapter、状态分类、Raw/Canonical/canary、官方文档调查；隔离临时库 11 端点 smoke healthy，单日 `daily` 5339 行完整 canary ready | 可持久复核的生产 probe、10–20 交易日 canary、官方 golden corpus、许可审查 |
+| G2 | **No-Go** | NativeQuantRuntime、Decimal/哈希、下一交易日、现实规则、独立参考计算 Fixture | 基于合格真实 Snapshot 的 official golden 逐日对齐 |
+| G3 | Engineering pass | allowlist、资源/网络隔离、租约、原子 Job/Step/Experiment、CAS/Snapshot 篡改失败关闭测试 | 前置 Gate 与生产故障演练/assessment |
+| G4 | Fixture only | 精确预注册配置、物理 split、系统派生 walk-forward、预算、holdout access、基准、生产最少 252 观察日规则和 bundle validator | 合格数据上的真实研究、敏感性/容量报告与反方评审 |
+| G5 | Fixture only | 未调参前向信号、信号/执行双快照 Shadow、真实 Ledger 隔离、个人组合联合求解、Agent provenance、Decision/ManualAction/Execution 端到端测试 | 真实前向 Shadow、飞书通道 dry-run、用户 beta opt-in 与发布评审；充分决策样本属于 G6 |
+| G6 | **No-Go** | 样本门已编码 | 至少 90 个真实日历日、12 次 rebalance、5 个 Decision、2 种 regime，并证明用户价值 |
+
+完整数据结论见 [DATA-QUALIFICATION-v1.md](DATA-QUALIFICATION-v1.md)，运行与迁移边界见 [V4-OPERATIONS.md](V4-OPERATIONS.md)。G6 是时间与真实使用证据，不能通过合成测试、补写历史 Shadow 或 Codex 判断提前完成。
+
+当前自动化基线为 **64 tests + 8 subtests**。该数字只说明工程回归范围，不是 Gate 结论。
 
 ## 1. 验收原则
 
@@ -114,8 +132,8 @@ Raw → Identity → Canonical → Snapshot 的结果必须与人工期望一致
 
 ### 7.1 隔离
 
-- 独立锁版本环境可从零安装；
-- 无 Companion DB、Ledger、飞书、生产凭据写权限；
+- Native stdlib 内核须记录精确 Python/OS 且零第三方依赖；任何第三方运行时须有可从零安装的独立锁版本环境；
+- DB-aware 编排与纯计算边界分离；内核计算区间无 Companion DB、Ledger、飞书、生产凭据或外部 I/O 权限；
 - 业务代码不导入 Qlib 类型；
 - 输入输出通过项目契约，运行目录可整体删除重建；
 - `health()` 能报告版本、依赖和必要数据状态。
@@ -156,7 +174,7 @@ Qlib 只有在显著减少研究代码、无需重度 fork、通过关键 A 股�
 
 ### 8.3 资源与零 Token
 
-Data、Dataset、Quant 和 Evaluation Job 默认不调用模型；资源预算超限时终止并记录。日频增量的 SLO 在 Phase 4 基准测试后冻结，初始目标为源端可用后 30 分钟内发布可消费 Snapshot。
+Data、Dataset、Quant 和 Evaluation Job 默认不调用模型；CPU、内存、wall time、输入/输出字节预算超限时终止并记录。日频增量的 SLO 在 Phase 4 基准测试后冻结，初始目标为源端可用后 30 分钟内发布可消费 Snapshot。
 
 ## 9. G4：研究方法与实验治理
 
@@ -175,6 +193,7 @@ Data、Dataset、Quant 和 Evaluation Job 默认不调用模型；资源预算�
 - 修改原因与父 StrategyVersion 明确；
 - 超出试验预算被系统阻止；
 - Agent 看过的 holdout 不再标记为未见样本；
+- validation 与 final holdout 均通过同一份冻结 pass/fail，development 结果不能抵消任一后续阶段失败；
 - 不允许只保留表现最好的 seed、窗口或参数。
 
 ### 9.4 评价最低集合
@@ -206,7 +225,7 @@ Shadow Book、Fill、Position 和 NAV 与真实 Account/Ledger 使用不同对�
 
 ### 11.2 前向完整性
 
-每次 rebalance 在当时冻结 Snapshot、完整 denominator、target weights、RealitySpec、可成交结果、费用和失败。后续数据只能用于评价，不能改写当时信号。
+每次 rebalance 分别冻结信号 Snapshot 与执行 Snapshot、完整 denominator、target weights、RealitySpec、可成交结果、费用和失败。信号必须在执行日开盘前完成；执行日数据只能进入执行快照和后续评价，不能改写当时信号。生产模式禁止两个快照复用和历史回填。
 
 ### 11.3 样本门
 
@@ -220,7 +239,7 @@ Shadow Book、Fill、Position 和 NAV 与真实 Account/Ledger 使用不同对�
 
 ### 12.1 Decision 发布
 
-缺少任一项必须拒绝发布：confirmed Investor/Mandate、Portfolio/Market Snapshot、Thesis/Evidence Cutoff、Strategy/Experiment/Dataset、Calculation、约束求解、不行动方案、失效条件和反证审查。
+缺少任一项必须拒绝发布：confirmed Investor/Mandate、Portfolio/Market Snapshot、Thesis/Evidence Cutoff、Strategy、最终 holdout、当前 forward signal、Dataset/target、组合联合求解、单笔 Calculation、不行动方案、失效条件和带不可变 provenance 的反证审查。
 
 ### 12.2 ManualActionSpec
 
@@ -243,13 +262,14 @@ Shadow Book、Fill、Position 和 NAV 与真实 Account/Ledger 使用不同对�
 ### 13.1 权限
 
 - Agent 不能修改 Raw/PIT、Experiment 指标、Promotion、Mandate、Decision、Execution 或 Ledger；
+- 当前 Custom Agent 必须是 `read-only` 沙箱，并以完整同身份配置显式禁用 `investmentCompanion` MCP；`agent-check` 与真实派遣 smoke 必须证明角色仍可加载；
 - 生成代码不能访问生产 DB、凭据、飞书或未经允许的网络；
 - Primary Codex 不能绕过确定性 Gate 或伪造 Calculation；
 - 所有模型输出作为 proposal/artifact，必须经过 Schema 校验和项目规则。
 
 ### 13.2 Provenance
 
-材料性模型调用记录 role、model、prompt/template、输入引用、时间、Token、输出 hash 和采用/拒绝理由。Prompt 或模型变化若影响研究逻辑，生成新方法版本。
+材料性模型调用记录 role、model、prompt/template、不可变研究/个人/Calculation 输入引用、时间、Token、输出 Manifest/hash 和采用/拒绝理由。正式 Decision 的 critic 只能引用已校验 invocation；Prompt 或模型变化若影响研究逻辑，生成新方法版本。
 
 ### 13.3 Token 价值
 

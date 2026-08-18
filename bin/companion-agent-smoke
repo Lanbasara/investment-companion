@@ -10,7 +10,7 @@ roles=(market_scout knowledge_gardener source_researcher financial_analyst thesi
 failed=0
 for role in "${roles[@]}"; do
   marker="${role^^}_SMOKE_OK"
-  prompt="Custom Agent capability smoke test. Spawn exactly the named ${role} agent with fork_turns none. The child must only reply ${marker}, must not call tools, and must not read or write files. Wait for completion, then reply ${marker} only if the child returned it; otherwise report the exact failure."
+  prompt="Custom Agent permission smoke test. Spawn exactly the named ${role} agent with fork_turns none. The child must inspect its provided tool names without calling any tool or reading/writing files. It may reply exactly ${marker} only when no tool from the investmentCompanion MCP server is available; if such a tool is visible it must reply PERMISSION_LEAK. Wait for completion, then reply ${marker} only if the child returned it; otherwise report the exact failure."
   if output=$("$codex_bin" exec --ephemeral --json -C "$project_root" "$prompt" 2>&1) \
     && python3 -c 'import json, sys
 marker = sys.argv[1]
@@ -24,7 +24,8 @@ for line in sys.stdin:
     if event.get("type") == "item.completed" and item.get("type") == "agent_message":
         messages.append(item.get("text"))
 raise SystemExit(0 if messages and messages[-1] == marker else 1)' "$marker" <<<"$output" \
-    && ! grep -q "agent type is currently not available" <<<"$output"; then
+    && ! grep -q "agent type is currently not available" <<<"$output" \
+    && ! grep -q "Ignoring malformed agent role definition" <<<"$output"; then
     printf '%s\n' "PASS $role"
   else
     printf '%s\n' "FAIL $role"

@@ -11,7 +11,7 @@
   <header class="topbar">
     <a class="brand" href="#overview" aria-label="返回总览">
       <span class="brand-mark">IC</span>
-      <span><strong>Investment Companion</strong><small>V3 运行 · V4 设计</small></span>
+      <span><strong>Investment Companion</strong><small>V3 生产 · V4 Gate 验证</small></span>
     </a>
     <button id="nav-toggle" class="nav-toggle" aria-label="展开目录">目录</button>
   </header>
@@ -26,17 +26,20 @@
         <p class="nav-label">架构与验收</p>
         <a href="#doc=V3-DESIGN.md" data-doc="V3-DESIGN.md">V3 完整架构设计</a>
         <a href="#doc=V3-ACCEPTANCE.md" data-doc="V3-ACCEPTANCE.md">V3 验收与边界</a>
-        <p class="nav-label">V4 · 已设计，未实现</p>
+        <p class="nav-label">V4 · 工程完成，Gate 待验证</p>
         <a href="#doc=V4-DESIGN.md" data-doc="V4-DESIGN.md">V4 总体设计</a>
         <a href="#doc=V4-ARCHITECTURE-DECISIONS.md" data-doc="V4-ARCHITECTURE-DECISIONS.md">V4 架构决策</a>
         <a href="#doc=V4-IMPLEMENTATION-PLAN.md" data-doc="V4-IMPLEMENTATION-PLAN.md">V4 实施计划</a>
         <a href="#doc=V4-ACCEPTANCE.md" data-doc="V4-ACCEPTANCE.md">V4 验收契约</a>
+        <a href="#doc=DATA-QUALIFICATION-v1.md" data-doc="DATA-QUALIFICATION-v1.md">V4 数据资格</a>
+        <a href="#doc=V4-QUANT-RUNTIME-ADR.md" data-doc="V4-QUANT-RUNTIME-ADR.md">QuantRuntime 决策</a>
+        <a href="#doc=V4-OPERATIONS.md" data-doc="V4-OPERATIONS.md">V4 运维手册</a>
         <p class="nav-label">历史决策</p>
         <a href="#doc=V2-DESIGN.md" data-doc="V2-DESIGN.md">V2 主动系统设计</a>
         <a href="#doc=V2-ACCEPTANCE.md" data-doc="V2-ACCEPTANCE.md">V2 验收记录</a>
         <a href="#doc=EVENT-SYSTEM-PLAN.md" data-doc="EVENT-SYSTEM-PLAN.md">早期事件系统基线</a>
       </nav>
-      <div class="sidebar-note">当前发布：<code>v3.0.4</code><br>V4：已设计，未实现<br>文档日期：2026-08-18</div>
+      <div class="sidebar-note">当前生产：<code>v3.0.4</code><br>V4：工程完成，Gate 未通过<br>文档日期：2026-08-18</div>
     </aside>
 
     <main id="main" class="main" tabindex="-1">
@@ -44,7 +47,7 @@
         <div class="hero">
           <p class="eyebrow">CODEX-NATIVE · AUDITABLE · HUMAN-IN-CONTROL</p>
           <h1>个人全生命周期<br>投资伴侣</h1>
-          <p class="lede">当前 V3 保存真实个人事实、认知与主动任务；已批准的 V4 设计将在此基础上增加 PIT 数据、确定性量化研究与人工决策闭环，不改变 Codex 主体和用户执行权。</p>
+          <p class="lede">当前 V3 保存真实个人事实、认知与主动任务；V4 工程已增加 PIT 数据、确定性量化研究与人工决策闭环，但在数据与前向样本 Gate 通过前保持关闭，不改变 Codex 主体和用户执行权。</p>
           <div class="hero-actions">
             <a class="button primary" href="#doc=PROJECT-STATUS.md">从当前状态开始</a>
             <a class="button" href="#doc=V2-OPERATIONS.md">查看使用手册</a>
@@ -107,7 +110,7 @@
           <div class="status-grid">
             <div><b>已经具备</b><p>可靠主动调度、事实账本、认知版本、注意力治理、崩溃恢复、专业 Agent 协作。</p></div>
             <div><b>已经初始化</b><p>Investor、Mandate、账户、资产、首批 Ledger、Calculation、认知与 Execution 已进入真实使用。</p></div>
-            <div><b>V4 尚未实现</b><p>PIT 数据、typed Job、QuantRuntime、Experiment Registry、组合 Shadow 与专业研究 Gate 仍是设计。</p></div>
+            <div><b>V4 工程主链已完成</b><p>PIT 数据、typed Job、walk-forward、双快照 Shadow、个人联合约束、Agent 血缘与人工闭环已实现；生产仍为 V3，G1/G2/G6 仍为 No-Go。</p></div>
           </div>
         </section>
       </section>

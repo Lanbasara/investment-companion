@@ -1,10 +1,29 @@
 # Investment Companion V4：实施计划
 
-状态：Developer Handoff v1.0；尚未开始代码实现
+状态：工程实现完成；生产资格与前向验证进行中
 日期：2026-08-18
 基线：`pre-v4.0.0` / `b6ec6fe`（V3.0.4）
 设计依据：[V4-DESIGN.md](V4-DESIGN.md)、[V4-ARCHITECTURE-DECISIONS.md](V4-ARCHITECTURE-DECISIONS.md)
 验收契约：[V4-ACCEPTANCE.md](V4-ACCEPTANCE.md)
+
+## 0. 2026-08-18 实施状态
+
+本计划的 Schema 4、不可变数据对象、typed Job、NativeQuantRuntime、研究注册表、派生式 walk-forward、未调参前向信号、双快照 Shadow、个人组合联合求解、Agent provenance、V4 Decision/ManualAction、Gate/feature 和 MCP/CLI 工程主链已经实现。所有 V4 功能默认关闭，生产仍运行 Schema 3/V3 稳定工作树。
+
+| Phase | 工程状态 | 发布状态 |
+|---|---|---|
+| 0 迁移/Run | 已实现并在生产副本演练 | 生产迁移待独立批准 |
+| 1 数据资格 | Adapter、probe、canary、候选案例已实现 | **G1 No-Go**：缺真实 canary、官方 corpus、许可 |
+| 2 QuantRuntime | Native 内核与独立参考计算已实现 | **G2 No-Go**：等待 G1 与 golden 对齐 |
+| 3 Job/产物 | 已实现并通过故障/隔离 Fixture | 生产 G3 评审待 G0–G2 |
+| 4 日频数据域 | Raw→Canonical→Validation→Snapshot 已实现 | 尚无 production-ready Snapshot |
+| 5 研究治理 | 预注册、物理 split、系统派生 walk-forward、预算、holdout、原子完成已实现 | 尚无合格真实策略 |
+| 6 Shadow | 未调参 forward signal、信号/执行双快照、连续账本、含公司行动的 RealitySpec、个人联合求解与样本门已实现 | 尚无真实前向样本 |
+| 7 人工闭环 | Agent 反证血缘、Decision→ManualAction→Execution→Confirmed Ledger Fixture 已实现 | 真实飞书呈现/用户 opt-in 与 G5 待评审 |
+| 8 Agent Loop | 材料性模型 provenance 已实现；自主研究权限硬禁止 | 条件阶段，不属于当前发布 |
+| 9 长期验证 | 机制已预留 | **G6 No-Go**：至少 90 日且样本充分 |
+
+“工程实现完成”只表示系统现在能拒绝不合格数据、实验和建议，不表示已经出现高胜率策略。后续工作以 [数据资格报告](DATA-QUALIFICATION-v1.md)、[QuantRuntime ADR](V4-QUANT-RUNTIME-ADR.md)、[运维手册](V4-OPERATIONS.md)和本文 Gate 为准。
 
 ## 1. 计划目标
 
@@ -133,6 +152,8 @@ V4.0 的 Phase 0–7 预计需要约 **56–85 个工程工作日**，外加不�
 - 禁止读取 Companion SQLite、Ledger、Mandate、凭据和飞书；
 - 固定 CPU、内存、超时、日志和产物目录；
 - 记录 Qlib、Python、依赖、OS 与代码哈希。
+
+实施决策：Qlib Spike 当前为 No-Go，首版 Native 内核只有 Python stdlib 依赖；`health()` 记录 Python/OS，DB-aware worker 先物化冻结输入，再在禁止文件、SQLite、网络和子进程的 `run_isolated` 区间执行纯计算。未来引入任何第三方量化运行时仍须满足上面的独立锁环境要求。
 
 ### 5.2 Spike 数据与策略
 
@@ -296,6 +317,8 @@ SignalSet、TargetPortfolio、预测、指标和报告先作为 Manifest 内不�
 - 冻结完整 denominator、全部分数/排名和 exclusions；
 - 自动生成 leakage、turnover、capacity、regime 和敏感性诊断。
 
+实现补充：实验 Spec 不允许调用方提交 `as_of/effective_on`；worker 从冻结物理分区、lookback 和调仓频率派生全部 walk-forward pair。进入 Shadow 后使用独立 `forward_shadow` 运行生成下一开放日 target，不消耗原假设调参预算。
+
 ### 8.4 退出门
 
 任何 ExperimentBundle 可在新临时目录中仅凭 Manifest、代码和锁文件重放；不同 run 的差异可定位到数据、代码、环境或参数，而不是“模型可能不一样”。
@@ -332,6 +355,8 @@ SignalSet、TargetPortfolio、预测、指标和报告先作为 Manifest 内不�
 
 Shadow Ledger 与真实 Ledger 使用不同表、ID 前缀、工具和权限。任何代码路径都不能把 Shadow Fill 转成 confirmed Ledger Entry。
 
+每次生产 rebalance 使用两个快照：信号快照只能包含执行日前可知事实，执行快照在执行日收盘后提供仿真价格。系统校验 Book/Experiment/Snapshot 的创建顺序、信号必须在开盘前完成、禁止历史回填，并要求 denominator/Universe 不漂移。
+
 ### 9.4 消融
 
 同时保存：确定性基线、模型 target_weights、Codex rerank/否决、最终 Decision 和实际执行。评价各层增量，而不是把全部结果归因给“AI”。
@@ -350,6 +375,8 @@ Primary Codex 只有在以下引用齐全时才能发布 Decision：
 - 原始官方证据与 Thesis/critic 结果；
 - 联合组合求解和 Financial Kernel Calculation；
 - 不行动方案、失效条件、有效期和 Attention Decision。
+
+实现补充：用户可见 Decision 必须同时引用最终 holdout 研究证据与当前 `forward_shadow` 信号、精确 target manifest、`portfolio_rebalance_plan`、单笔约束 Calculation，以及可校验的 `thesis_critic` Agent invocation；不能把历史 holdout 的最后一组权重直接当作当前建议。
 
 ### 10.2 ManualActionSpec 与 Execution
 
@@ -386,6 +413,8 @@ file_only
 - 因子和实验语义去重；
 - 静态检查、测试、golden cases 和确定性 validator；
 - 预算耗尽、数据失败、无增量价值时自动停止。
+
+当前已完成材料性 Agent 调用的角色、模型、模板、输入引用、Token、输出 hash 与采用/拒绝记录；5 个 Custom Agent 均为只读沙箱，并在其配置层禁用可写 Companion MCP，Primary 负责持久化。自动生成代码和常驻研究循环未实现且 feature 无法启用，必须等真实透明基线通过后另行立项。
 
 ### 11.2 明确不做
 

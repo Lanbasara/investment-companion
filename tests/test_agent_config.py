@@ -23,28 +23,40 @@ class AgentConfigTest(unittest.TestCase):
         self.write(".codex/config.toml", '[mcp_servers.market]\ncommand = "launcher"\n')
         self.write(
             ".codex/agents/scout.toml",
-            'name = "scout"\ndescription = "Scout"\ndeveloper_instructions = "Investigate"\n',
+            'name = "scout"\ndescription = "Scout"\nsandbox_mode = "read-only"\ndeveloper_instructions = "Investigate"\n',
         )
         result = validate_agent_config(self.root)
         self.assertTrue(result["ok"])
         self.assertEqual(result["agents"][0]["inherited_mcp_servers"], ["market"])
 
+    def test_safely_disabling_inherited_mcp_is_allowed(self):
+        self.write(".codex/config.toml", '[mcp_servers.market]\ncommand = "launcher"\n')
+        self.write(
+            ".codex/agents/scout.toml",
+            'name = "scout"\ndescription = "Scout"\nsandbox_mode = "read-only"\ndeveloper_instructions = "Investigate"\n'
+            '[mcp_servers.market]\ncommand = "launcher"\nenabled = false\n',
+        )
+        result = validate_agent_config(self.root)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["agents"][0]["inherited_mcp_servers"], [])
+        self.assertEqual(result["agents"][0]["disabled_mcp_servers"], ["market"])
+
     def test_redefining_inherited_mcp_is_rejected(self):
         self.write(".codex/config.toml", '[mcp_servers.market]\ncommand = "launcher"\n')
         self.write(
             ".codex/agents/scout.toml",
-            'name = "scout"\ndescription = "Scout"\ndeveloper_instructions = "Investigate"\n'
+            'name = "scout"\ndescription = "Scout"\nsandbox_mode = "read-only"\ndeveloper_instructions = "Investigate"\n'
             '[mcp_servers.market]\ncommand = "other-launcher"\n',
         )
         result = validate_agent_config(self.root)
         self.assertFalse(result["ok"])
-        self.assertIn("redefines inherited MCP", result["errors"][0])
+        self.assertIn("unsafely redefines inherited MCP", result["errors"][0])
 
     def test_inline_token_is_rejected(self):
         self.write(".codex/config.toml", '[mcp_servers.market]\nurl = "https://example.test/mcp?token=secret"\n')
         self.write(
             ".codex/agents/scout.toml",
-            'name = "scout"\ndescription = "Scout"\ndeveloper_instructions = "Investigate"\n',
+            'name = "scout"\ndescription = "Scout"\nsandbox_mode = "read-only"\ndeveloper_instructions = "Investigate"\n',
         )
         result = validate_agent_config(self.root)
         self.assertFalse(result["ok"])

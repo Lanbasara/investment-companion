@@ -13,7 +13,7 @@ cd investment-companion
 
 初始化是幂等的，不会清空已有数据。省略 `--finance-source` 可以稍后通过 Companion MCP 或自然语言接入信息源。
 
-Tushare 凭据放在本机的 `~/.config/tushare/token`（权限建议 `0600`），不得提交到仓库。Custom Agents 通过 `bin/launch-tushare-mcp` 在运行时读取它。
+Tushare 凭据放在本机的 `~/.config/tushare/token`（权限必须屏蔽 group/other，推荐 `0600`），不得提交到仓库。Custom Agents 通过 `bin/launch-tushare-mcp` 在运行时只读查询；它们使用只读沙箱，并在各自配置中显式禁用可写的 Investment Companion MCP，由 Primary Codex 审阅并落库。
 
 ## 架构
 
@@ -23,7 +23,7 @@ systemd timer → Companion Schedule/Run/Outbox → cc-connect
               → Markdown 文件句柄与 SQLite 精确状态
 ```
 
-从 [项目状态与交棒入口](docs/PROJECT-STATUS.md) 开始阅读。当前生产架构见 [V3 设计](docs/V3-DESIGN.md)，下一版本见 [V4 总体设计](docs/V4-DESIGN.md)、[架构决策](docs/V4-ARCHITECTURE-DECISIONS.md)、[实施计划](docs/V4-IMPLEMENTATION-PLAN.md) 与 [验收契约](docs/V4-ACCEPTANCE.md)。V4 尚未实现，不能把设计能力当成当前能力。运行与恢复见 [运维手册](docs/V2-OPERATIONS.md)，历史决策见 [V2 设计](docs/V2-DESIGN.md)。
+从 [项目状态与交棒入口](docs/PROJECT-STATUS.md) 开始阅读。当前生产架构见 [V3 设计](docs/V3-DESIGN.md)；V4 工程见 [总体设计](docs/V4-DESIGN.md)、[架构决策](docs/V4-ARCHITECTURE-DECISIONS.md)、[实施计划](docs/V4-IMPLEMENTATION-PLAN.md)、[验收契约](docs/V4-ACCEPTANCE.md)、[数据资格](docs/DATA-QUALIFICATION-v1.md)与[V4 运维](docs/V4-OPERATIONS.md)。V4 代码已实现，但数据与策略 Gate 尚未通过，生产仍运行 V3，不能把工程能力当成有效策略。历史决策见 [V2 设计](docs/V2-DESIGN.md)。
 浏览器阅读入口为 [docs/index.html](docs/index.html)；它直接渲染上述权威 Markdown，不维护第二份易过期的文档副本。
 
 ## 验证

@@ -2,9 +2,9 @@
 
 更新时间：2026-08-18
 当前发布：主项目为 `v3.0.4`，Plugin 为 `v3.0.1`
-当前定位：V3 Core 已发布并完成首批真实个人事实初始化，正在真实使用验证；V4 已完成架构定义，尚未开始代码实现。
+当前定位：V3 Core 继续承载生产事实与主动任务；V4 工程实现已在 `feature/v4-professional-system` 完成，尚未迁移生产、尚未通过数据/策略发布 Gate。
 
-用户已确认 V4 定义：**可审计、Codex 驱动、确定性量化内核支撑、飞书协作、人工执行的专业个人投资研究与决策系统**。代码起始点已用本地注释标签 `pre-v4.0.0` 固定在 `b6ec6fe`（V3.0.4）。V4 必须先完成数据资格与 golden cases，再决定 Qlib/QuantRuntime，之后才建设 typed Job、研究内核、组合 Shadow 和人工 Decision 闭环。权威设计见 `V4-DESIGN.md`、`V4-ARCHITECTURE-DECISIONS.md`、`V4-IMPLEMENTATION-PLAN.md` 和 `V4-ACCEPTANCE.md`。
+用户已确认 V4 定义：**可审计、Codex 驱动、确定性量化内核支撑、飞书协作、人工执行的专业个人投资研究与决策系统**。代码起始点以 `pre-v4.0.0` / `b6ec6fe`（V3.0.4）冻结。当前已选择窄 NativeQuantRuntime，并完成 typed Job、数据/研究域、系统派生 walk-forward、未调参前向信号、双快照组合 Shadow、个人联合约束、Agent 反证血缘和人工 Decision 闭环；但 G1 数据资格、G2 official golden 对齐、真实前向样本和 G6 用户价值仍为 No-Go。工程完成不能被写成“高胜率选股已经有效”。
 
 ## 1. 新会话从这里开始
 
@@ -27,8 +27,8 @@ codex plugin list
 3. [V3-ACCEPTANCE.md](V3-ACCEPTANCE.md)：已经验证与尚未验证；
 4. [V4-DESIGN.md](V4-DESIGN.md) 与 [V4-ARCHITECTURE-DECISIONS.md](V4-ARCHITECTURE-DECISIONS.md)：下一版本的整体架构与外部能力边界；
 5. [V4-IMPLEMENTATION-PLAN.md](V4-IMPLEMENTATION-PLAN.md) 与 [V4-ACCEPTANCE.md](V4-ACCEPTANCE.md)：实施顺序和不可跳过的 Gate；
-6. [V2-OPERATIONS.md](V2-OPERATIONS.md)：本机运行、恢复和备份；
-7. `AGENTS.md` 与已安装 Plugin Skills：Codex 实际行为契约。
+6. [DATA-QUALIFICATION-v1.md](DATA-QUALIFICATION-v1.md)、[V4-QUANT-RUNTIME-ADR.md](V4-QUANT-RUNTIME-ADR.md) 与 [V4-OPERATIONS.md](V4-OPERATIONS.md)：当前 No-Go、内核决策和迁移/回滚；
+7. [V2-OPERATIONS.md](V2-OPERATIONS.md)、`AGENTS.md` 与已安装 Plugin Skills：生产 V3 与 Codex 行为契约。
 
 可视化文档中心位于 [index.html](index.html)，它直接渲染本目录的权威 Markdown；交棒时仍以本文的状态与验收记录为准。
 
@@ -38,7 +38,7 @@ codex plugin list
 
 ```text
 飞书用户 → cc-connect → Primary Investment Codex
-                         ├─ Investment Companion MCP（77 tools）
+                         ├─ Investment Companion MCP（108 tools）
                          ├─ Financial Kernel
                          ├─ Cognitive Ledger
                          ├─ Attention Engine
@@ -50,6 +50,8 @@ SQLite Schema 3 保存精确状态；Markdown 保存可读认知材料。
 
 Primary Codex 是唯一最终判断、Agent 派遣、正式认知发布和用户沟通主体。Companion 不包裹 Codex，不自动交易。
 
+V4 分支的目标架构已经落地，但当前生产仍是上图的 Schema 3。V3 systemd 服务已固定到 `/home/ghk/.local/share/investment-companion/runtime-v3` 稳定工作树，避免开发分支隐式打开生产库；Schema 4 只允许显式 `migrate`。
+
 ## 3. 已实现并验证
 
 - V2：Schedule、Watch、Observation、Event、Run、Case、Patrol、Artifact、Outbox、租约、幂等、重启恢复、在线备份。
@@ -60,8 +62,16 @@ Primary Codex 是唯一最终判断、Agent 派遣、正式认知发布和用户
 - Source Health、`workspace-init`、`doctor`、Plugin 安装和 GitHub Private 仓库。
 - 21 项自动化测试、MCP 协议检查、5 个 Custom Agent 真实派遣烟测、全新 Codex Readiness 前向验证、在线备份独立恢复。
 - 项目级 SessionStart Hook 注入有界 `session-brief`；新 Codex 会话先获得健康与活跃状态，再由 Lifecycle Skill 按问题创建 Recovery Package。
-- 项目级 `.codex/config.toml` 统一拥有共享 MCP；Custom Agent 只声明角色差异并继承项目 MCP，避免同名服务覆盖导致 Agent 不可用。
+- 项目级 `.codex/config.toml` 统一拥有 Primary 的共享 MCP；5 个 Custom Agent 使用只读沙箱，并以完整同身份配置显式禁用可写的 `investmentCompanion` MCP。禁用配置已经真实 Codex 派遣验证，Agent 只返回提案，由 Primary 审阅和落库。
 - 2026-08-15 已用 `market_scout` 成功重跑此前失败的收盘巡视；新 Run 成功完成，旧失败记录保留用于审计。
+- V4 Schema 4 使用有序、带 checksum 的显式迁移；在生产数据库副本上完成升级、重复升级、备份哈希和 V3 独立恢复演练，未迁移生产库。
+- V4 Data Domain 实现仓库外 CAS、Raw/PIT/语义分区验证、不可变 Snapshot、完整 denominator/Universe/exclusions、hash/路径篡改失败关闭和 Tushare canary Adapter。
+- V4 deterministic pipeline 实现 Run→Job→Step、代码内 handler allowlist、lease/recover、资源预算、零模型 Token、网络/进程创建拒绝和原子终态。
+- V4 研究与量化实现精确预注册、物理 split、系统派生 walk-forward、holdout access、试验预算、NativeQuantRuntime、独立参考计算、A 股 RealitySpec、未调参 `forward_shadow` 信号和 promotion Gate。
+- V4 Shadow 把信号快照与执行快照分开，校验前向时序、连续状态、样本门和真实 Ledger 物理隔离；禁止生产回填。
+- V4 决策闭环实现 confirmed Context、冻结 target、真实账户联合组合求解、单笔重新校验、不可变 Agent critique provenance、ManualActionSpec、手工 Execution 与 confirmed Ledger 精确关联；不存在券商连接。
+- V4 MCP/CLI 已提供受限入口；generic Manifest 自证、外部直接完成 Experiment 和自主 Agent Research 均不开放；Gate 报告/证据/assessment 有独立 CLI 且不能自行授予 Go。
+- 当前全量自动化测试为 64 项 Python tests + 8 个 subtests；最终发布仍需以现场命令复核。
 
 ## 4. 当前生产运行状态
 
@@ -77,22 +87,24 @@ Primary Codex 是唯一最终判断、Agent 派遣、正式认知发布和用户
 - Portfolio Exposure 仅在同一基准币种下精确工作；缺少 FX 时返回 Warning。
 - Cognitive Ledger 已有版本机制，但尚无真实长期 Thesis/Decision 历史验证。
 - Attention Engine 已有策略门控，但尚无真实误报、漏报和通知疲劳数据。
-- 专用 Tushare Watch、公告和财报 Adapter 尚未完成；当前自动信息源以文件增量摄入为主。
+- Tushare 白名单日频 Adapter 已完成工程实现，11 端点隔离 smoke 均 healthy，但没有生产 capability assessment；公告和财务 PIT Adapter 未实现。
 - cc-connect 唤醒依赖一条休眠 Cron 作为唤醒原语；投资任务频率只在 Companion Schedule 中。
-- Run 的 claim/lease 元数据尚未完全贯穿 cc-connect 唤醒执行链；当前成功重跑仍显示 `attempt=0`、`started_at=null`，需单独修复。
+- 旧 `codex_turn` 仍由 cc-connect 唤醒；新 deterministic pipeline 有完整 claim/lease/attempt/终态，但尚未启用生产 worker。
 - 文件信息源首次巡视曾报告覆盖为 0，但重试时已存在可审计材料；Source cursor/coverage 诊断仍需加强，不能把该次结果解读为真实世界没有信息。
-- 当前所有到期 Schedule 最终都进入 `codex_turn`；尚无 typed `data_job/quant_job`、Dataset Snapshot、Experiment Registry、QuantRuntime 或 Strategy Shadow Book。
-- 当前 Observation/Market Snapshot 不具备完整 PIT、历史 Universe、公司行动和批量列式数据语义，不能被误用为 V4 市场数据库。
+- Schema 4 已实现 typed Job、Snapshot、Experiment Registry、Agent Invocation、QuantRuntime、Shadow Book 和 ManualAction，但生产仍为 Schema 3，任何普通启动都会拒绝隐式升级。
+- 尚无通过 G1 的真实 Dataset Snapshot；当前 Observation/Market Snapshot 仍不能被误用为 V4 市场数据库。
+- 当前没有 strategy-eligible 策略，不声明高胜率或 Alpha；G6 至少需要 90 个真实日历日且样本充分。
+- Qlib/FinRL/LEAN 未接入；这是明确的 NativeQuantRuntime 决策，不是遗漏。若 G1 通过且出现模型训练需求，再做隔离 Qlib Spike。
 - `docs/EVENT-SYSTEM-PLAN.md` 是历史设计，不是当前实施说明。
 - `docs/PRD-MARKET-DATA-ADAPTERS-AND-SHADOW-EVALUATION.md` 已废弃，只保留迁移说明；不得按旧 Phase 0 路线实现。
 
 ## 6. 下一步，不要提前扩张
 
-1. V3 继续正常运行和复盘，不因 V4 开发暂停账本、主动任务或认知生命周期；
-2. 执行 V4 Phase 0：冻结实现基线、引入 ordered migration、修复 Run claim/lease 完成链；
-3. 执行 Phase 1：DataCapabilityMatrix 与官方 golden corpus，先决定哪些历史研究有资格；
-4. 只有数据资格通过后执行 Qlib/QuantRuntime 生死 Spike；
-5. 在 typed Job、PIT Snapshot、研究治理和组合 Shadow 通过前，不向用户开放 V4 自动候选或行动建议。
+1. 继续用隔离的 V3 稳定工作树运行真实账本和主动任务，不迁移生产库；
+2. 对 Tushare 白名单端点完成真实账号 probe、10–20 个交易日 canary、官方 golden corpus 和许可评审；
+3. 用合格 Snapshot 完成 NativeQuantRuntime 与独立参考计算的逐日 G2 对齐；
+4. 按 Gate 分段启用：G0 后只开放确定性 Job 底座，G1 后才开放 active data，G4 后开放 Shadow，G5 后且用户明确 opt-in 才开放 Decision Support；
+5. 前向运行至少 90 个日历日且达到样本门，再评审单策略 G6；失败策略 reject/retire，不用模型覆盖结论。
 
 不得以接口数、模型数、Agent 数、实验数或 Token 消耗代替进展。每个阶段按 V4 Acceptance 的独立 Gate 决定 Go/No-Go。
 

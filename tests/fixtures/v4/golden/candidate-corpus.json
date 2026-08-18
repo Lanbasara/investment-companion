@@ -1,0 +1,26 @@
+{
+  "schema": "investment-companion/golden-corpus-candidates/v1",
+  "qualification_evidence": false,
+  "cases": [
+    {"id": "listing", "topic": "首次上市与首个可交易日"},
+    {"id": "delisting", "topic": "退市证券仍出现在历史 denominator"},
+    {"id": "name-change", "topic": "代码不变但简称变更"},
+    {"id": "code-change", "topic": "证券代码或市场标识变更"},
+    {"id": "index-add", "topic": "指数调入公告日与生效日"},
+    {"id": "index-remove", "topic": "指数调出公告日与生效日"},
+    {"id": "suspension", "topic": "整日停牌且普通日线缺失"},
+    {"id": "resumption", "topic": "复牌后的可成交状态"},
+    {"id": "st-entry", "topic": "进入 ST 的 first-known 与生效日"},
+    {"id": "st-exit", "topic": "撤销 ST 的 first-known 与生效日"},
+    {"id": "board-limit", "topic": "主板/创业板/科创板涨跌停差异"},
+    {"id": "limit-change", "topic": "历史涨跌停制度变更"},
+    {"id": "cash-dividend", "topic": "现金分红公告、登记、除息与实施"},
+    {"id": "stock-dividend", "topic": "送转股与复权因子变化"},
+    {"id": "rights-issue", "topic": "配股与复权处理"},
+    {"id": "financial-first-release", "topic": "财报首次披露可得时点"},
+    {"id": "financial-revision", "topic": "财报更正与 supersedes"},
+    {"id": "holiday", "topic": "法定假日与交易日历"},
+    {"id": "legal-empty", "topic": "请求成功但业务上合法空集"},
+    {"id": "provider-partial", "topic": "分页/字段缺失导致 partial"}
+  ]
+}

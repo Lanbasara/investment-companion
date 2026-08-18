@@ -1,6 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
-export COMPANION_ROOT=/home/ghk/investment-home
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-export COMPANION_ROOT="${COMPANION_ROOT:-$project_root}"
+workspace_root="${COMPANION_ROOT:-$project_root}"
+runtime_root="${COMPANION_RUNTIME_ROOT:-}"
+runtime_marker="$workspace_root/.state/runtime-code-root"
+if [[ -z "$runtime_root" && -f "$runtime_marker" ]]; then
+  IFS= read -r runtime_root < "$runtime_marker"
+fi
+runtime_root="${runtime_root:-$project_root}"
+runtime_root="$(cd "$runtime_root" && pwd)"
+if [[ ! -f "$runtime_root/companion/mcp_server.py" ]]; then
+  printf '%s\n' "invalid Companion runtime root: $runtime_root" >&2
+  exit 2
+fi
+export COMPANION_ROOT="$workspace_root"
+cd "$runtime_root"
 exec python3 -m companion.mcp_server

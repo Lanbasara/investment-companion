@@ -1,10 +1,16 @@
 # Investment Companion V4：可审计的专业研究与人工决策系统
 
-状态：架构基线 v1.0；产品定义已由用户确认；尚未开始实现
+状态：架构基线 v1.1；工程主链已实现，生产资格 Gate 未通过
 日期：2026-08-18
 起始代码：`pre-v4.0.0` / `b6ec6fe`（V3.0.4）
 决策依据：[V4-ARCHITECTURE-DECISIONS.md](V4-ARCHITECTURE-DECISIONS.md)
 实施与验收：[V4-IMPLEMENTATION-PLAN.md](V4-IMPLEMENTATION-PLAN.md)、[V4-ACCEPTANCE.md](V4-ACCEPTANCE.md)
+
+## 0. 当前实现边界
+
+`feature/v4-professional-system` 已实现 Schema 4、有序迁移、内容寻址数据对象、PIT/Snapshot、Tushare 白名单采集、typed Job、NativeQuantRuntime、派生式 walk-forward、研究注册表、前向信号、双快照 Shadow、个人组合联合约束、Agent 评审血缘以及人工 Decision/Execution 闭环。全量 Fixture 使用零模型 Token 完成确定性阶段，并继续证明 Shadow 不写真实 Ledger。
+
+这不是生产发布声明。生产数据库仍为 Schema 3，V4 feature 与 JobDefinition 默认关闭；G1 真实数据资格、G2 official golden 对齐、G4 真实研究、G5 真实飞书 opt-in 和 G6 至少 90 日前向价值均未完成。当前没有 `strategy-eligible` 策略，也不声明高胜率或 Alpha。
 
 ## 1. 一句话定义
 
@@ -140,11 +146,11 @@ deterministic_pipeline
 ### 7.2 Job 状态与父子完成
 
 ```text
-JobRun: queued → waiting_inputs → ready → leased → running
-                                      ├→ succeeded
-                                      ├→ failed_retryable → queued
-                                      ├→ failed_terminal
-                                      └→ cancelled
+JobRun: queued → leased → running
+                         ├→ succeeded
+                         ├→ recoverable → queued
+                         ├→ blocked / failed
+                         └→ cancelled
 ```
 
 父 Run 只有在所有必要 JobStep 原子发布成功后才能 `succeeded`。任何 `failed_terminal`、取消或不满足就绪屏障都会产生可审计结果，不能被包装成“没有候选”。取消父 Run 必须阻止未启动子步骤；已发布的不可变产物保留但标记为 orphaned/not-promoted。
@@ -314,6 +320,7 @@ idea
 - 每个 hypothesis family 预注册最大试验次数；
 - 每次修改说明新证据和与上一实验的 Delta；
 - 最终 holdout 一旦被 Codex、Agent 或开发者读取即视为已消耗；
+- 策略晋级时 validation 与 final holdout 都必须通过同一份预注册机器阈值；development 只用于研发诊断，不能抵消后续阶段失败；
 - 保留全部试验、失败和被拒绝特征；
 - 多重检验、换手、容量和成本纳入晋级门；
 - 允许 `abstain`，禁止为完成 Schedule 强行生成候选。
@@ -356,9 +363,9 @@ export_bundle(experiment_run_id)
 health()
 ```
 
-量化环境通过文件/JSON/Parquet 契约接收输入和返回结果，不直接连接 Companion SQLite，不访问 Ledger、Mandate、飞书或生产凭据。业务代码不得依赖 Qlib 内部类型。
+DB-aware Job 编排器只负责校验 Snapshot、物化 JSON 友好输入和发布产物；NativeQuantRuntime 的 `run_isolated` 计算区间由 audit guard 禁止文件、SQLite、网络和子进程，也不持有 Ledger、Mandate、飞书或凭据引用。未来第三方量化环境仍须通过文件/JSON/Parquet 契约独立运行。业务代码不得依赖 Qlib 内部类型。
 
-Qlib 能否成为正式依赖由先行 Spike 决定；具体 Go/No-Go 见实施计划和验收标准。MLflow 若启用，只是 Experiment Registry 的可重建投影。
+首版已按 [QuantRuntime ADR](V4-QUANT-RUNTIME-ADR.md) 选择窄 `NativeQuantRuntime`，Qlib 当前为 No-Go/未引入。以后只有在 G1 数据通过、出现真实模型训练需求且同一 golden cases 对齐时才重评估；MLflow 若启用，也只能是 Experiment Registry 的可重建投影。
 
 ## 11. 从全量扫描到个人 Decision
 
@@ -378,7 +385,8 @@ Qlib 能否成为正式依赖由先行 Spike 决定；具体 Go/No-Go 见实施�
 
 ```text
 Dataset Snapshot
-→ deterministic Experiment / CandidateSet
+→ 预注册 deterministic Experiment / 派生式 walk-forward
+→ 未调参 forward_shadow signal / target_weights
 → target_weights / portfolio solution
 → Primary Codex 核验原始证据并调用专业反证
 → Thesis / Decision Draft
@@ -395,7 +403,7 @@ Dataset Snapshot
 
 ### 11.3 组合求解
 
-策略产物使用目标权重作为稳定层间语言，但最终可行组合必须联合考虑：
+策略产物使用目标权重作为稳定层间语言。已实现的 `portfolio_rebalance_plan` 以真实 Ledger、冻结报价、RealitySpec 和当前 Mandate 做确定性投影；目标是软目标，个人与交易约束是硬约束。最终可行组合必须联合考虑：
 
 - 预期信号、风险与相关性；
 - 交易成本、换手和容量；
@@ -403,7 +411,7 @@ Dataset Snapshot
 - 个人集中度、流动性和禁区；
 - 不行动、部分执行和替代标的。
 
-如果约束无可行解，返回 `infeasible` 和最小冲突集合，不通过事后裁剪制造貌似合格的组合。
+如果约束无可行解，返回 `infeasible` 和明确的冲突/偏离集合，不通过事后裁剪制造貌似合格的组合；当前实现不声称求得数学意义上的最小不可行子集。联合求解器显式解析当前 Mandate 的 `hard_constraints`；遇到尚未实现的硬约束必须失败关闭，不能静默忽略后继续给出方案。
 
 ## 12. Codex 和专业 Agent 的权限
 
@@ -426,15 +434,16 @@ Dataset Snapshot
 
 ### 12.3 Agent Sandbox
 
-生成或修改量化代码的 Agent 只在隔离工作区运行：
+当前 5 个材料性 Custom Agent 全部使用 `read-only` 沙箱，并在 Agent 配置层用相同 transport 身份显式 `enabled=false` 禁用可写的 `investmentCompanion` MCP；这项边界经过配置校验和真实 Codex 派遣验证。Primary 只提供有界问题与只读材料，Agent 返回完整提案，只有 Primary 能审阅、写文件、登记 provenance 或改变项目状态。Tushare/Tavily/Web 仅用于读侧取证，外部内容始终是不可信数据。
 
-- 默认无生产数据库写权限、无 Token、无飞书和券商能力；
-- 数据输入为只读 Snapshot；
-- 输出只能写临时产物目录；
+未来若实现生成或修改量化代码的 Agent，必须另行通过 Gate，并只在隔离临时工作区运行：
+
+- 无生产数据库写权限、无生产 Token、无飞书和券商能力；
+- 数据输入为只读 Snapshot，输出仅进入临时产物目录；
 - 限制时间、CPU、内存、网络、Token、轮次和实验数；
 - 通过静态检查、单测、golden cases 和 Primary 审阅后才能成为新 StrategyVersion。
 
-每次 LLM 参与记录角色、模型、prompt/template 版本、输入引用、Token、输出哈希和采用/拒绝理由。确定性数据与回测阶段应消耗零模型 Token。
+每次材料性 LLM/Agent 参与通过 `agent_invocations + agent_review Manifest` 记录唯一外部 invocation/trace ref、角色、模型、prompt/template 版本、不可变输入引用、正数精确 Token、输出哈希和采用/拒绝理由。角色限项目当前受控 Profile（`market_scout`、`source_researcher`、`financial_analyst`、`knowledge_gardener`、`thesis_critic`）；正式 Decision 的 `thesis_critic` 不能用一段自报文本代替该记录。确定性数据与回测阶段必须消耗零模型 Token。
 
 ## 13. 飞书与人工执行协议
 
@@ -474,7 +483,7 @@ proposed → presented → accepted → ordered → partially_filled → filled
              └→ cancelled / deviated
 ```
 
-用户报告成交后先建立待确认 Ledger Draft，回显并确认；只有 confirmed Ledger 与 Execution 关联后才改变 Portfolio。价格、现金或持仓在执行前发生材料性变化时，旧提案失效并重新计算。
+用户报告成交后先建立待确认 Ledger Draft，回显并确认；只有 confirmed Ledger 与 Execution 关联后才改变 Portfolio。价格、现金或持仓在执行前发生材料性变化时，旧提案失效并重新计算。可执行性重验证只接受当前时刻（允许 5 秒调用偏差），不能用历史或未来 `as_of` 绕过最新账本、Context、报价与有效期。
 
 ## 14. Shadow 与学习闭环
 
@@ -486,7 +495,7 @@ proposed → presented → accepted → ordered → partially_filled → filled
 
 ### 14.2 Strategy Shadow Book
 
-Shadow 使用与历史研究相同的 target-portfolio 和现实模型契约，但每次只消费当时已发布的 Snapshot。每个 rebalance 冻结完整 denominator、目标权重、未成交原因和成本。
+Shadow 使用与历史研究相同的 target-portfolio 和现实模型契约。信号只消费执行日前已经发布的 `signal_snapshot_id`；成交仿真另读执行日收盘后发布的 `execution_snapshot_id`。生产模式禁止两者复用、历史回填或开盘后才完成的信号。每个 rebalance 冻结完整 denominator、目标权重、未成交原因和成本。
 
 前向评价包括：基准差、净收益、回撤、换手、容量、信号数、过期率、数据故障、模型 abstain 和状态分段。单只候选 MFE/MAE 仅用于诊断。
 

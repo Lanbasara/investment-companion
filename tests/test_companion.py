@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
 from datetime import timedelta
@@ -60,10 +61,13 @@ class CompanionTest(unittest.TestCase):
         self.assertEqual(failed["status"],"retry")
 
     def test_file_ingestion_is_incremental_and_bootstrap_idempotent(self):
-        source=self.root/"source";source.mkdir();self.c.ingest_directory(str(source),"test")
-        item=source/"a.md";item.write_text("new article",encoding="utf-8")
+        source=self.root/"source";source.mkdir();initial=self.c.ingest_directory(str(source),"test")
+        item=source/"a.md";item.write_text("new article",encoding="utf-8");os.utime(item,(initial["cursor_after"],initial["cursor_after"]))
         first=self.c.ingest_directory(str(source),"test");second=self.c.ingest_directory(str(source),"test")
         self.assertEqual(first["added"],1);self.assertEqual(second["added"],0)
+        item.write_text("revised article",encoding="utf-8");os.utime(item,(first["cursor_after"],first["cursor_after"]))
+        self.assertEqual(self.c.ingest_directory(str(source),"test")["added"],1)
+        self.assertEqual(self.c.ingest_directory(str(source),"test")["added"],0)
         a=self.c.bootstrap_defaults();b=self.c.bootstrap_defaults();self.assertEqual(len(a["schedules"]),3);self.assertEqual(len(b["schedules"]),3)
 
     def test_granular_management_and_expiry(self):

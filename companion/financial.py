@@ -3,15 +3,21 @@ from __future__ import annotations
 import csv
 import io
 import json
-from decimal import Decimal, InvalidOperation, ROUND_HALF_EVEN, getcontext
+from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_HALF_EVEN, ROUND_HALF_UP, getcontext
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from .core import CompanionError, canonical, digest, new_id
 from .db import row_dict, rows_dict
-from .timeutil import iso
+from .timeutil import iso, parse
 
 getcontext().prec = 34
-ENGINE_VERSION = "financial-kernel-3.0.0"
+ENGINE_VERSION = "financial-kernel-4.0.0"
+SUPPORTED_MANDATE_CONSTRAINTS={
+    "minimum_cash","max_position_weight","max_single_position_weight",
+    "prohibited_asset_ids","forbidden_asset_ids","allowed_asset_ids",
+    "max_participation_rate","max_turnover",
+}
 
 
 def dec(value: Any, field: str = "value") -> Decimal:
@@ -26,6 +32,33 @@ def dec(value: Any, field: str = "value") -> Decimal:
 
 def dtext(value: Decimal) -> str:
     return format(value.normalize(), "f") if value else "0"
+
+
+def mandate_constraints(mandate:dict[str,Any]|None)->dict[str,Any]:
+    if mandate is None:return {}
+    if not isinstance(mandate,dict):raise CompanionError("Mandate must be an object")
+    if "hard_constraints" in mandate:
+        constraints=mandate["hard_constraints"]
+        if not isinstance(constraints,dict):raise CompanionError("Mandate hard_constraints must be an object")
+        overlapping=SUPPORTED_MANDATE_CONSTRAINTS&set(mandate)
+        if overlapping:raise CompanionError(f"Mandate mixes nested and flat hard constraints: {sorted(overlapping)}")
+    else:
+        constraints=mandate
+    unknown=set(constraints)-SUPPORTED_MANDATE_CONSTRAINTS
+    if unknown:raise CompanionError(f"unsupported Mandate hard constraints: {sorted(unknown)}")
+    if {"max_position_weight","max_single_position_weight"}<=set(constraints):raise CompanionError("Mandate position-weight aliases are ambiguous")
+    if {"prohibited_asset_ids","forbidden_asset_ids"}<=set(constraints):raise CompanionError("Mandate prohibited-asset aliases are ambiguous")
+    for field in ("prohibited_asset_ids","forbidden_asset_ids","allowed_asset_ids"):
+        if field in constraints:
+            value=constraints[field]
+            if not isinstance(value,list) or any(not isinstance(item,str) or not item.strip() for item in value) or len(value)!=len(set(value)):raise CompanionError(f"Mandate {field} must be a unique string list")
+    if "minimum_cash" in constraints:
+        minimum_cash=constraints["minimum_cash"]
+        if not isinstance(minimum_cash,dict):raise CompanionError("Mandate minimum_cash must be a currency-to-amount object")
+        for currency,amount in minimum_cash.items():
+            if not isinstance(currency,str) or len(currency)!=3 or not currency.isascii() or not currency.isalpha() or currency!=currency.upper():raise CompanionError("Mandate minimum_cash currency keys must be uppercase ISO-style codes")
+            if dec(amount,f"Mandate minimum_cash.{currency}")<0:raise CompanionError(f"Mandate minimum_cash.{currency} cannot be negative")
+    return constraints
 
 
 class FinancialKernel:
@@ -72,7 +105,12 @@ class FinancialKernel:
         amount_d,fee_d=dec(amount,"amount"),dec(fee,"fee")
         qty_d=dec(quantity,"quantity") if quantity is not None else None
         price_d=dec(price,"price") if price is not None else None
-        if entry_type=="trade" and (asset_id is None or qty_d is None or price_d is None):raise CompanionError("trade requires asset_id, quantity, and price")
+        if entry_type=="trade":
+            if asset_id is None or qty_d is None or price_d is None:raise CompanionError("trade requires asset_id, quantity, and price")
+            asset=self.asset_get(asset_id)
+            if qty_d==0 or price_d<=0:raise CompanionError("trade quantity must be non-zero and price must be positive")
+            if currency.upper()!=asset["currency"]:raise CompanionError("trade currency differs from asset currency")
+            if amount_d!=-(qty_d*price_d):raise CompanionError("trade amount must equal -(quantity * price); fees are recorded separately")
         fp=digest(account_id,entry_type,occurred_at,dtext(amount_d),currency.upper(),asset_id,dtext(qty_d) if qty_d is not None else None,dtext(price_d) if price_d is not None else None,dtext(fee_d),source,external_id)
         eid,now=new_id("led"),iso()
         with self.db.transaction() as con:
@@ -91,6 +129,11 @@ class FinancialKernel:
         if status:q+=" AND status=?";p.append(status)
         q+=" ORDER BY occurred_at,id LIMIT ?";p.append(limit)
         with self.db.connect() as con:return rows_dict(con.execute(q,p).fetchall())
+
+    def confirmed_ledger_hash(self,exclude_ids:list[str]|None=None)->str:
+        excluded=set(exclude_ids or [])
+        with self.db.connect() as con:rows=[row for row in rows_dict(con.execute("SELECT * FROM ledger_entries WHERE status IN ('confirmed','reversed') ORDER BY occurred_at,id").fetchall()) if row["id"] not in excluded]
+        return digest("confirmed-ledger-v1",rows)
 
     def ledger_import_csv(self,content:str,source:str="broker_csv")->dict:
         required={"account_id","entry_type","occurred_at","amount","currency"};reader=csv.DictReader(io.StringIO(content));fields=set(reader.fieldnames or [])
@@ -161,12 +204,169 @@ class FinancialKernel:
         cash={k:dec(v) for k,v in before["cash"].items()};cash[asset["currency"]]=cash.get(asset["currency"],Decimal(0))-(qty*px)-fee_d
         violations=[]
         if cash[asset["currency"]]<0:violations.append({"rule":"nonnegative_cash","currency":asset["currency"],"value":dtext(cash[asset["currency"]])})
-        if mandate:
-            minimum=mandate.get("minimum_cash",{}).get(asset["currency"])
+        if positions[asset_id]<0:violations.append({"rule":"no_short_position","asset_id":asset_id,"value":dtext(positions[asset_id])})
+        constraints=mandate_constraints(mandate)
+        if constraints:
+            minimum=constraints.get("minimum_cash",{}).get(asset["currency"])
             if minimum is not None and cash[asset["currency"]]<dec(minimum):violations.append({"rule":"minimum_cash","required":str(minimum),"actual":dtext(cash[asset["currency"]])})
         output={"before":before,"after":{"cash":{k:dtext(v) for k,v in cash.items()},"positions":{k:dtext(v) for k,v in positions.items()}},"delta":{"asset_id":asset_id,"quantity":dtext(qty),"cash":dtext(-(qty*px)-fee_d),"currency":asset["currency"]},"violations":violations,"blocked":bool(violations)}
         calc=self._record("trade_impact","Simulate trade without changing ledger",as_of,{"account_id":account_id,"asset_id":asset_id,"quantity":dtext(qty),"price":dtext(px),"fee":dtext(fee_d)},{"mandate":mandate or {}},{"cash_delta":"-(quantity*price)-fee"},output,[])
         output["calculation_id"]=calc["id"];return output
+
+    def portfolio_rebalance_plan(
+        self,
+        *,
+        as_of:str,
+        account_id:str,
+        target_manifest_id:str,
+        market_snapshot_ids:list[str],
+        reality_spec:dict[str,Any],
+        mandate:dict[str,Any],
+        max_price_age_seconds:int=129600,
+    )->dict[str,Any]:
+        """Project target weights onto the user's hard constraints without changing Ledger.
+
+        The target is a soft research objective; Mandate, cash, market state and
+        exchange mechanics are hard constraints.  Every deviation is returned,
+        and an unexecutable plan has no actionable orders.
+        """
+
+        from .quant_runtime import RealitySpec, TARGET_WEIGHTS_SCHEMA, verify_artifact_hash
+
+        account=self.account_get(account_id);now=parse(as_of)
+        if isinstance(max_price_age_seconds,bool) or not isinstance(max_price_age_seconds,int) or max_price_age_seconds<=0:
+            raise CompanionError("max_price_age_seconds must be a positive integer")
+        reality=RealitySpec.from_value(reality_spec).to_dict()
+        if canonical(reality)!=canonical(reality_spec):raise CompanionError("portfolio plan requires a complete normalized RealitySpec")
+        if account["base_currency"]!=reality["currency"]:raise CompanionError("account currency differs from RealitySpec")
+        target_manifest=self.c.data.manifest_get(target_manifest_id,verify=True)
+        if target_manifest["kind"]!="target_weights" or target_manifest["status"]!="ready":raise CompanionError("portfolio plan requires a ready target_weights manifest")
+        target=target_manifest["manifest"].get("manifest",{})
+        if target_manifest["schema_version"]!=TARGET_WEIGHTS_SCHEMA or target.get("schema")!=TARGET_WEIGHTS_SCHEMA:
+            raise CompanionError("portfolio plan target_weights uses an unsupported schema")
+        if not verify_artifact_hash(target):raise CompanionError("portfolio plan target_weights hash is invalid")
+        local_date=now.astimezone(ZoneInfo("Asia/Shanghai")).date()
+        if target.get("effective_on")!=local_date.isoformat():raise CompanionError("portfolio plan as_of date must equal target effective_on")
+        if target.get("warnings"):raise CompanionError("portfolio plan refuses target_weights with unresolved warnings")
+        if not isinstance(market_snapshot_ids,list) or not market_snapshot_ids or any(not isinstance(item,str) or not item for item in market_snapshot_ids) or len(market_snapshot_ids)!=len(set(market_snapshot_ids)):
+            raise CompanionError("portfolio plan requires unique frozen Market Snapshot IDs")
+        prices:dict[str,dict[str,Any]]={}
+        with self.db.connect() as con:
+            for market_id in market_snapshot_ids:
+                item=row_dict(con.execute("SELECT * FROM market_snapshots WHERE id=?",(market_id,)).fetchone())
+                if not item:raise CompanionError(f"market snapshot not found: {market_id}")
+                if item["metric"]!="close" or item["quality"]!="healthy":raise CompanionError("portfolio plan accepts only healthy close Market Snapshots")
+                observed=parse(item["observed_at"])
+                if observed>now or (now-observed).total_seconds()>max_price_age_seconds:raise CompanionError("portfolio plan Market Snapshot is future-dated or stale")
+                if item["asset_id"] in prices:raise CompanionError("portfolio plan has duplicate prices for an asset")
+                if item.get("currency") and item["currency"]!=account["base_currency"]:raise CompanionError("portfolio plan Market Snapshot currency mismatch")
+                prices[item["asset_id"]]=item
+        before=self.portfolio_state(as_of,account_id,prices={asset:item["value_text"] for asset,item in prices.items()})
+        if before["warnings"]:raise CompanionError(f"portfolio plan cannot value the current account: {before['warnings']}")
+        current={row["asset_id"]:dec(row["quantity"],"current quantity") for row in before["positions"]}
+        weight_rows=target.get("weights")
+        if not isinstance(weight_rows,list):raise CompanionError("portfolio plan target weights must be an array")
+        weights:dict[str,Decimal]={}
+        for index,row in enumerate(weight_rows):
+            if not isinstance(row,dict):raise CompanionError(f"portfolio plan target weight {index} must be an object")
+            asset=row.get("asset_id")
+            if not isinstance(asset,str) or not asset.strip():raise CompanionError(f"portfolio plan target weight {index} has an invalid asset_id")
+            if asset in weights:raise CompanionError(f"portfolio plan has duplicate target weight for {asset}")
+            weights[asset]=dec(row.get("weight"),"target weight")
+        if any(weight<0 for weight in weights.values()):raise CompanionError("portfolio plan target weights cannot be negative")
+        required_assets=set(current)|set(weights)
+        missing_prices=sorted(required_assets-set(prices))
+        if missing_prices:raise CompanionError(f"portfolio plan lacks frozen prices: {missing_prices}")
+        cash=dec(before["cash"].get(account["base_currency"],"0"),"account cash")
+        nav=cash+sum((quantity*dec(prices[asset]["value_text"],"price") for asset,quantity in current.items()),Decimal("0"))
+        if nav<=0:raise CompanionError("portfolio plan requires positive account NAV")
+        cash_weight=dec(target.get("cash_weight"),"target cash_weight")
+        if cash_weight<0 or cash_weight>1 or sum(weights.values(),cash_weight)!=Decimal("1"):raise CompanionError("portfolio plan target weights and cash must sum to one")
+        constraints=mandate_constraints(mandate)
+        minimum_cash=dec((constraints.get("minimum_cash") or {}).get(account["base_currency"],"0"),"Mandate minimum_cash")
+        if minimum_cash<0:raise CompanionError("Mandate minimum_cash cannot be negative")
+        reserve=max(minimum_cash,nav*cash_weight)
+        if reserve>nav:
+            output={"status":"infeasible","conflicts":[{"rule":"minimum_cash","required":dtext(reserve),"nav":dtext(nav)}],"actions":[],"requested_actions":[],"deviations":[],"before":before,"target_manifest_id":target_manifest_id,"market_snapshot_ids":market_snapshot_ids}
+            calc=self._record("portfolio_rebalance_plan","Joint target/Mandate portfolio projection",as_of,{"account_id":account_id,"target_manifest_id":target_manifest_id,"market_snapshot_ids":market_snapshot_ids,"max_price_age_seconds":max_price_age_seconds},{"mandate":mandate,"reality_spec":reality},{"objective":"minimize target-weight deviation subject to hard personal/execution constraints"},output,[]);output["calculation_id"]=calc["id"];return output
+        max_weight=dec(constraints.get("max_position_weight",constraints.get("max_single_position_weight","1")),"Mandate max_position_weight")
+        if max_weight<=0 or max_weight>1:raise CompanionError("Mandate max_position_weight must be within (0,1]")
+        prohibited=set(constraints.get("prohibited_asset_ids",constraints.get("forbidden_asset_ids",[])) or [])
+        allowed_raw=constraints.get("allowed_asset_ids");allowed=set(allowed_raw) if allowed_raw is not None else None
+        if allowed is not None and not allowed:raise CompanionError("Mandate allowed_asset_ids cannot be empty")
+        participation=constraints.get("max_participation_rate")
+        participation_rate=dec(participation,"Mandate max_participation_rate") if participation is not None else None
+        if participation_rate is not None and not Decimal("0")<participation_rate<=Decimal("1"):raise CompanionError("Mandate max_participation_rate must be within (0,1]")
+        risky=sum(weights.values(),Decimal("0"));scale=(nav-reserve)/risky if risky else Decimal("0")
+        lot=int(reality["lot_size"]);desired:dict[str,int]={};deviations=[];conflicts=[]
+        for asset in sorted(required_assets):
+            quantity=current.get(asset,Decimal("0"))
+            if quantity!=quantity.to_integral_value():conflicts.append({"rule":"whole_share_position","asset_id":asset,"quantity":dtext(quantity)});continue
+            forbidden=asset in prohibited or allowed is not None and asset not in allowed
+            target_value=Decimal("0") if forbidden else min(scale*weights.get(asset,Decimal("0")),nav*max_weight)
+            price=dec(prices[asset]["value_text"],"price")
+            target_quantity=int((target_value/price/lot).to_integral_value(rounding=ROUND_DOWN))*lot
+            desired[asset]=target_quantity
+            if forbidden and weights.get(asset,Decimal("0"))>0:deviations.append({"asset_id":asset,"reason":"mandate_asset_restriction","requested_weight":dtext(weights[asset]),"planned_weight":"0"})
+            elif weights.get(asset,Decimal("0"))>max_weight:deviations.append({"asset_id":asset,"reason":"mandate_concentration_cap","requested_weight":dtext(weights[asset]),"planned_weight":dtext(max_weight)})
+        requested=[]
+        for asset in sorted(desired):
+            delta=Decimal(desired[asset])-current.get(asset,Decimal("0"))
+            if delta:requested.append({"asset_id":asset,"side":"buy" if delta>0 else "sell","quantity":dtext(abs(delta))})
+        projected=dict(current);projected_cash=cash;actions=[]
+        for side in ("sell","buy"):
+            for request in (item for item in requested if item["side"]==side):
+                asset=request["asset_id"];quantity=int(dec(request["quantity"]));market=prices[asset];metadata=market.get("metadata",{})
+                block=("suspended" if metadata.get("suspended") else "upper_limit_buy" if side=="buy" and metadata.get("at_upper_limit") else "lower_limit_sell" if side=="sell" and metadata.get("at_lower_limit") else None)
+                if block:conflicts.append({"rule":"market_not_executable","asset_id":asset,"reason":block});continue
+                if side=="sell" and reality["t_plus_one"]:
+                    with self.db.connect() as con:
+                        same_day=rows_dict(con.execute("SELECT quantity_text,occurred_at FROM ledger_entries WHERE account_id=? AND asset_id=? AND status='confirmed' AND quantity_text IS NOT NULL",(account_id,asset)).fetchall())
+                    locked=sum((max(Decimal("0"),dec(row["quantity_text"])) for row in same_day if parse(row["occurred_at"]).astimezone(ZoneInfo("Asia/Shanghai")).date()==local_date),Decimal("0"))
+                    sellable=max(Decimal("0"),current.get(asset,Decimal("0"))-locked)
+                    if quantity>sellable:
+                        quantity=int(sellable)
+                        deviations.append({"asset_id":asset,"reason":"t_plus_one_locked","planned_quantity":str(quantity)})
+                quote=dec(market["value_text"],"price");slip=dec(reality["slippage_bps"])/Decimal("10000");tick=dec(reality["price_tick"]);quantum=dec(reality["money_quantum"])
+                execution_price=(quote*(Decimal("1")+slip if side=="buy" else Decimal("1")-slip)).quantize(tick,rounding=ROUND_HALF_UP)
+                if participation_rate is not None:
+                    amount=metadata.get("average_daily_amount",metadata.get("daily_amount"))
+                    if amount is None:conflicts.append({"rule":"liquidity_data_missing","asset_id":asset});continue
+                    capacity=(dec(amount,"daily amount")*participation_rate/execution_price).to_integral_value(rounding=ROUND_DOWN)
+                    capacity=int(capacity/lot)*lot if side=="buy" else int(capacity)
+                    if quantity>capacity:
+                        quantity=max(0,capacity);deviations.append({"asset_id":asset,"reason":"liquidity_cap","planned_quantity":str(quantity)})
+                if side=="buy":
+                    while quantity>0:
+                        notional=(execution_price*quantity).quantize(quantum,rounding=ROUND_HALF_UP)
+                        fee=max(dec(reality["minimum_commission"]),notional*dec(reality["commission_rate"])).quantize(quantum,rounding=ROUND_HALF_UP)
+                        if projected_cash-notional-fee>=reserve:break
+                        quantity-=lot
+                    if quantity<int(dec(request["quantity"])):deviations.append({"asset_id":asset,"reason":"cash_or_fee_constraint","planned_quantity":str(max(0,quantity))})
+                if quantity<=0:continue
+                notional=(execution_price*quantity).quantize(quantum,rounding=ROUND_HALF_UP)
+                commission=max(dec(reality["minimum_commission"]),notional*dec(reality["commission_rate"])).quantize(quantum,rounding=ROUND_HALF_UP)
+                tax=(notional*dec(reality["sell_stamp_duty_rate"])).quantize(quantum,rounding=ROUND_HALF_UP) if side=="sell" else Decimal("0")
+                cash_delta=notional-commission-tax if side=="sell" else -notional-commission
+                projected_cash+=cash_delta;projected[asset]=projected.get(asset,Decimal("0"))+(quantity if side=="buy" else -quantity)
+                actions.append({"asset_id":asset,"side":side,"quantity":str(quantity),"quote":dtext(quote),"execution_price":dtext(execution_price),"notional":dtext(notional),"commission":dtext(commission),"tax":dtext(tax),"cash_delta":dtext(cash_delta),"market_snapshot_id":market["id"]})
+        if projected_cash<minimum_cash:conflicts.append({"rule":"minimum_cash","required":dtext(minimum_cash),"projected":dtext(projected_cash)})
+        for asset,quantity in projected.items():
+            if quantity<0:conflicts.append({"rule":"no_short_position","asset_id":asset,"quantity":dtext(quantity)})
+            if quantity>0 and (asset in prohibited or allowed is not None and asset not in allowed):conflicts.append({"rule":"restricted_asset_remaining","asset_id":asset,"quantity":dtext(quantity)})
+        projected_values={asset:quantity*dec(prices[asset]["value_text"]) for asset,quantity in projected.items() if quantity}
+        projected_nav=projected_cash+sum(projected_values.values(),Decimal("0"))
+        for asset,value in projected_values.items():
+            if projected_nav>0 and value/projected_nav>max_weight+Decimal("0.0000001"):conflicts.append({"rule":"max_position_weight","asset_id":asset,"actual":dtext(value/projected_nav),"maximum":dtext(max_weight)})
+        turnover=sum((dec(action["notional"]) for action in actions),Decimal("0"))/nav
+        maximum_turnover=constraints.get("max_turnover")
+        if maximum_turnover is not None and turnover>dec(maximum_turnover,"Mandate max_turnover"):conflicts.append({"rule":"max_turnover","actual":dtext(turnover),"maximum":str(maximum_turnover)})
+        status="feasible" if not conflicts else "infeasible"
+        output={"status":status,"conflicts":conflicts,"actions":actions if status=="feasible" else [],"requested_actions":requested,"deviations":deviations,"before":before,"projected":{"cash":dtext(projected_cash),"positions":{asset:dtext(quantity) for asset,quantity in sorted(projected.items()) if quantity},"nav":dtext(projected_nav),"turnover":dtext(turnover)},"target_manifest_id":target_manifest_id,"target_artifact_hash":target["artifact_hash"],"market_snapshot_ids":market_snapshot_ids,"reality_spec":reality}
+        warnings=[f"target deviation: {item['asset_id']} {item['reason']}" for item in deviations]
+        calc=self._record("portfolio_rebalance_plan","Joint target/Mandate portfolio projection",as_of,{"account_id":account_id,"target_manifest_id":target_manifest_id,"market_snapshot_ids":market_snapshot_ids,"max_price_age_seconds":max_price_age_seconds},{"mandate":mandate,"reality_spec":reality},{"objective":"minimize target-weight deviation subject to hard personal/execution constraints","order":"sells before buys","prices":"frozen healthy Market Snapshots"},output,warnings)
+        output["calculation_id"]=calc["id"]
+        return output
 
     def max_purchase(self,as_of:str,account_id:str,asset_id:str,price:Any,minimum_cash:Any="0",fee:Any="0",lot_size:Any="1")->dict:
         state=self.portfolio_state(as_of,account_id);asset=self.asset_get(asset_id);available=dec(state["cash"].get(asset["currency"],"0"))-dec(minimum_cash)-dec(fee);px=dec(price);lot=dec(lot_size)
@@ -188,6 +388,8 @@ class FinancialKernel:
     def calculation_get(self, calculation_id: str) -> dict:
         with self.db.connect() as con:item=row_dict(con.execute("SELECT * FROM calculations WHERE id=?",(calculation_id,)).fetchone())
         if not item:raise CompanionError(f"calculation not found: {calculation_id}")
+        expected=digest(item["engine_version"],item["kind"],item["as_of"],item["inputs"],item["assumptions"],item["formulas"],item["outputs"],item["warnings"])
+        if expected!=item["reproducibility_hash"]:raise CompanionError(f"calculation reproducibility hash mismatch: {calculation_id}")
         return item
 
     def _record(self, kind,purpose,as_of,inputs,assumptions,formulas,outputs,warnings):

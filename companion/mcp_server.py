@@ -18,7 +18,7 @@ def schema(properties:dict[str,Any]|None=None,required:list[str]|None=None)->dic
 S={"type":"string"};I={"type":"integer"};O={"type":"object","additionalProperties":True}
 
 TOOLS={
- "schedule_create":("创建可管理的主动计划。频率、使命、范围和策略会精确持久化。",schema({"name":S,"kind":{"type":"string","enum":["patrol","review","maintenance","one_shot"]},"mission":S,"cadence":O,"scope":O,"policy":O,"origin":O,"timezone":S},["name","kind","mission","cadence"])),
+ "schedule_create":("创建可管理的主动计划。确定性任务必须引用已激活的 JobDefinition。",schema({"name":S,"kind":{"type":"string","enum":["patrol","review","maintenance","one_shot"]},"mission":S,"cadence":O,"scope":O,"policy":O,"origin":O,"timezone":S,"dispatch_type":{"type":"string","enum":["codex_turn","deterministic_pipeline"]},"job_definition_id":S},["name","kind","mission","cadence"])),
  "schedule_list":("列出主动计划及其状态和下次运行时间。",schema({"status":S,"kind":S})),
  "schedule_get":("读取一个主动计划的精确配置。",schema({"schedule_id":S},["schedule_id"])),
  "schedule_patch":("按字段精确修改计划，必须提供当前版本以防覆盖并发修改。",schema({"schedule_id":S,"expected_version":I,"changes":O,"reason":S},["schedule_id","expected_version","changes"])),
@@ -73,6 +73,7 @@ TOOLS={
  "market_snapshot_add":("登记计算使用的价格、汇率或其他市场观测及质量。",schema({"asset_id":S,"metric":S,"value":{},"observed_at":S,"source":S,"quality":S,"currency":S,"metadata":O},["asset_id","metric","value","observed_at","source"])),
  "portfolio_state_as_of":("从确认流水精确重建指定时点的现金和持仓，并生成 Calculation ID。",schema({"as_of":S,"account_id":S,"prices":O},["as_of"])),
  "trade_impact_simulate":("模拟交易对现金与持仓的影响，不写入真实流水。",schema({"as_of":S,"account_id":S,"asset_id":S,"quantity":{},"price":{},"fee":{},"mandate":O},["as_of","account_id","asset_id","quantity","price"])),
+ "portfolio_rebalance_plan_calculate":("把冻结 target_weights、真实账户、报价、RealitySpec 与 Mandate 联合求解为可审计人工方案。",schema({"as_of":S,"account_id":S,"target_manifest_id":S,"market_snapshot_ids":{"type":"array","items":S},"reality_spec":O,"mandate":O,"max_price_age_seconds":I},["as_of","account_id","target_manifest_id","market_snapshot_ids","reality_spec","mandate"])),
  "max_purchase_calculate":("在现金底线、费用和最小交易单位下精确计算最大买入量。",schema({"as_of":S,"account_id":S,"asset_id":S,"price":{},"minimum_cash":{},"fee":{},"lot_size":{}},["as_of","account_id","asset_id","price"])),
  "portfolio_exposure_calculate":("按指定基准币种计算组合权重；缺失汇率时明确警告而不猜测。",schema({"as_of":S,"account_id":S,"prices":O,"base_currency":S},["as_of","account_id","prices","base_currency"])),
  "calculation_get":("读取可重放的精确计算记录。",schema({"calculation_id":S},["calculation_id"])),
@@ -87,18 +88,52 @@ TOOLS={
  "cognitive_revision_get":("读取一个不可变认知版本及文件句柄。",schema({"revision_id":S},["revision_id"])),
  "cognitive_link":("建立少量明确认知链接。",schema({"from_id":S,"to_id":S,"link_type":S,"metadata":O},["from_id","to_id","link_type"])),
  "execution_create":("创建建议之后、成交之前的 Execution 意图。",schema({"decision_id":S,"details":O},["details"])),
- "execution_set_status":("推进 Execution；filled 状态必须关联已确认流水。",schema({"execution_id":S,"status":S,"ledger_entry_ids":{"type":"array","items":S}},["execution_id","status"])),
+ "execution_set_status":("推进 Execution；filled 状态必须关联已确认流水，拒绝/取消/偏离等终态必须说明原因。",schema({"execution_id":S,"status":S,"ledger_entry_ids":{"type":"array","items":S},"reason":S},["execution_id","status"])),
  "recovery_package_create":("为跨对话恢复组装有界、可审计的最小上下文包。",schema({"purpose":S,"subject":O,"max_handles":I},["purpose","subject"])),
  "attention_decide":("使用当前 Attention Policy 对主动消息执行确定性门控并记录理由。",schema({"topic":S,"materiality":S,"confidence":S,"reason":S,"event_id":S,"evidence":{"type":"array"},"requested_action":S},["topic","materiality","confidence","reason"])),
  "attention_decision_list":("列出通知、摘要、落盘或抑制决定。",schema({"action":S,"limit":I})),
  "attention_feedback":("登记用户对主动消息的反馈；负反馈只产生策略调整提案。",schema({"decision_id":S,"feedback":S,"note":S},["decision_id","feedback"])),
  "attention_mark_delivered":("在主动消息实际送达后登记投递状态。",schema({"decision_id":S},["decision_id"])),
+ "v4_status":("读取 V4 Gate、Feature、数据、量化内核和合格策略总状态；不会开启任何能力。",schema()),
+ "v4_feature_list":("读取所有 V4 Feature Flag；Feature 只能在发布流程中启用。",schema()),
+ "v4_gate_list":("读取指定范围的 Gate 评估历史。",schema({"scope":{"type":"string","enum":["production","test_fixture"]}})),
+ "v4_job_definition_list":("列出确定性 JobDefinition。",schema({"status":S})),
+ "v4_job_run_list":("列出确定性 JobRun。",schema({"status":S,"limit":I})),
+ "v4_job_run_get":("读取 JobRun、Step、资源用量和产物。",schema({"job_run_id":S},["job_run_id"])),
+ "v4_data_health":("读取数据根、阻断问题与真实 Probe 状态。",schema()),
+ "v4_source_capability_list":("列出 Adapter Probe 产生的能力记录。",schema({"provider":S,"capability":S})),
+ "v4_asset_identity_list":("读取带生效期和知识截止语义的 provider 证券身份版本。",schema({"provider":S,"identifier_value":S})),
+ "v4_agent_review_record":("冻结材料性 Agent 评审的调用标识、模型、输入引用、Token、输出与采用决定；不会发布投资判断。",schema({"invocation_ref":S,"role":S,"model":S,"prompt_template":S,"input_refs":{"type":"array","items":S},"review":O,"token_usage":O,"started_at":S,"finished_at":S,"adopted":{"type":"boolean"},"adoption_reason":S},["invocation_ref","role","model","prompt_template","input_refs","review","token_usage","started_at","finished_at","adopted","adoption_reason"])),
+ "v4_agent_review_get":("读取并校验一个不可变 Agent 评审及其输出血缘。",schema({"invocation_id":S},["invocation_id"])),
+ "v4_dataset_snapshot_get":("读取并校验一个不可变 DatasetSnapshot。",schema({"snapshot_id":S},["snapshot_id"])),
+ "v4_hypothesis_create":("预注册研究假设与严格试验预算。",schema({"name":S,"spec":O,"experiment_budget":I,"preregister":{"type":"boolean"}},["name","spec","experiment_budget"])),
+ "v4_hypothesis_list":("列出研究假设注册表。",schema({"status":S})),
+ "v4_strategy_register":("注册不可变 StrategySpec；必须声明物理分区、基准、成本和通过条件。",schema({"hypothesis_id":S,"spec":O,"code_ref":S,"environment_ref":S,"parent_id":S},["hypothesis_id","spec","code_ref","environment_ref"])),
+ "v4_strategy_list":("列出 StrategyVersion。",schema({"hypothesis_id":S,"status":S})),
+ "v4_experiment_start":("按预注册预算创建 ExperimentRun；不运行模型。",schema({"strategy_version_id":S,"dataset_snapshot_id":S,"split":O,"params":O,"seed":I},["strategy_version_id","dataset_snapshot_id","split"])),
+ "v4_forward_signal_start":("为已进入 Shadow 的策略创建不占调参预算的前向信号 ExperimentRun。",schema({"strategy_version_id":S,"dataset_snapshot_id":S,"partition_names":{"type":"array","items":S}},["strategy_version_id","dataset_snapshot_id","partition_names"])),
+ "v4_experiment_submit":("冻结无内嵌行情的实验 Spec，并提交受限确定性 Job。",schema({"experiment_id":S,"spec":O},["experiment_id","spec"])),
+ "v4_experiment_list":("列出实验及失败记录。",schema({"strategy_version_id":S,"status":S})),
+ "v4_promotion_decide":("由 Primary 依据注册指标拒绝、修订或推进策略；不能绕过确定性 Gate。",schema({"experiment_id":S,"decision":S,"reason":S,"evidence":O},["experiment_id","decision","reason"])),
+ "v4_shadow_book_create":("创建与真实账本物理隔离的连续前向 Shadow Book。",schema({"strategy_version_id":S,"name":S,"initial_cash":{},"reality_spec":O,"sample_gate":O,"base_currency":S},["strategy_version_id","name","initial_cash","reality_spec","sample_gate"])),
+ "v4_shadow_rebalance":("使用隔离的信号/执行快照、冻结 Target 和上次 Shadow 状态确定性模拟一次前向调仓。",schema({"book_id":S,"signal_snapshot_id":S,"execution_snapshot_id":S,"experiment_run_id":S,"as_of":S,"target_manifest_id":S,"denominator_hash":S},["book_id","signal_snapshot_id","execution_snapshot_id","experiment_run_id","as_of","target_manifest_id","denominator_hash"])),
+ "v4_shadow_book_list":("列出 Shadow Book。",schema({"status":S})),
+ "v4_shadow_sample_status":("读取真实经过时间、调仓、Decision、市场状态和连续性样本。",schema({"book_id":S},["book_id"])),
+ "v4_manual_action_create":("从当前已签发 V4 Decision 生成可重验证、只供人工执行的 ManualActionSpec。",schema({"decision_revision_id":S,"spec":O},["decision_revision_id","spec"])),
+ "v4_manual_action_get":("读取 ManualActionSpec。",schema({"spec_id":S},["spec_id"])),
+ "v4_manual_action_validate":("用最新账本、上下文和健康行情重新验证 ManualActionSpec；as_of 仅允许当前时刻 ±5 秒。",schema({"spec_id":S,"as_of":S},["spec_id"])),
+ "v4_manual_action_set_status":("记录 ManualActionSpec 的呈现、用户接受或拒绝。",schema({"spec_id":S,"status":S,"reason":S},["spec_id","status"])),
+ "v4_execution_from_action":("从通过实时重验证的 ManualActionSpec 创建人工 Execution；不会连接券商。",schema({"spec_id":S,"idempotency_key":S},["spec_id","idempotency_key"])),
  "system_status":("查看数据库、调度、投递和恢复状态。",schema()),
  "system_doctor":("诊断 V3 数据库、工作区、个人上下文和金融事实准备度。",schema()),
 }
 
 
 def call(name:str,a:dict[str,Any]):
+    definition=TOOLS.get(name)
+    if not definition:raise CompanionError(f"unknown tool: {name}")
+    from .jobs import _validate_schema
+    _validate_schema(a,definition[1],f"{name} arguments")
     actor="primary-codex"
     if name=="schedule_create":return C.schedule_create(**a,actor=actor)
     if name=="schedule_list":return C.schedule_list(a.get("status"),a.get("kind"))
@@ -151,6 +186,7 @@ def call(name:str,a:dict[str,Any]):
     if name=="market_snapshot_add":return C.financial.market_add(**a)
     if name=="portfolio_state_as_of":return C.financial.portfolio_state(a["as_of"],a.get("account_id"),a.get("prices"))
     if name=="trade_impact_simulate":return C.financial.trade_impact(a["as_of"],a["account_id"],a["asset_id"],a["quantity"],a["price"],a.get("fee","0"),a.get("mandate"))
+    if name=="portfolio_rebalance_plan_calculate":return C.financial.portfolio_rebalance_plan(as_of=a["as_of"],account_id=a["account_id"],target_manifest_id=a["target_manifest_id"],market_snapshot_ids=a["market_snapshot_ids"],reality_spec=a["reality_spec"],mandate=a["mandate"],max_price_age_seconds=a.get("max_price_age_seconds",129600))
     if name=="max_purchase_calculate":return C.financial.max_purchase(a["as_of"],a["account_id"],a["asset_id"],a["price"],a.get("minimum_cash","0"),a.get("fee","0"),a.get("lot_size","1"))
     if name=="portfolio_exposure_calculate":return C.financial.portfolio_exposure(a["as_of"],a["account_id"],a["prices"],a["base_currency"])
     if name=="calculation_get":return C.financial.calculation_get(a["calculation_id"])
@@ -165,21 +201,51 @@ def call(name:str,a:dict[str,Any]):
     if name=="cognitive_revision_get":return C.cognition.revision_get(a["revision_id"])
     if name=="cognitive_link":return C.cognition.link(a["from_id"],a["to_id"],a["link_type"],a.get("metadata"))
     if name=="execution_create":return C.cognition.execution_create(a.get("decision_id"),a["details"])
-    if name=="execution_set_status":return C.cognition.execution_set_status(a["execution_id"],a["status"],a.get("ledger_entry_ids"))
+    if name=="execution_set_status":return C.cognition.execution_set_status(a["execution_id"],a["status"],a.get("ledger_entry_ids"),a.get("reason"))
     if name=="recovery_package_create":return C.cognition.recovery_package(a["purpose"],a["subject"],a.get("max_handles",20))
     if name=="attention_decide":return C.attention.decide(**a)
     if name=="attention_decision_list":return C.attention.list(a.get("action"),a.get("limit",100))
     if name=="attention_feedback":return C.attention.feedback(a["decision_id"],a["feedback"],a.get("note"))
     if name=="attention_mark_delivered":return C.attention.mark_delivered(a["decision_id"])
+    if name=="v4_status":return C.v4_status()
+    if name=="v4_feature_list":return C.jobs.feature_list()
+    if name=="v4_gate_list":return C.gates.list(a.get("scope",C.gate_scope))
+    if name=="v4_job_definition_list":return C.jobs.definition_list(a.get("status"))
+    if name=="v4_job_run_list":return C.jobs.run_list(a.get("status"),a.get("limit",50))
+    if name=="v4_job_run_get":return C.jobs.run_get(a["job_run_id"])
+    if name=="v4_data_health":return C.data.health()
+    if name=="v4_source_capability_list":return C.data.capability_list(a.get("provider"),a.get("capability"))
+    if name=="v4_asset_identity_list":return C.data.identity_list(a.get("provider"),a.get("identifier_value"))
+    if name=="v4_agent_review_record":return C.cognition.agent_review_record(**a)
+    if name=="v4_agent_review_get":return C.cognition.agent_review_get(a["invocation_id"])
+    if name=="v4_dataset_snapshot_get":return C.data.snapshot_get(a["snapshot_id"],verify=True)
+    if name=="v4_hypothesis_create":return C.research.hypothesis_create(name=a["name"],spec=a["spec"],experiment_budget=a["experiment_budget"],preregister=a.get("preregister",True))
+    if name=="v4_hypothesis_list":return C.research.hypothesis_list(a.get("status"))
+    if name=="v4_strategy_register":return C.research.strategy_register(hypothesis_id=a["hypothesis_id"],spec=a["spec"],code_ref=a["code_ref"],environment_ref=a["environment_ref"],parent_id=a.get("parent_id"))
+    if name=="v4_strategy_list":return C.research.strategy_list(a.get("hypothesis_id"),a.get("status"))
+    if name=="v4_experiment_start":return C.research.experiment_start(strategy_version_id=a["strategy_version_id"],dataset_snapshot_id=a["dataset_snapshot_id"],split=a["split"],params=a.get("params"),seed=a.get("seed",0))
+    if name=="v4_forward_signal_start":return C.research.forward_signal_start(strategy_version_id=a["strategy_version_id"],dataset_snapshot_id=a["dataset_snapshot_id"],partition_names=a["partition_names"])
+    if name=="v4_experiment_submit":return C.research.experiment_submit(a["experiment_id"],a["spec"])
+    if name=="v4_experiment_list":return C.research.experiment_list(a.get("strategy_version_id"),a.get("status"))
+    if name=="v4_promotion_decide":return C.research.promotion_decide(a["experiment_id"],a["decision"],a["reason"],a.get("evidence"),actor)
+    if name=="v4_shadow_book_create":return C.shadow.book_create(strategy_version_id=a["strategy_version_id"],name=a["name"],initial_cash=a["initial_cash"],reality_spec=a["reality_spec"],sample_gate=a["sample_gate"],base_currency=a.get("base_currency","CNY"))
+    if name=="v4_shadow_rebalance":return C.shadow.rebalance_record(**a)
+    if name=="v4_shadow_book_list":return C.shadow.book_list(a.get("status"))
+    if name=="v4_shadow_sample_status":return C.shadow.sample_status(a["book_id"])
+    if name=="v4_manual_action_create":return C.cognition.manual_action_create(a["decision_revision_id"],a["spec"])
+    if name=="v4_manual_action_get":return C.cognition.manual_action_get(a["spec_id"])
+    if name=="v4_manual_action_validate":return C.cognition.manual_action_validate(a["spec_id"],a.get("as_of"))
+    if name=="v4_manual_action_set_status":return C.cognition.manual_action_set_status(a["spec_id"],a["status"],a.get("reason"))
+    if name=="v4_execution_from_action":return C.cognition.execution_create_from_action(a["spec_id"],a["idempotency_key"])
     if name=="system_status":return C.system_status()
     if name=="system_doctor":return C.doctor()
-    raise CompanionError(f"unknown tool: {name}")
+    raise CompanionError(f"unimplemented advertised tool: {name}")
 
 
 def reply(request:dict[str,Any])->dict[str,Any]|None:
     method=request.get("method");rid=request.get("id")
     if rid is None:return None
-    if method=="initialize":result={"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":False}},"serverInfo":{"name":"investment-companion","version":"3.0.0"}}
+    if method=="initialize":result={"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":False}},"serverInfo":{"name":"investment-companion","version":"4.0.0"}}
     elif method=="tools/list":result={"tools":[{"name":n,"description":d,"inputSchema":s} for n,(d,s) in TOOLS.items()]}
     elif method=="tools/call":
         p=request.get("params",{})
