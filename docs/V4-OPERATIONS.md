@@ -7,6 +7,8 @@
 
 生产数据库仍是 Schema 3，V3 定时服务固定从只读用途的稳定工作树 `/home/ghk/.local/share/investment-companion/runtime-v3` 运行。当前工作区的 `.state/runtime-code-root` 还把 MCP 与 SessionStart hook 指向同一稳定工作树；该本地文件被 Git 忽略，只用于变更窗口隔离。V4 分支不会隐式迁移旧数据库；所有 V4 feature flags 默认关闭，Job worker/timer 已随仓库提供但未启用。
 
+过渡期内，稳定 V3 运行时的旧 `agent_config` 校验器会把 V4 Custom Agent 为禁用 Companion MCP 所需的同身份覆盖报告为告警；这不影响 V3 Tick 或数据库。以当前分支的 `./bin/companion agent-check` 和 `./bin/companion-agent-smoke` 验证角色权限，数据库/调度健康仍从 V3 `doctor.status` 与 timer 状态读取。迁移并切换到 V4 运行时后，`doctor` 必须恢复全部通过。
+
 在 G0/G1 等门禁完成前，不要迁移生产库、启用 worker、激活 JobDefinition 或打开 V4 数据/Shadow/Decision 功能。
 
 ## 2. 离线验收

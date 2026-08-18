@@ -79,7 +79,7 @@ V4 分支的目标架构已经落地，但当前生产仍是上图的 Schema 3�
 - 基础心跳：每 30 分钟，仅执行本地到期检查；每 Tick 最多投递一个 Run。
 - Investor、Mandate 与 Attention Policy 已有确认的当前版本。
 - Account、Asset、Ledger、Calculation、Thesis、Decision、Execution 已有首批真实运行记录；具体金额、持仓和版本只能通过 Lifecycle/Financial 工具按需读取，不能从本文推断。
-- 2026-08-18 最近一次 `doctor` 全部检查通过，数据库完整，无 failed Run 和 pending Outbox；这些是时点状态，下一会话仍需现场复核。
+- 2026-08-18 数据库完整、金融与 Context 检查正常，无 failed Run 和 pending Outbox；V3 稳定运行时的旧 `agent_config` 校验器不认识 V4 Agent 的同身份 `enabled=false` 安全覆盖，因而单独报告 `custom_agent_config` 告警。当前分支 `agent-check` 与 5/5 真实权限烟测均通过；这些是时点状态，下一会话仍需现场复核。
 
 ## 5. 已知限制
 
@@ -90,7 +90,7 @@ V4 分支的目标架构已经落地，但当前生产仍是上图的 Schema 3�
 - Tushare 白名单日频 Adapter 已完成工程实现，11 端点隔离 smoke 均 healthy，但没有生产 capability assessment；公告和财务 PIT Adapter 未实现。
 - cc-connect 唤醒依赖一条休眠 Cron 作为唤醒原语；投资任务频率只在 Companion Schedule 中。
 - 旧 `codex_turn` 仍由 cc-connect 唤醒；新 deterministic pipeline 有完整 claim/lease/attempt/终态，但尚未启用生产 worker。
-- 文件信息源首次巡视曾报告覆盖为 0，但重试时已存在可审计材料；Source cursor/coverage 诊断仍需加强，不能把该次结果解读为真实世界没有信息。
+- 文件信息源曾存在游标与文件时间戳相等时漏采的问题；V4 已改为重扫 watermark、按内容 hash 去重并加入等时间戳回归测试。生产 V3 切换前仍沿用旧逻辑，覆盖为 0 不能被解读为真实世界没有信息。
 - Schema 4 已实现 typed Job、Snapshot、Experiment Registry、Agent Invocation、QuantRuntime、Shadow Book 和 ManualAction，但生产仍为 Schema 3，任何普通启动都会拒绝隐式升级。
 - 尚无通过 G1 的真实 Dataset Snapshot；当前 Observation/Market Snapshot 仍不能被误用为 V4 市场数据库。
 - 当前没有 strategy-eligible 策略，不声明高胜率或 Alpha；G6 至少需要 90 个真实日历日且样本充分。
