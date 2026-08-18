@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="description" content="Investment Companion V3 运行架构与 V4 专业研究系统设计文档">
+  <meta name="description" content="Investment Companion V3 生产架构、V4 专业研究内核与 V5 投资经营系统文档">
   <title>Investment Companion · 文档中心</title>
   <link rel="stylesheet" href="site.css">
 </head>
@@ -11,7 +11,7 @@
   <header class="topbar">
     <a class="brand" href="#overview" aria-label="返回总览">
       <span class="brand-mark">IC</span>
-      <span><strong>Investment Companion</strong><small>V3 生产 · V4 Gate 验证</small></span>
+      <span><strong>Investment Companion</strong><small>V3 生产 · V5 工程候选</small></span>
     </a>
     <button id="nav-toggle" class="nav-toggle" aria-label="展开目录">目录</button>
   </header>
@@ -26,6 +26,13 @@
         <p class="nav-label">架构与验收</p>
         <a href="#doc=V3-DESIGN.md" data-doc="V3-DESIGN.md">V3 完整架构设计</a>
         <a href="#doc=V3-ACCEPTANCE.md" data-doc="V3-ACCEPTANCE.md">V3 验收与边界</a>
+        <p class="nav-label">V5 · 投资经营系统</p>
+        <a href="#doc=V5-DESIGN.md" data-doc="V5-DESIGN.md">V5 总体设计</a>
+        <a href="#doc=V5-ARCHITECTURE-DECISIONS.md" data-doc="V5-ARCHITECTURE-DECISIONS.md">V5 架构决策</a>
+        <a href="#doc=V5-IMPLEMENTATION-PLAN.md" data-doc="V5-IMPLEMENTATION-PLAN.md">V5 实施计划</a>
+        <a href="#doc=V5-ACCEPTANCE.md" data-doc="V5-ACCEPTANCE.md">V5 验收契约</a>
+        <a href="#doc=V5-USER-GUIDE.md" data-doc="V5-USER-GUIDE.md">V5 用户手册</a>
+        <a href="#doc=V5-OPERATIONS.md" data-doc="V5-OPERATIONS.md">V5 运维手册</a>
         <p class="nav-label">V4 · 工程完成，Gate 待验证</p>
         <a href="#doc=V4-DESIGN.md" data-doc="V4-DESIGN.md">V4 总体设计</a>
         <a href="#doc=V4-ARCHITECTURE-DECISIONS.md" data-doc="V4-ARCHITECTURE-DECISIONS.md">V4 架构决策</a>
@@ -39,7 +46,7 @@
         <a href="#doc=V2-ACCEPTANCE.md" data-doc="V2-ACCEPTANCE.md">V2 验收记录</a>
         <a href="#doc=EVENT-SYSTEM-PLAN.md" data-doc="EVENT-SYSTEM-PLAN.md">早期事件系统基线</a>
       </nav>
-      <div class="sidebar-note">当前生产：<code>v3.0.4</code><br>V4：工程完成，Gate 未通过<br>文档日期：2026-08-18</div>
+      <div class="sidebar-note">当前生产：<code>v3.0.4</code><br>V4：已冻结工程基线<br>V5：工程候选，未切生产<br>文档日期：2026-08-18</div>
     </aside>
 
     <main id="main" class="main" tabindex="-1">
@@ -47,10 +54,10 @@
         <div class="hero">
           <p class="eyebrow">CODEX-NATIVE · AUDITABLE · HUMAN-IN-CONTROL</p>
           <h1>个人全生命周期<br>投资伴侣</h1>
-          <p class="lede">当前 V3 保存真实个人事实、认知与主动任务；V4 工程已增加 PIT 数据、确定性量化研究与人工决策闭环，但在数据与前向样本 Gate 通过前保持关闭，不改变 Codex 主体和用户执行权。</p>
+          <p class="lede">当前 V3 保存生产事实与主动任务；V4 提供 PIT 数据、确定性研究和人工决策内核；V5 把它们收敛成 InvestmentProgram、机会漏斗、行动卡和真实结果复盘。生产尚未迁移，不改变 Codex 主体和用户执行权。</p>
           <div class="hero-actions">
             <a class="button primary" href="#doc=PROJECT-STATUS.md">从当前状态开始</a>
-            <a class="button" href="#doc=V2-OPERATIONS.md">查看使用手册</a>
+            <a class="button" href="#doc=V5-USER-GUIDE.md">查看 V5 使用手册</a>
           </div>
         </div>
 

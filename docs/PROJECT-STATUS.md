@@ -1,14 +1,20 @@
 # Investment Companion：项目状态与会话交棒
 
 更新时间：2026-08-18
-当前发布：主项目为 `v3.0.4`，Plugin 为 `v3.0.1`
-当前定位：V3 Core 继续承载生产事实与主动任务；V4 工程实现已在 `feature/v4-professional-system` 完成，尚未迁移生产、尚未通过数据/策略发布 Gate。
+当前生产：主项目 `v3.0.4` / SQLite Schema 3；生产数据库和主动链路未迁移
+当前开发：`feature/v5-investment-operating-system` / SQLite Schema 5
+V4 冻结：annotated tag `v4.0.0-engineering-baseline`
+当前 Plugin 源与本机安装：`0.1.0+codex.20260818163220`；新 Skill 只在新会话加载，并对未迁移的 V3 MCP 明确降级
 
-用户已确认 V4 定义：**可审计、Codex 驱动、确定性量化内核支撑、飞书协作、人工执行的专业个人投资研究与决策系统**。代码起始点以 `pre-v4.0.0` / `b6ec6fe`（V3.0.4）冻结。当前已选择窄 NativeQuantRuntime，并完成 typed Job、数据/研究域、系统派生 walk-forward、未调参前向信号、双快照组合 Shadow、个人联合约束、Agent 反证血缘和人工 Decision 闭环；但 G1 数据资格、G2 official golden 对齐、真实前向样本和 G6 用户价值仍为 No-Go。工程完成不能被写成“高胜率选股已经有效”。
+## 1. 当前结论
 
-## 1. 新会话从这里开始
+V5 已被重新定义为：**Codex 驱动、确定性证据支撑、以个人投资经营计划和决策闭环为中心、飞书极简协作、人工执行、能用真实结果持续自我否证的个人投资系统**。
 
-维护或继续设计前按顺序执行：
+V4 的数据、研究、Shadow、组合计算和人工行动内核继续保留；V5 新增的不是另一个选股算法，而是 Program → Opportunity → DecisionQueue → 人工成交 → Review/Scorecard 的用户经营闭环。
+
+工程候选不代表真实数据合格、策略有效、高胜率或已经可以稳定盈利。生产仍在固定 V3 runtime 上运行；本次开发没有迁移数据库、修改 live cc-connect cron、启用 systemd Job Worker 或打开任何 Feature。
+
+## 2. 新会话从这里开始
 
 ```bash
 cd /home/ghk/investment-home
@@ -20,121 +26,135 @@ python3 -m pytest -q
 codex plugin list
 ```
 
-然后阅读：
+阅读顺序：
 
-1. 本文：当前真相、边界和下一步；
-2. [V3-DESIGN.md](V3-DESIGN.md)：目标架构和长期不变量；
-3. [V3-ACCEPTANCE.md](V3-ACCEPTANCE.md)：已经验证与尚未验证；
-4. [V4-DESIGN.md](V4-DESIGN.md) 与 [V4-ARCHITECTURE-DECISIONS.md](V4-ARCHITECTURE-DECISIONS.md)：下一版本的整体架构与外部能力边界；
-5. [V4-IMPLEMENTATION-PLAN.md](V4-IMPLEMENTATION-PLAN.md) 与 [V4-ACCEPTANCE.md](V4-ACCEPTANCE.md)：实施顺序和不可跳过的 Gate；
-6. [DATA-QUALIFICATION-v1.md](DATA-QUALIFICATION-v1.md)、[V4-QUANT-RUNTIME-ADR.md](V4-QUANT-RUNTIME-ADR.md) 与 [V4-OPERATIONS.md](V4-OPERATIONS.md)：当前 No-Go、内核决策和迁移/回滚；
-7. [V2-OPERATIONS.md](V2-OPERATIONS.md)、`AGENTS.md` 与已安装 Plugin Skills：生产 V3 与 Codex 行为契约。
+1. 本文：当前生产与开发边界；
+2. [V5-DESIGN.md](V5-DESIGN.md)：为什么 V5 是经营闭环；
+3. [V5-USER-GUIDE.md](V5-USER-GUIDE.md)：用户实际怎么用；
+4. [V5-ARCHITECTURE-DECISIONS.md](V5-ARCHITECTURE-DECISIONS.md)：对象边界和不采用什么；
+5. [V5-IMPLEMENTATION-PLAN.md](V5-IMPLEMENTATION-PLAN.md) 与 [V5-ACCEPTANCE.md](V5-ACCEPTANCE.md)：完成状态和验收；
+6. [V5-OPERATIONS.md](V5-OPERATIONS.md)：只有获得生产授权后才执行的迁移；
+7. [V4-DESIGN.md](V4-DESIGN.md) 和 [V3-DESIGN.md](V3-DESIGN.md)：底层研究内核与长期事实系统。
 
-可视化文档中心位于 [index.html](index.html)，它直接渲染本目录的权威 Markdown；交棒时仍以本文的状态与验收记录为准。
+不要从旧聊天、`memory/*.md` 或 `portfolio/current.md` 推断真实持仓、个人事实或当前任务；使用 Companion 工具。
 
-不要从旧聊天、`memory/*.md` 或 `portfolio/current.md` 推断真实持仓和个人事实。
+## 3. 当前架构真相
 
-## 2. 当前架构真相
+### 生产
 
 ```text
-飞书用户 → cc-connect → Primary Investment Codex
-                         ├─ Investment Companion MCP（108 tools）
-                         ├─ Financial Kernel
-                         ├─ Cognitive Ledger
-                         ├─ Attention Engine
-                         └─ 短命 Custom Agents
+飞书 → cc-connect → Primary Investment Codex
+                   ├─ V3 Companion / Financial / Cognition / Attention
+                   └─ 短命只读专业 Agents
 
-systemd 30 分钟 Tick → Schedule / Run / Outbox → 单一 cc-connect 唤醒桥
-SQLite Schema 3 保存精确状态；Markdown 保存可读认知材料。
+systemd Tick → Schedule / Run / Outbox → 静态 cc-connect 唤醒
+固定 V3 runtime → 生产 SQLite Schema 3
 ```
 
-Primary Codex 是唯一最终判断、Agent 派遣、正式认知发布和用户沟通主体。Companion 不包裹 Codex，不自动交易。
+### V5 工程候选
 
-V4 分支的目标架构已经落地，但当前生产仍是上图的 Schema 3。V3 systemd 服务已固定到 `/home/ghk/.local/share/investment-companion/runtime-v3` 稳定工作树，避免开发分支隐式打开生产库；Schema 4 只允许显式 `migrate`。
+```text
+用户 → v5_today
+        ├─ setup_required → 确认 InvestmentProgram
+        ├─ action → DecisionQueue / ActionCard
+        ├─ no_action → 本轮有证据的无行动
+        └─ review_required → 补本期检查
 
-## 3. 已实现并验证
+Program → Opportunity Funnel → Decision → Queue
+        → 用户手工执行 → confirmed Ledger → Review / Scorecard
 
-- V2：Schedule、Watch、Observation、Event、Run、Case、Patrol、Artifact、Outbox、租约、幂等、重启恢复、在线备份。
-- V3 Financial Kernel：Account、Asset、Ledger Draft/Confirm/Reverse、CSV Draft Import、Portfolio As-of、Market Snapshot、Trade Impact、Max Purchase、基础 Exposure、Calculation Record、Reconciliation。
-- V3 Context：Investor、Mandate、Attention Policy 的 Draft/Current/Trial/Superseded。
-- V3 Cognition：Thesis/Decision/Review 对象与不可变 Revision、Decision Freeze、Execution 分离、Recovery Package。
-- V3 Attention：静默时段、每日预算、主题冷却、通知动作、反馈、投递状态。
-- Source Health、`workspace-init`、`doctor`、Plugin 安装和 GitHub Private 仓库。
-- 21 项自动化测试、MCP 协议检查、5 个 Custom Agent 真实派遣烟测、全新 Codex Readiness 前向验证、在线备份独立恢复。
-- 项目级 SessionStart Hook 注入有界 `session-brief`；新 Codex 会话先获得健康与活跃状态，再由 Lifecycle Skill 按问题创建 Recovery Package。
-- 项目级 `.codex/config.toml` 统一拥有 Primary 的共享 MCP；5 个 Custom Agent 使用只读沙箱，并以完整同身份配置显式禁用可写的 `investmentCompanion` MCP。禁用配置已经真实 Codex 派遣验证，Agent 只返回提案，由 Primary 审阅和落库。
-- 2026-08-15 已用 `market_scout` 成功重跑此前失败的收盘巡视；新 Run 成功完成，旧失败记录保留用于审计。
-- V4 Schema 4 使用有序、带 checksum 的显式迁移；在生产数据库副本上完成升级、重复升级、备份哈希和 V3 独立恢复演练，未迁移生产库。
-- V4 Data Domain 实现仓库外 CAS、Raw/PIT/语义分区验证、不可变 Snapshot、完整 denominator/Universe/exclusions、hash/路径篡改失败关闭和 Tushare canary Adapter。
-- V4 deterministic pipeline 实现 Run→Job→Step、代码内 handler allowlist、lease/recover、资源预算、零模型 Token、网络/进程创建拒绝和原子终态。
-- V4 研究与量化实现精确预注册、物理 split、系统派生 walk-forward、holdout access、试验预算、NativeQuantRuntime、独立参考计算、A 股 RealitySpec、未调参 `forward_shadow` 信号和 promotion Gate。
-- V4 Shadow 把信号快照与执行快照分开，校验前向时序、连续状态、样本门和真实 Ledger 物理隔离；禁止生产回填。
-- V4 决策闭环实现 confirmed Context、冻结 target、真实账户联合组合求解、单笔重新校验、不可变 Agent critique provenance、ManualActionSpec、手工 Execution 与 confirmed Ledger 精确关联；不存在券商连接。
-- V4 MCP/CLI 已提供受限入口；generic Manifest 自证、外部直接完成 Experiment 和自主 Agent Research 均不开放；Gate 报告/证据/assessment 有独立 CLI 且不能自行授予 Go。
-- 当前全量自动化测试为 64 项 Python tests + 8 个 subtests；最终发布仍需以现场命令复核。
+Outbox sending → 静态 cron → wake_claim 精确信封
+              → 完成 Run/Event → wake_complete
+```
 
-## 4. 当前生产运行状态
+Primary Codex 仍是唯一最终语义判断、正式发布和用户沟通主体。Companion 不包裹 Codex，不连接券商，不自动交易。
 
-- 当前存在日常市场巡视、A 股收盘复盘、周度展望、交易后 Review 与一次性检查等主动任务；精确清单始终通过 Companion 工具读取。
-- 基础心跳：每 30 分钟，仅执行本地到期检查；每 Tick 最多投递一个 Run。
-- Investor、Mandate 与 Attention Policy 已有确认的当前版本。
-- Account、Asset、Ledger、Calculation、Thesis、Decision、Execution 已有首批真实运行记录；具体金额、持仓和版本只能通过 Lifecycle/Financial 工具按需读取，不能从本文推断。
-- 2026-08-18 数据库完整、金融与 Context 检查正常，无 failed Run 和 pending Outbox；V3 稳定运行时的旧 `agent_config` 校验器不认识 V4 Agent 的同身份 `enabled=false` 安全覆盖，因而单独报告 `custom_agent_config` 告警。当前分支 `agent-check` 与 5/5 真实权限烟测均通过；这些是时点状态，下一会话仍需现场复核。
+## 4. V5 已实现
 
-## 5. 已知限制
+- Schema 5 有序迁移 `0005_v5_investment_operating_system`，普通启动拒绝隐式升级；
+- InvestmentProgram：不可变 Revision、confirmed Context、单 active、Trial 到期、显式 supersede；
+- Opportunity：observed/researching/qualified/actionable 单向证据状态机、失败终态、证据引用和幂等转换；
+- DecisionQueue：只接 current issued Decision、有效期、定时 snooze、accepted 待人工执行、实时失效、Attention 呈现和用户响应；
+- OperatingBrief：daily/weekly/monthly 固定契约、no-action 防伪、版本/supersedes；
+- ProgramScorecard：过程流量由专用确定性 Calculation 生成，指标只能从 `Calculation outputs.*` 解析并在读取时复核；
+- `v5_today`：setup/action/no_action/review_required 四态用户入口；
+- versioned wake envelope、`wake_claim` / `wake_complete`、旧 Run/研究事件兼容；
+- cron exec 只记 signaled，Primary 完成后才记 sent；
+- `v4_live_data_canary` 与 `v4_decision_support_beta`，把受控证据生成和正式放行分开；
+- MCP server 5.0.0，V5/Wake 工具、CLI status/today/wake 入口；
+- Plugin 新增 `operate-investment-program`，并更新主动、研究、决策、生命周期交接；
+- V5 设计、ADR、计划、验收、用户与运维文档。
 
-- Financial Kernel 是首版：尚无完整现金流调整收益率、复杂成本基础、完整公司行动、税务和通用多币种 FX 转换。
-- Portfolio Exposure 仅在同一基准币种下精确工作；缺少 FX 时返回 Warning。
-- Cognitive Ledger 已有版本机制，但尚无真实长期 Thesis/Decision 历史验证。
-- Attention Engine 已有策略门控，但尚无真实误报、漏报和通知疲劳数据。
-- Tushare 白名单日频 Adapter 已完成工程实现，11 端点隔离 smoke 均 healthy，但没有生产 capability assessment；公告和财务 PIT Adapter 未实现。
-- cc-connect 唤醒依赖一条休眠 Cron 作为唤醒原语；投资任务频率只在 Companion Schedule 中。
-- 旧 `codex_turn` 仍由 cc-connect 唤醒；新 deterministic pipeline 有完整 claim/lease/attempt/终态，但尚未启用生产 worker。
-- 文件信息源曾存在游标与文件时间戳相等时漏采的问题；V4 已改为重扫 watermark、按内容 hash 去重并加入等时间戳回归测试。生产 V3 切换前仍沿用旧逻辑，覆盖为 0 不能被解读为真实世界没有信息。
-- Schema 4 已实现 typed Job、Snapshot、Experiment Registry、Agent Invocation、QuantRuntime、Shadow Book 和 ManualAction，但生产仍为 Schema 3，任何普通启动都会拒绝隐式升级。
-- 尚无通过 G1 的真实 Dataset Snapshot；当前 Observation/Market Snapshot 仍不能被误用为 V4 市场数据库。
-- 当前没有 strategy-eligible 策略，不声明高胜率或 Alpha；G6 至少需要 90 个真实日历日且样本充分。
-- Qlib/FinRL/LEAN 未接入；这是明确的 NativeQuantRuntime 决策，不是遗漏。若 G1 通过且出现模型训练需求，再做隔离 Qlib Spike。
-- `docs/EVENT-SYSTEM-PLAN.md` 是历史设计，不是当前实施说明。
-- `docs/PRD-MARKET-DATA-ADAPTERS-AND-SHADOW-EVALUATION.md` 已废弃，只保留迁移说明；不得按旧 Phase 0 路线实现。
+V2/V3/V4 的 Schedule、Run、Watch、Event、Case、Ledger、Context、Cognition、Job、Data、Research、Shadow 和 ManualAction 均继续使用原对象，没有复制真相。
 
-## 6. 下一步，不要提前扩张
+## 5. 已验证
 
-1. 继续用隔离的 V3 稳定工作树运行真实账本和主动任务，不迁移生产库；
-2. 对 Tushare 白名单端点完成真实账号 probe、10–20 个交易日 canary、官方 golden corpus 和许可评审；
-3. 用合格 Snapshot 完成 NativeQuantRuntime 与独立参考计算的逐日 G2 对齐；
-4. 按 Gate 分段启用：G0 后只开放确定性 Job 底座，G1 后才开放 active data，G4 后开放 Shadow，G5 后且用户明确 opt-in 才开放 Decision Support；
-5. 前向运行至少 90 个日历日且达到样本门，再评审单策略 G6；失败策略 reject/retire，不用模型覆盖结论。
+- 全新 Schema 5 初始化与有序 migration；
+- Schema 3→5 和 Schema 4→5 显式迁移、旧 Schedule 保留；
+- Program → Opportunity → Decision → Queue → Brief 端到端；
+- 接受 Queue 后不创建 Execution、不改变 Ledger；
+- Scorecard 拒绝调用方填写 value，并重放 Calculation；
+- wake signal → exact claim → Run complete → wake complete；
+- 父 Run 未终态时不能伪报 wake 成功；
+- Beta 缺 opt-in/到期或到期后失败关闭；
+- Tushare Canary 现在要求 G0 和独立 Feature；
+- MCP 5.0.0 advertises V4/V5 safe surface；
+- 5 个 Plugin Skill quick validation 和 Plugin validator；
+- Plugin cachebuster 已更新并在 personal marketplace 本机重装。
 
-不得以接口数、模型数、Agent 数、实验数或 Token 消耗代替进展。每个阶段按 V4 Acceptance 的独立 Gate 决定 Go/No-Go。
+最终测试数量和 commit 以本分支最后一次命令与 Git 历史为准；交棒时重新运行，不从本文猜。
 
-## 7. 未来版本候选
+## 6. 当前生产运行事实
 
-只有真实使用证明需要时考虑：
+- 生产运行时仍固定在 `/home/ghk/.local/share/investment-companion/runtime-v3`；
+- 生产数据库仍是 Schema 3；开发程序的 `doctor` 对它报告“需要显式迁移”是预期 fail closed；
+- 已注册的 Schedule/Watch/Run 不需要重置，Schema 5 是兼容升级；
+- V5 新 Feature 默认关闭；
+- 当前 live cc-connect wake cron 仍是旧静态提示，尚未改为 `wake_claim` 协议；
+- Job Worker systemd 模板存在，但生产未 enable；模板存在不等于有 Worker 在运行；
+- 工作项目不需要重置。生产切换和 Plugin/桥重启完成后，用户只需 `/new`。
 
-- V3.1：账本导入/对账体验、收益率与成本基础、多币种 FX；
-- V3.2：Thesis/Decision/Review 的真实生命周期与月末 Close；
-- V4：可审计的数据资格、确定性量化研究、组合 Shadow、Codex 判断、飞书人工 Decision/Execution 闭环；
-- V5：跨机器安装、加密备份、长期恢复演练和公开发行。
+具体账户、持仓、金额、Context ID 和主动任务清单只能现场调用工具读取，不在本文复制。
 
-版本号只是建议，不是已批准路线。
+## 7. 尚未完成或不能由工程完成
 
-## 8. 仓库与敏感信息
+- 没有执行生产 Schema 3→5 迁移和回滚窗口；
+- 没有修改 live cron prompt 或重启 bridge/MCP；
+- 没有在生产创建/确认第一份 InvestmentProgram；
+- Tushare 真实数据资格 G1、official golden G2、真实研究/Shadow G3/G4 尚未完成；
+- Decision Beta 的真实飞书 opt-in 与使用证据 G5 尚未产生；
+- 策略和产品的长期前向净价值 G6 尚未产生；
+- 没有 strategy-eligible 策略，不声明 Alpha、高胜率或盈利能力；
+- 月度收益率、基准、资金加权/时间加权等精确指标仍须由 Financial Kernel 后续 Calculation 扩充，Scorecard 不会用模型补数。
 
-- 主项目：https://github.com/Lanbasara/investment-companion
-- Plugin：https://github.com/Lanbasara/investment-companion-plugin
-- 两者都是 Private。
-- Tushare Token：`~/.config/tushare/token`，不得写入 Git。
-- Tavily Token：本机受限凭据文件，Launcher 运行时读取。
-- `.state/`、调查运行材料、账单和导出默认不进入 Git。
+## 8. 下一步顺序
 
-## 9. 交棒验收
+1. 审阅 V5 代码和文档；不要先迁移生产；
+2. 在生产数据库副本完成 Schema 3→5、回滚、旧任务数量和 wake smoke；
+3. 获得用户对变更窗口的明确批准；
+4. 迁移生产但保持全部新 Feature 关闭，验证 doctor/integrity；
+5. 切换 Plugin 和 version-neutral wake prompt，重启桥后 `/new`；
+6. G0 下启用 V5 operating layer，与用户确认一份有到期/停止条件的 Trial Program；
+7. 用真实日/周/月周期逐步产生 G1–G6 证据，失败就缩减或停止。
 
-下一会话只有在以下检查通过后才能修改生产状态：
+不得批量重做现有主动任务。先让它们汇聚到 Program，使用数据证明重复或无价值后再逐项修订。
 
-- Git 工作树和远端差异已解释；
-- `system_doctor` 与 SQLite Integrity 正常；
-- `agent-check` 通过；修改 Agent/MCP 后还需运行 `./bin/companion-agent-smoke`；
-- 当前 Context、Account、Ledger、Schedule 使用工具读取，而非凭记忆猜测；
-- 修改前存在在线备份；
-- 不把代码能力、自动化测试和长期真实使用验证混为一谈。
+## 9. 仓库与敏感信息
+
+- 主项目：`https://github.com/Lanbasara/investment-companion`（Private）；
+- Plugin：`https://github.com/Lanbasara/investment-companion-plugin`（Private）；
+- Tushare Token：`~/.config/tushare/token`，不得写入 Git、SQLite、Raw 或日志；
+- `.state/`、真实调查材料、账单、数据对象和导出默认不进入 Git；
+- 仓库根现有未跟踪 zip、reports 和周报属于用户材料，不得误提交或删除。
+
+## 10. 交棒验收
+
+下一会话修改生产前必须确认：
+
+- Git branch、tag、remote 和脏文件均已解释；
+- 当前生产 runtime 与数据库 Schema 现场读取；
+- 备份可恢复，而不只是存在文件；
+- `agent-check` 和 Plugin 版本正常；
+- 当前 leased Run/sending Outbox/running Job 已处理；
+- 用户明确批准生产迁移、cron 修改、service enable 或 Feature 开启；
+- 工程能力、受控试用和长期投资价值没有被混为一谈。

@@ -11,7 +11,7 @@ from typing import Any, Callable
 
 from .core import CompanionError, canonical, digest, new_id
 from .db import row_dict, rows_dict
-from .timeutil import iso, utc_now
+from .timeutil import iso, parse, utc_now
 
 
 JobHandler = Callable[[dict[str, Any]], dict[str, Any]]
@@ -71,9 +71,12 @@ class JobEngine:
 
     FEATURE_REQUIREMENTS={
         "v4_jobs":["G0"],
+        "v4_live_data_canary":["G0"],
         "v4_live_data":["G0","G1"],
         "v4_shadow":["G0","G1","G2","G3","G4"],
+        "v4_decision_support_beta":["G0","G1","G2","G3","G4"],
         "v4_decision_support":["G0","G1","G2","G3","G4","G5"],
+        "v5_operating_system":["G0"],
     }
     HANDLER_FEATURES={
         "data.tushare_ingest":"v4_live_data",
@@ -117,6 +120,23 @@ class JobEngine:
         self.c.gates.require(self.FEATURE_REQUIREMENTS.get(key,[]))
         return item
 
+    def decision_support_require(self)->dict[str,Any]:
+        """Allow explicit beta use to generate G5 evidence without weakening full release."""
+
+        full=self.feature_get("v4_decision_support")
+        if full["enabled"]:
+            return self.feature_require("v4_decision_support")
+        beta=self.feature_get("v4_decision_support_beta")
+        if beta["enabled"]:
+            checked=self.feature_require("v4_decision_support_beta")
+            config=checked["config"]
+            if not isinstance(config.get("user_opt_in_ref"),str) or not config["user_opt_in_ref"].strip():
+                raise CompanionError("V4 decision support beta lacks user opt-in")
+            if not isinstance(config.get("expires_at"),str) or parse(config["expires_at"])<=utc_now():
+                raise CompanionError("V4 decision support beta has expired")
+            return checked
+        raise CompanionError("V4 decision support is disabled (full and beta)")
+
     def feature_set(
         self,
         key: str,
@@ -129,6 +149,12 @@ class JobEngine:
         if enabled:
             if key=="v4_agent_research":raise CompanionError("v4_agent_research is not implemented and cannot be enabled")
             self.c.gates.require(self.FEATURE_REQUIREMENTS.get(key,[]))
+            if key=="v4_decision_support_beta":
+                candidate=config if config is not None else before["config"]
+                if not isinstance(candidate,dict) or not isinstance(candidate.get("user_opt_in_ref"),str) or not candidate["user_opt_in_ref"].strip():
+                    raise CompanionError("v4_decision_support_beta requires config.user_opt_in_ref")
+                if not isinstance(candidate.get("expires_at"),str) or parse(candidate["expires_at"])<=utc_now():
+                    raise CompanionError("v4_decision_support_beta requires a future config.expires_at")
         now = iso()
         with self.db.transaction() as con:
             con.execute(
@@ -466,7 +492,19 @@ class JobEngine:
                     )
             if last_result.get("material"):
                 event=self.c.event_create(kind="deterministic_job_ready",occurred_at=now,summary=last_result.get("event_summary","Deterministic research artifact ready for Primary review"),payload={"job_run_id":job_run_id,"manifest_id":manifest_id,"research_only":True})
-                self.c.outbox_enqueue(kind="codex_turn",destination="investment-companion",event_id=event["id"],payload={"message":f"[V4 deterministic research ready]\nJob Run: {job_run_id}\nManifest: {manifest_id}\n这是待 Primary Codex 审阅的研究产物，不是用户行动建议。请核验 Gate、证据与反证后决定是否静默、继续研究或形成正式 Decision。"},idempotency_key=f"job-ready:{job_run_id}")
+                self.c.outbox_enqueue(
+                    kind="codex_turn",
+                    destination="investment-companion",
+                    event_id=event["id"],
+                    payload={
+                        "schema":"investment-companion.wake-envelope/v1",
+                        "envelope_type":"research_ready",
+                        "job_run_id":job_run_id,
+                        "manifest_id":manifest_id,
+                        "message":f"[Investment Companion research ready/v1]\nJob Run: {job_run_id}\nManifest: {manifest_id}\n这是待 Primary Codex 审阅的研究产物，不是用户行动建议。请核验 Gate、证据与反证后决定是否静默、继续研究或形成正式 Decision。",
+                    },
+                    idempotency_key=f"job-ready:{job_run_id}",
+                )
             return self.run_get(job_run_id)
         except Exception as exc:
             return self._fail(job_run_id, parent_run_id, str(exc))

@@ -64,9 +64,41 @@ def day_text(value: date) -> str:
     return value.isoformat()
 
 
+def market_today() -> date:
+    # Keep market fixtures safely behind the wall clock.  Using the real local
+    # date made these tests cross a market-close boundary at Asia/Shanghai
+    # midnight even though the production validator was behaving correctly.
+    return date(2026, 1, 30)
+
+
+@pytest.fixture
+def stable_market_clock(monkeypatch: pytest.MonkeyPatch) -> datetime:
+    """Use one post-close instant across modules that import utc_now directly."""
+
+    from companion import attention, cognition, core, data_domain, governance, jobs, operating, shadow, timeutil
+
+    fixed = datetime(2026, 1, 30, 9, 0, tzinfo=timezone.utc)
+    clock = lambda: fixed
+    for module in (
+        sys.modules[__name__],
+        attention,
+        cognition,
+        core,
+        data_domain,
+        governance,
+        jobs,
+        operating,
+        shadow,
+        timeutil,
+    ):
+        monkeypatch.setattr(module, "utc_now", clock)
+    return fixed
+
+
 def bar(asset_id: str, day: date, close: str, cutoff: str) -> dict:
     raw_hash = hashlib.sha256(f"{asset_id}:{day}:{close}".encode()).hexdigest()
     number = float(close)
+    known_at = f"{day_text(day)}T16:00:00+08:00"
     return {
         "asset_id": asset_id,
         "date": day_text(day),
@@ -78,8 +110,8 @@ def bar(asset_id: str, day: date, close: str, cutoff: str) -> dict:
         "suspended": False,
         "at_upper_limit": False,
         "at_lower_limit": False,
-        "first_known_at": f"{day_text(day)}T16:00:00+08:00",
-        "ingested_at": cutoff,
+        "first_known_at": known_at,
+        "ingested_at": known_at,
         "raw_hash": raw_hash,
         "parser_version": "fixture-bars/1",
     }
@@ -112,7 +144,7 @@ def build_snapshot(
             object_id=obj["id"],partition_name=name,stream="daily",role=role,knowledge_cutoff=cutoff
         )
         body=report["manifest"]["manifest"]
-        assert body["eligible"]
+        assert body["eligible"], body["violations"]
         partitions.append(
             SnapshotPartition(
                 name=name,
@@ -159,7 +191,7 @@ def build_research_fixture(companion: Companion):
     companion.v4_bootstrap_jobs(activate=True)
     alpha=companion.financial.asset_upsert("equity","Alpha","CNY",{"fixture":"ALPHA"})
     benchmark=companion.financial.asset_upsert("index","Benchmark","CNY",{"fixture":"BENCH"})
-    today=utc_now().date()
+    today=market_today()
     role_dates={
         "development":[today-timedelta(days=10),today-timedelta(days=9),today-timedelta(days=8)],
         "validation":[today-timedelta(days=7),today-timedelta(days=6),today-timedelta(days=5),today-timedelta(days=4)],
@@ -228,7 +260,7 @@ def build_research_fixture(companion: Companion):
                 companion.research.experiment_submit(experiment["id"],tampered)
         job=companion.research.experiment_submit(experiment["id"],spec)
         completed=companion.jobs.run_once(f"pytest-worker-{phase}",lease_seconds=30)
-        assert completed and completed["id"]==job["id"] and completed["status"]=="succeeded"
+        assert completed and completed["id"]==job["id"] and completed["status"]=="succeeded", completed
         completed_by_phase[phase]=completed;experiment_by_phase[phase]=companion.research.experiment_get(experiment["id"])
     return {"alpha":alpha,"benchmark":benchmark,"snapshot":snapshot,"names":names,"strategy":strategy,"experiment":experiment_by_phase["final_holdout"],"job":completed_by_phase["final_holdout"],"experiments":experiment_by_phase,"jobs":completed_by_phase}
 
@@ -258,11 +290,11 @@ def enter_shadow_with_forward(companion:Companion,fixture:dict,*,name:str)->dict
     experiment=companion.research.experiment_get(forward["id"])
     bundle=companion.data.manifest_get(experiment["bundle_manifest_id"])["manifest"]["manifest"]
     target_manifest=next(companion.data.manifest_get(ref) for ref in completed["steps"][-1]["output_refs"] if ref.startswith("manifest_") and companion.data.manifest_get(ref)["kind"]=="target_weights")
-    execution_snapshot,_=build_snapshot(companion,[fixture["alpha"]["id"],fixture["benchmark"]["id"]],{"production":[utc_now().date()]},benchmark=fixture["benchmark"]["id"])
+    execution_snapshot,_=build_snapshot(companion,[fixture["alpha"]["id"],fixture["benchmark"]["id"]],{"production":[market_today()]},benchmark=fixture["benchmark"]["id"])
     return {"book":book,"experiment":experiment,"job":completed,"bundle":bundle,"target_manifest":target_manifest,"execution_snapshot":execution_snapshot}
 
 
-def test_schema4_requires_explicit_migration_and_is_repeatable(tmp_path: Path):
+def test_latest_schema_requires_explicit_migration_and_is_repeatable(tmp_path: Path):
     root=tmp_path/"workspace";root.mkdir();db=root/".state"/"companion.db";db.parent.mkdir()
     v3_database(db)
     companion=Companion(root,gate_scope="test_fixture")
@@ -273,10 +305,10 @@ def test_schema4_requires_explicit_migration_and_is_repeatable(tmp_path: Path):
     assert con.execute("SELECT count(*) FROM sqlite_master WHERE name='schema_migrations'").fetchone()[0]==0
     con.close()
     result=companion.migrate(tmp_path/"backups")
-    assert result["schema_version"]=="4" and result["integrity"]=="ok"
+    assert result["schema_version"]=="5" and result["integrity"]=="ok"
     assert Path(result["from_backup"]).is_file()
     companion.initialize()
-    assert len(companion.system_status()["migrations"])==2
+    assert len(companion.system_status()["migrations"])==3
 
 
 def test_failed_migration_rolls_back_schema_changes(tmp_path: Path):
@@ -315,7 +347,7 @@ def test_partition_semantics_and_snapshot_fail_closed(tmp_path: Path):
     with companion.db.transaction() as con:con.execute("UPDATE data_objects SET status='quarantined' WHERE id=?",(bad["id"],))
     with pytest.raises(CompanionError,match="not ready"):
         companion.data.object_read(bad["id"])
-    snapshot,_=build_snapshot(companion,["asset-fixture"],{"development":[utc_now().date()-timedelta(days=1)]},benchmark="asset-fixture")
+    snapshot,_=build_snapshot(companion,["asset-fixture"],{"development":[market_today()-timedelta(days=1)]},benchmark="asset-fixture")
     with companion.db.transaction() as con:con.execute("UPDATE dataset_snapshots SET status='invalid' WHERE id=?",(snapshot["id"],))
     with pytest.raises(CompanionError,match="not consumable"):
         companion.data.snapshot_manifest(snapshot["id"])
@@ -344,7 +376,7 @@ def test_gate_validation_reports_are_typed_and_do_not_self_grant_go(tmp_path:Pat
         companion.gates.validation_report_publish(kind="test_report",checks={"zero_failures":True},input_refs=[source["id"]],commands=["pytest"],observations={"passed":1},scope="test_fixture")
 
 
-def test_atomic_deterministic_experiment_and_direct_completion_rejected(tmp_path: Path):
+def test_atomic_deterministic_experiment_and_direct_completion_rejected(tmp_path: Path, stable_market_clock: datetime):
     companion=new_companion(tmp_path)
     fixture=build_research_fixture(companion)
     experiment=fixture["experiment"];job=fixture["job"]
@@ -373,18 +405,18 @@ def test_atomic_deterministic_experiment_and_direct_completion_rejected(tmp_path
         companion.research.experiment_complete(experiment["id"],success=True,bundle_manifest_id=experiment["bundle_manifest_id"],job_run_id=job["id"])
 
 
-def test_forward_signal_is_untuned_and_targets_next_frozen_session(tmp_path: Path):
+def test_forward_signal_is_untuned_and_targets_next_frozen_session(tmp_path: Path, stable_market_clock: datetime):
     companion=new_companion(tmp_path);fixture=build_research_fixture(companion)
     forward=enter_shadow_with_forward(companion,fixture,name="operational fixture")
     bundle=forward["bundle"]
     pair=bundle["evaluation_pairs"][0]
     assert bundle["evaluation_phase"]=="forward_shadow"
-    assert pair=={"as_of":day_text(utc_now().date()-timedelta(days=1)),"effective_on":day_text(utc_now().date())}
+    assert pair=={"as_of":day_text(market_today()-timedelta(days=1)),"effective_on":day_text(market_today())}
     assert bundle["candidate_bundle"]["experiment_result"]["target_portfolio"]["effective_on"]==pair["effective_on"]
     assert bundle["model_tokens"]==0
 
 
-def test_shadow_is_continuous_forward_only_and_real_ledger_isolated(tmp_path: Path):
+def test_shadow_is_continuous_forward_only_and_real_ledger_isolated(tmp_path: Path, stable_market_clock: datetime):
     companion=new_companion(tmp_path);fixture=build_research_fixture(companion)
     forward=enter_shadow_with_forward(companion,fixture,name="forward fixture");book=forward["book"]
     bundle=forward["bundle"]
@@ -393,7 +425,7 @@ def test_shadow_is_continuous_forward_only_and_real_ledger_isolated(tmp_path: Pa
     ledger_before=len(companion.financial.ledger_list())
     rebalance=companion.shadow.rebalance_record(
         book_id=book["id"],signal_snapshot_id=fixture["snapshot"]["id"],execution_snapshot_id=forward["execution_snapshot"]["id"],experiment_run_id=forward["experiment"]["id"],
-        as_of=day_text(utc_now().date()),target_manifest_id=target_manifest["id"],denominator_hash=fixture["snapshot"]["denominator_hash"],
+        as_of=day_text(market_today()),target_manifest_id=target_manifest["id"],denominator_hash=fixture["snapshot"]["denominator_hash"],
     )
     assert rebalance["result"]["simulation_hash"]
     assert rebalance["result"]["simulation"]["target_hashes"]==[target_hash]
@@ -401,14 +433,14 @@ def test_shadow_is_continuous_forward_only_and_real_ledger_isolated(tmp_path: Pa
     with companion.db.connect() as con:
         assert con.execute("SELECT COUNT(*) FROM shadow_metrics WHERE book_id=?",(book["id"],)).fetchone()[0]==1
     with pytest.raises(CompanionError,match="advance monotonically"):
-        companion.shadow.rebalance_record(book_id=book["id"],signal_snapshot_id=fixture["snapshot"]["id"],execution_snapshot_id=forward["execution_snapshot"]["id"],experiment_run_id=forward["experiment"]["id"],as_of=day_text(utc_now().date()),target_manifest_id=target_manifest["id"],denominator_hash=fixture["snapshot"]["denominator_hash"])
+        companion.shadow.rebalance_record(book_id=book["id"],signal_snapshot_id=fixture["snapshot"]["id"],execution_snapshot_id=forward["execution_snapshot"]["id"],experiment_run_id=forward["experiment"]["id"],as_of=day_text(market_today()),target_manifest_id=target_manifest["id"],denominator_hash=fixture["snapshot"]["denominator_hash"])
     sample=companion.shadow.sample_status(book["id"])
     assert sample["status"]=="insufficient_evidence" and sample["checks"]["state_continuity"] is True
     with companion.db.transaction() as con:con.execute("UPDATE shadow_books SET created_at=? WHERE id=?",(iso(utc_now()-timedelta(days=120)),book["id"]))
     assert companion.shadow.sample_status(book["id"])["observed"]["days"]==1
 
 
-def test_manual_action_revalidates_and_fill_matches_frozen_base_ledger(tmp_path: Path,monkeypatch):
+def test_manual_action_revalidates_and_fill_matches_frozen_base_ledger(tmp_path: Path,monkeypatch,stable_market_clock: datetime):
     companion=new_companion(tmp_path);fixture=build_research_fixture(companion)
     forward=enter_shadow_with_forward(companion,fixture,name="decision fixture");book=forward["book"]
     pass_gate(companion,"G5")
@@ -541,6 +573,7 @@ def test_manual_action_revalidates_and_fill_matches_frozen_base_ledger(tmp_path:
 
 def test_tushare_canary_retains_raw_and_semantically_validates(tmp_path: Path,monkeypatch):
     companion=new_companion(tmp_path)
+    pass_gate(companion,"G0");companion.jobs.feature_set("v4_live_data_canary",True,reason="fixture canary")
     companion.data.stream_configure(provider="tushare",capability="daily",schema_version="tushare-normalizer/2",config={"mode":"canary"})
     responses={
         "daily":{"code":0,"msg":None,"data":{"fields":["ts_code","trade_date","open","high","low","close","vol"],"items":[["000001.SZ","20260817",10,11,9,10.5,1000]]}},
@@ -728,7 +761,7 @@ def test_deterministic_schedule_routes_strict_typed_inputs(tmp_path: Path):
     with pytest.raises(CompanionError,match="release gates not satisfied"):
         companion.jobs.run_once("pytest-stale-gate",lease_seconds=10)
     assert companion.jobs.run_get(job["id"])["status"]=="queued"
-    with companion.db.transaction() as con:con.execute("UPDATE gate_assessments SET schema_version=4 WHERE gate='G0' AND scope='test_fixture'")
+    with companion.db.transaction() as con:con.execute("UPDATE gate_assessments SET schema_version=5 WHERE gate='G0' AND scope='test_fixture'")
     completed=companion.jobs.run_once("pytest-schedule",lease_seconds=10)
     assert completed["status"]=="succeeded"
     assert companion.run_get(completed["parent_run_id"])["status"]=="succeeded"
@@ -744,11 +777,12 @@ def test_deterministic_schedule_routes_strict_typed_inputs(tmp_path: Path):
     assert frozen_job["job_definition_id"]==definition["id"] and frozen_job["inputs"]["parameters"]=={"version":1}
 
 
-def test_mcp_advertises_safe_v4_surface(tmp_path: Path):
+def test_mcp_advertises_safe_v4_v5_surface(tmp_path: Path):
     request="\n".join([
         json.dumps({"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}),
         json.dumps({"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}),
         json.dumps({"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"v4_status","arguments":{"unexpected":True}}}),
+        json.dumps({"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"v5_today","arguments":{}}}),
     ])+"\n"
     proc=subprocess.run(
         [sys.executable,"-m","companion.mcp_server"],input=request,text=True,capture_output=True,cwd=Path(__file__).parents[1],
@@ -756,6 +790,9 @@ def test_mcp_advertises_safe_v4_surface(tmp_path: Path):
     )
     responses=[json.loads(line) for line in proc.stdout.splitlines()]
     names={tool["name"] for tool in responses[1]["result"]["tools"]}
+    assert responses[0]["result"]["serverInfo"]["version"]=="5.0.0"
     assert {"v4_status","v4_experiment_submit","v4_shadow_rebalance","v4_manual_action_validate"}<=names
+    assert {"v5_today","v5_program_create","v5_opportunity_transition","v5_action_card","v5_program_metrics_calculate","v5_scorecard_publish","wake_claim","wake_complete"}<=names
     assert "manifest_publish" not in names and "experiment_complete" not in names
     assert responses[2]["result"]["isError"] is True and "unsupported fields" in responses[2]["result"]["content"][0]["text"]
+    assert responses[3]["result"]["structuredContent"]["result"]["mode"]=="setup_required"

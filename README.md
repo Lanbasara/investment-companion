@@ -23,7 +23,7 @@ systemd timer → Companion Schedule/Run/Outbox → cc-connect
               → Markdown 文件句柄与 SQLite 精确状态
 ```
 
-从 [项目状态与交棒入口](docs/PROJECT-STATUS.md) 开始阅读。当前生产架构见 [V3 设计](docs/V3-DESIGN.md)；V4 工程见 [总体设计](docs/V4-DESIGN.md)、[架构决策](docs/V4-ARCHITECTURE-DECISIONS.md)、[实施计划](docs/V4-IMPLEMENTATION-PLAN.md)、[验收契约](docs/V4-ACCEPTANCE.md)、[数据资格](docs/DATA-QUALIFICATION-v1.md)与[V4 运维](docs/V4-OPERATIONS.md)。V4 代码已实现，但数据与策略 Gate 尚未通过，生产仍运行 V3，不能把工程能力当成有效策略。历史决策见 [V2 设计](docs/V2-DESIGN.md)。
+从 [项目状态与交棒入口](docs/PROJECT-STATUS.md) 开始阅读。当前生产架构见 [V3 设计](docs/V3-DESIGN.md)；V4 是已冻结的专业研究内核基线；V5 把它组织为面向用户的个人投资经营系统，见 [总体设计](docs/V5-DESIGN.md)、[架构决策](docs/V5-ARCHITECTURE-DECISIONS.md)、[实施计划](docs/V5-IMPLEMENTATION-PLAN.md)、[验收契约](docs/V5-ACCEPTANCE.md)、[用户手册](docs/V5-USER-GUIDE.md)与[运维手册](docs/V5-OPERATIONS.md)。V5 工程候选不等于数据或策略有效，生产仍运行 V3。
 浏览器阅读入口为 [docs/index.html](docs/index.html)；它直接渲染上述权威 Markdown，不维护第二份易过期的文档副本。
 
 ## 验证

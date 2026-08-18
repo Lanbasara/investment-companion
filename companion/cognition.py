@@ -157,7 +157,7 @@ class CognitiveLedger:
         return item
 
     def _validate_v4_decision(self,obj:dict,knowledge_cutoff:str|None,context_refs:dict,calculation_ids:list[str],metadata:dict)->None:
-        self.c.jobs.feature_require("v4_decision_support")
+        release=self.c.jobs.decision_support_require()
         required_refs={"dataset_snapshot_id","strategy_version_id","experiment_run_id","research_experiment_run_id","target_manifest_id","portfolio_plan_calculation_id","constraint_calculation_id","attention_decision_id"}
         missing=required_refs-set(context_refs)
         if missing:raise CompanionError(f"V4 decision gate missing refs: {sorted(missing)}")
@@ -188,6 +188,7 @@ class CognitiveLedger:
         mode=metadata["decision_mode"]
         if mode not in {"beta","strategy_eligible"}:raise CompanionError("V4 decision_mode must be beta or strategy_eligible")
         if not isinstance(metadata["user_opt_in_ref"],str) or not metadata["user_opt_in_ref"].strip():raise CompanionError("V4 decision requires an explicit user opt-in reference")
+        if release["key"]=="v4_decision_support_beta" and metadata["user_opt_in_ref"]!=release["config"].get("user_opt_in_ref"):raise CompanionError("V4 beta Decision user opt-in differs from the enabled beta scope")
         if mode=="strategy_eligible":
             self.c.gates.require(["G6"])
             if self.c.shadow.sample_status(book["id"])["status"]!="eligible_for_review":raise CompanionError("strategy_eligible Decision requires sufficient forward Shadow evidence")
@@ -291,7 +292,7 @@ class CognitiveLedger:
         allowed={"presented","accepted","rejected","ordered","partially_filled","filled","cancelled","expired","superseded","deviated"}
         if status not in allowed:raise CompanionError("invalid execution status")
         if status in {"rejected","cancelled","expired","superseded","deviated"} and (not isinstance(reason,str) or not reason.strip()):raise CompanionError(f"Execution {status} requires a reason")
-        if status in {"presented","accepted","ordered"}:self.c.jobs.feature_require("v4_decision_support")
+        if status in {"presented","accepted","ordered"}:self.c.jobs.decision_support_require()
         item=self.execution_get(execution_id);ids=ledger_entry_ids or item["ledger_entry_ids"]
         if item["status"]==status:
             if ledger_entry_ids is not None and canonical(ledger_entry_ids)!=canonical(item["ledger_entry_ids"]):raise CompanionError("idempotent Execution transition supplied different ledger entries")
@@ -368,7 +369,7 @@ class CognitiveLedger:
         revision=self.revision_get(decision_revision_id);obj=self.object_get(revision["object_id"])
         if obj["object_type"]!="decision" or obj["status"]!="issued" or obj["current_revision_id"]!=decision_revision_id:raise CompanionError("ManualActionSpec requires the current issued Decision revision")
         if str(revision["metadata"].get("decision_contract_version"))!="4":raise CompanionError("ManualActionSpec requires a V4 Decision revision")
-        self.c.jobs.feature_require("v4_decision_support")
+        self.c.jobs.decision_support_require()
         required={"account_id","asset_id","side","quantity","lot_size","quote_at","valid_until","max_quote_age_seconds","price_range","priority","alternatives","source_refs","revalidate_if","notification_key"}
         missing=required-set(spec)
         if missing:raise CompanionError(f"ManualActionSpec missing: {sorted(missing)}")
@@ -476,7 +477,7 @@ class CognitiveLedger:
         allowed={"presented","accepted","rejected","expired","cancelled","superseded"}
         if status not in allowed:raise CompanionError("invalid ManualActionSpec status")
         if status in {"rejected","expired","cancelled","superseded"} and (not isinstance(reason,str) or not reason.strip()):raise CompanionError(f"ManualActionSpec {status} requires a reason")
-        if status in {"presented","accepted"}:self.c.jobs.feature_require("v4_decision_support")
+        if status in {"presented","accepted"}:self.c.jobs.decision_support_require()
         validation=self.manual_action_validate(spec_id)
         item=validation["spec"]
         if status in {"presented","accepted"}:
@@ -487,7 +488,7 @@ class CognitiveLedger:
         return self.manual_action_get(spec_id)
 
     def execution_create_from_action(self,spec_id:str,idempotency_key:str)->dict:
-        self.c.jobs.feature_require("v4_decision_support")
+        self.c.jobs.decision_support_require()
         if not isinstance(idempotency_key,str) or not idempotency_key.strip():raise CompanionError("Execution idempotency_key must be a non-empty string")
         with self.db.connect() as con:existing=row_dict(con.execute("SELECT * FROM executions WHERE idempotency_key=?",(idempotency_key,)).fetchone())
         if existing:

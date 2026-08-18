@@ -124,8 +124,36 @@ TOOLS={
  "v4_manual_action_validate":("用最新账本、上下文和健康行情重新验证 ManualActionSpec；as_of 仅允许当前时刻 ±5 秒。",schema({"spec_id":S,"as_of":S},["spec_id"])),
  "v4_manual_action_set_status":("记录 ManualActionSpec 的呈现、用户接受或拒绝。",schema({"spec_id":S,"status":S,"reason":S},["spec_id","status"])),
  "v4_execution_from_action":("从通过实时重验证的 ManualActionSpec 创建人工 Execution；不会连接券商。",schema({"spec_id":S,"idempotency_key":S},["spec_id","idempotency_key"])),
+ "wake_claim":("由被静态 cron 唤醒的 Primary Codex 原子领取真正触发本次唤醒的一个信封；兼容旧 Run 和 V4 研究事件。",schema({"owner":S,"lease_seconds":I},["owner"])),
+ "wake_complete":("在 Run 或事件确实处理后结束唤醒信封；成功的 scheduled_run 必须已先调用 run_complete。",schema({"outbox_id":S,"owner":S,"success":{"type":"boolean"},"error":S},["outbox_id","owner","success"])),
+ "v5_status":("读取 V5 投资经营计划、机会漏斗和用户决策队列的确定性状态。",schema()),
+ "v5_today":("读取面向用户的今日入口：设置缺口、行动卡、无行动结论或待复核状态。",schema()),
+ "v5_program_create":("创建投资经营计划草稿；只引用现有 Context 和账户，不复制投资事实。",schema({"name":S,"content":O,"context_refs":O,"reason":S,"expires_at":S},["name","content","context_refs","reason"])),
+ "v5_program_revise":("按乐观版本创建投资经营计划的新草稿版本。",schema({"program_id":S,"expected_version":I,"content":O,"context_refs":O,"reason":S,"expires_at":S},["program_id","expected_version","content","context_refs","reason"])),
+ "v5_program_confirm":("依据明确用户批准启用一个计划版本；试用版必须有未来到期时间。",schema({"revision_id":S,"user_approval_ref":S,"trial":{"type":"boolean"},"supersedes_program_id":S},["revision_id","user_approval_ref"])),
+ "v5_program_set_status":("暂停、恢复或归档投资经营计划；不会修改其历史版本。",schema({"program_id":S,"status":{"type":"string","enum":["active","paused","archived"]},"reason":S},["program_id","status","reason"])),
+ "v5_program_get":("读取投资经营计划及其不可变版本史。",schema({"program_id":S},["program_id"])),
+ "v5_program_list":("列出投资经营计划。",schema({"status":S})),
+ "v5_program_current":("读取当前唯一生效的投资经营计划。",schema()),
+ "v5_opportunity_create":("把有不可变证据来源的想法登记为 observed 机会；不是选股结论。",schema({"subject":O,"evidence_refs":{"type":"array","items":S},"reason":S,"program_id":S,"thesis_id":S,"strategy_version_id":S},["subject","evidence_refs","reason"])),
+ "v5_opportunity_get":("读取机会、证据成熟度和完整转换历史。",schema({"opportunity_id":S},["opportunity_id"])),
+ "v5_opportunity_list":("读取机会漏斗；stage 是证据成熟度，不是模型置信概率。",schema({"program_id":S,"stage":S,"status":S,"limit":I})),
+ "v5_opportunity_transition":("按严格顺序推进机会证据；actionable 必须绑定当前有效 Decision。",schema({"opportunity_id":S,"expected_version":I,"to_stage":S,"to_status":S,"evidence_refs":{"type":"array","items":S},"reason":S,"qualification":O,"decision_revision_id":S,"idempotency_key":S},["opportunity_id","expected_version","to_stage","to_status","evidence_refs","reason"])),
+ "v5_decision_queue_enqueue":("把 actionable Opportunity 的当前 Decision 放入人工决策队列；不创建 Execution。",schema({"opportunity_id":S,"decision_revision_id":S,"manual_action_spec_id":S,"valid_until":S,"idempotency_key":S},["opportunity_id","decision_revision_id"])),
+ "v5_decision_queue_get":("读取一个用户决策队列项。",schema({"queue_id":S},["queue_id"])),
+ "v5_decision_queue_list":("列出用户决策队列；过期项会确定性失效。",schema({"program_id":S,"state":S,"limit":I})),
+ "v5_action_card":("生成一个只供人工判断和执行的结构化行动卡，并实时重验证 ManualActionSpec。",schema({"queue_id":S},["queue_id"])),
+ "v5_decision_queue_respond":("记录呈现、定时稍后处理、接受、拒绝或关闭；接受仍不会自动成交。",schema({"queue_id":S,"state":S,"reason":S,"snoozed_until":S,"attention_decision_id":S},["queue_id","state"])),
+ "v5_brief_prepare":("生成日/周/月用户简报记录；no_action 只能在没有有效行动队列时成立。",schema({"brief_type":S,"period_key":S,"as_of":S,"conclusion":S,"payload":O,"source_refs":{"type":"array","items":S},"idempotency_key":S,"program_id":S},["brief_type","period_key","as_of","conclusion","payload","source_refs"])),
+ "v5_brief_get":("读取一个可审计用户简报。",schema({"brief_id":S},["brief_id"])),
+ "v5_brief_list":("列出当前版本的用户简报。",schema({"program_id":S,"brief_type":S,"limit":I})),
+ "v5_brief_mark_presented":("在飞书实际送达后，把简报关联到已送达 AttentionDecision。",schema({"brief_id":S,"attention_decision_id":S},["brief_id","attention_decision_id"])),
+ "v5_program_metrics_calculate":("确定性计算 Program 在一个周期内的机会、决策和简报流量；缺失的收益、时间与成本数据会明确标为 insufficient_evidence。",schema({"period_start":S,"period_end":S,"program_id":S},["period_start","period_end"])),
+ "v5_scorecard_publish":("发布月度结果记分卡；所有数值必须从 Calculation output_path 解析，模型不能直接填写。",schema({"period_start":S,"period_end":S,"metrics":{"type":"array","items":O},"comparisons":{"type":"array","items":O},"source_refs":{"type":"array","items":S},"caveats":{"type":"array","items":S},"program_id":S},["period_start","period_end","metrics","comparisons","source_refs","caveats"])),
+ "v5_scorecard_get":("读取并重新校验一个结果记分卡的 Calculation 血缘。",schema({"scorecard_id":S},["scorecard_id"])),
+ "v5_scorecard_list":("列出投资经营计划的结果记分卡。",schema({"program_id":S,"limit":I})),
  "system_status":("查看数据库、调度、投递和恢复状态。",schema()),
- "system_doctor":("诊断 V3 数据库、工作区、个人上下文和金融事实准备度。",schema()),
+ "system_doctor":("诊断数据库、工作区、个人上下文和金融事实准备度。",schema()),
 }
 
 
@@ -237,6 +265,34 @@ def call(name:str,a:dict[str,Any]):
     if name=="v4_manual_action_validate":return C.cognition.manual_action_validate(a["spec_id"],a.get("as_of"))
     if name=="v4_manual_action_set_status":return C.cognition.manual_action_set_status(a["spec_id"],a["status"],a.get("reason"))
     if name=="v4_execution_from_action":return C.cognition.execution_create_from_action(a["spec_id"],a["idempotency_key"])
+    if name=="wake_claim":return C.wake_claim(a["owner"],a.get("lease_seconds",1800))
+    if name=="wake_complete":return C.wake_complete(a["outbox_id"],a["owner"],a["success"],a.get("error"))
+    if name=="v5_status":return C.v5_status()
+    if name=="v5_today":return C.operating.today()
+    if name=="v5_program_create":return C.operating.program_create(name=a["name"],content=a["content"],context_refs=a["context_refs"],reason=a["reason"],expires_at=a.get("expires_at"),actor=actor)
+    if name=="v5_program_revise":return C.operating.program_revise(program_id=a["program_id"],expected_version=a["expected_version"],content=a["content"],context_refs=a["context_refs"],reason=a["reason"],expires_at=a.get("expires_at"),actor=actor)
+    if name=="v5_program_confirm":return C.operating.program_confirm(a["revision_id"],user_approval_ref=a["user_approval_ref"],trial=a.get("trial",False),supersedes_program_id=a.get("supersedes_program_id"),actor=actor)
+    if name=="v5_program_set_status":return C.operating.program_set_status(a["program_id"],a["status"],reason=a["reason"],actor=actor)
+    if name=="v5_program_get":return C.operating.program_get(a["program_id"])
+    if name=="v5_program_list":return C.operating.program_list(a.get("status"))
+    if name=="v5_program_current":return C.operating.program_current()
+    if name=="v5_opportunity_create":return C.operating.opportunity_create(subject=a["subject"],evidence_refs=a["evidence_refs"],reason=a["reason"],program_id=a.get("program_id"),thesis_id=a.get("thesis_id"),strategy_version_id=a.get("strategy_version_id"),actor=actor)
+    if name=="v5_opportunity_get":return C.operating.opportunity_get(a["opportunity_id"])
+    if name=="v5_opportunity_list":return C.operating.opportunity_list(program_id=a.get("program_id"),stage=a.get("stage"),status=a.get("status","active"),limit=a.get("limit",100))
+    if name=="v5_opportunity_transition":return C.operating.opportunity_transition(a["opportunity_id"],expected_version=a["expected_version"],to_stage=a["to_stage"],to_status=a["to_status"],evidence_refs=a["evidence_refs"],reason=a["reason"],qualification=a.get("qualification"),decision_revision_id=a.get("decision_revision_id"),idempotency_key=a.get("idempotency_key"),actor=actor)
+    if name=="v5_decision_queue_enqueue":return C.operating.queue_enqueue(a["opportunity_id"],decision_revision_id=a["decision_revision_id"],manual_action_spec_id=a.get("manual_action_spec_id"),valid_until=a.get("valid_until"),idempotency_key=a.get("idempotency_key"),actor=actor)
+    if name=="v5_decision_queue_get":return C.operating.queue_get(a["queue_id"])
+    if name=="v5_decision_queue_list":return C.operating.queue_list(program_id=a.get("program_id"),state=a.get("state"),limit=a.get("limit",100))
+    if name=="v5_action_card":return C.operating.queue_card(a["queue_id"])
+    if name=="v5_decision_queue_respond":return C.operating.queue_respond(a["queue_id"],state=a["state"],reason=a.get("reason"),snoozed_until=a.get("snoozed_until"),attention_decision_id=a.get("attention_decision_id"),actor=actor)
+    if name=="v5_brief_prepare":return C.operating.brief_prepare(brief_type=a["brief_type"],period_key=a["period_key"],as_of=a["as_of"],conclusion=a["conclusion"],payload=a["payload"],source_refs=a["source_refs"],idempotency_key=a.get("idempotency_key"),program_id=a.get("program_id"),actor=actor)
+    if name=="v5_brief_get":return C.operating.brief_get(a["brief_id"])
+    if name=="v5_brief_list":return C.operating.brief_list(program_id=a.get("program_id"),brief_type=a.get("brief_type"),limit=a.get("limit",50))
+    if name=="v5_brief_mark_presented":return C.operating.brief_mark_presented(a["brief_id"],attention_decision_id=a["attention_decision_id"],actor=actor)
+    if name=="v5_program_metrics_calculate":return C.operating.program_metrics_calculate(period_start=a["period_start"],period_end=a["period_end"],program_id=a.get("program_id"))
+    if name=="v5_scorecard_publish":return C.operating.scorecard_publish(period_start=a["period_start"],period_end=a["period_end"],metrics=a["metrics"],comparisons=a["comparisons"],source_refs=a["source_refs"],caveats=a["caveats"],program_id=a.get("program_id"),actor=actor)
+    if name=="v5_scorecard_get":return C.operating.scorecard_get(a["scorecard_id"])
+    if name=="v5_scorecard_list":return C.operating.scorecard_list(program_id=a.get("program_id"),limit=a.get("limit",50))
     if name=="system_status":return C.system_status()
     if name=="system_doctor":return C.doctor()
     raise CompanionError(f"unimplemented advertised tool: {name}")
@@ -245,7 +301,7 @@ def call(name:str,a:dict[str,Any]):
 def reply(request:dict[str,Any])->dict[str,Any]|None:
     method=request.get("method");rid=request.get("id")
     if rid is None:return None
-    if method=="initialize":result={"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":False}},"serverInfo":{"name":"investment-companion","version":"4.0.0"}}
+    if method=="initialize":result={"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":False}},"serverInfo":{"name":"investment-companion","version":"5.0.0"}}
     elif method=="tools/list":result={"tools":[{"name":n,"description":d,"inputSchema":s} for n,(d,s) in TOOLS.items()]}
     elif method=="tools/call":
         p=request.get("params",{})

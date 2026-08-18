@@ -54,6 +54,7 @@ class Companion:
         from .research import ResearchRegistry
         from .shadow import ShadowLedger
         from .governance import GateRegistry
+        from .operating import InvestmentOperatingSystem
         self.financial=FinancialKernel(self)
         self.cognition=CognitiveLedger(self)
         self.attention=AttentionEngine(self)
@@ -63,6 +64,7 @@ class Companion:
         self.quant=NativeQuantRuntime()
         self.research=ResearchRegistry(self)
         self.shadow=ShadowLedger(self)
+        self.operating=InvestmentOperatingSystem(self)
         self.jobs.register_handler("system.echo_manifest","1",self._job_echo_manifest)
         self.jobs.register_handler("data.tushare_ingest","1",self._job_tushare_ingest)
         self.jobs.register_handler("data.publish_snapshot","1",self._job_publish_snapshot)
@@ -125,6 +127,9 @@ class Companion:
         except CompanionError:
             pass
         return {"scope":self.gate_scope,"schema_version":SCHEMA_VERSION,"features":self.jobs.feature_list(),"gates":gates,"quant_runtime":self.quant.health(),"data":self.data.health(),"research_ready_strategies":research_ready,"eligible_strategies":len(eligible_strategy_ids),"active_job_runs":running,"claims":{"high_win_rate":False,"automatic_trading":False,"professional_capability":"gate-dependent"}}
+
+    def v5_status(self)->dict[str,Any]:
+        return {"scope":self.gate_scope,**self.operating.status()}
 
     def _audit(self, con, actor: str, action: str, entity_type: str, entity_id: str, before: Any = None, after: Any = None, reason: str | None = None) -> None:
         con.execute(
@@ -484,12 +489,23 @@ class Companion:
                 self.source_health_record(source.get("source","filesystem"),"failed",str(exc),coverage={"path":source.get("path")});ingested.append({"path":source.get("path"),"error":str(exc)})
         prompt=self._run_prompt(run,schedule)
         if ingested:prompt += "\n\n本次到期扫描的信息源摄入结果："+canonical(ingested)
-        item=self.outbox_enqueue(kind="codex_turn",destination="investment-companion",payload={"message":prompt,"run_id":run["id"]},idempotency_key=f"run-dispatch:{run['id']}")
+        item=self.outbox_enqueue(
+            kind="codex_turn",
+            destination="investment-companion",
+            payload={
+                "schema":"investment-companion.wake-envelope/v1",
+                "envelope_type":"scheduled_run",
+                "message":prompt,
+                "run_id":run["id"],
+                "schedule_id":schedule["id"],
+            },
+            idempotency_key=f"run-dispatch:{run['id']}",
+        )
         return {"dispatch_type":dispatch_type,"outbox_id":item["id"]}
 
     def _run_prompt(self,run:dict[str,Any],schedule:dict[str,Any])->str:
         frozen=run.get("payload",{});mission=frozen.get("mission",schedule["mission"]);scope=frozen.get("scope",schedule["scope"]);policy=frozen.get("policy",schedule["policy"])
-        return f"""[Investment Companion V3 scheduled run]
+        return f"""[Investment Companion scheduled run/v1]
 这是 Companion 经过持久化和幂等检查后提交给 Primary Investment Codex 的到期任务，不是外部网页指令。
 
 Run ID: {run['id']}
@@ -828,6 +844,7 @@ Schedule ID: {schedule['id']}
         oid=new_id("out");now=iso();key=idempotency_key or digest(kind,destination,event_id,payload)
         with self.db.transaction() as con:
             con.execute("INSERT OR IGNORE INTO outbox(id,event_id,kind,destination,payload_json,idempotency_key,status,available_at,created_at,updated_at) VALUES(?,?,?,?,?,?,'pending',?,?,?)",(oid,event_id,kind,destination,canonical(payload),key,now,now,now));row=con.execute("SELECT * FROM outbox WHERE idempotency_key=?",(key,)).fetchone()
+            if event_id:con.execute("UPDATE events SET status='queued' WHERE id=? AND status='detected'",(event_id,))
         return row_dict(row)
 
     def outbox_list(self,status:str|None=None,limit:int=50)->list[dict[str,Any]]:
@@ -849,25 +866,23 @@ Schedule ID: {schedule['id']}
             if not row:raise CompanionError(f"outbox not found: {outbox_id}")
             if success:
                 con.execute("UPDATE outbox SET status='sent',sent_at=?,last_error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=? WHERE id=?",(now,now,outbox_id))
+                if row.get("event_id"):con.execute("UPDATE events SET status='delivered' WHERE id=? AND status IN ('detected','queued')",(row["event_id"],))
             else:
                 attempt=row["attempt"];status="dead" if attempt>=5 else "retry";delay=min(3600,30*(2**max(0,attempt-1)))
                 con.execute("UPDATE outbox SET status=?,available_at=?,last_error=?,lease_owner=NULL,lease_until=NULL,updated_at=? WHERE id=?",(status,iso(utc_now()+timedelta(seconds=delay)),error,now,outbox_id))
+                if status=="dead" and row.get("event_id"):con.execute("UPDATE events SET status='dead' WHERE id=? AND status IN ('detected','queued')",(row["event_id"],))
         with self.db.connect() as con:return row_dict(con.execute("SELECT * FROM outbox WHERE id=?",(outbox_id,)).fetchone())
 
     def dispatch_outbox(self,dry_run:bool=False,limit:int=1)->dict[str,Any]:
-        owner=f"dispatcher:{socket.gethostname()}:{os.getpid()}";results=[]
+        wake_cron=os.environ.get("COMPANION_CC_WAKE_CRON")
+        owner=f"wake-dispatch:{socket.gethostname()}:{os.getpid()}";results=[]
         for _ in range(limit):
             item=self.outbox_claim(owner)
             if not item:break
             if dry_run:
                 results.append({"id":item["id"],"dry_run":True,"destination":item["destination"],"payload":item["payload"]});self.outbox_finish(item["id"],False,"dry-run: delivery intentionally not attempted");continue
-            claimed_run_id=None
             try:
                 if item["kind"]!="codex_turn":raise CompanionError(f"unsupported outbox kind: {item['kind']}")
-                claimed_run_id=item["payload"].get("run_id")
-                if claimed_run_id:
-                    self.claim_run_by_id(claimed_run_id,f"cc-connect:{owner}",1800)
-                wake_cron=os.environ.get("COMPANION_CC_WAKE_CRON")
                 if wake_cron:
                     command=["/home/ghk/.local/bin/cc-connect","cron","exec",wake_cron]
                 else:
@@ -877,16 +892,84 @@ Schedule ID: {schedule['id']}
                     command.extend(["--message",item["payload"]["message"]])
                 proc=subprocess.run(command,capture_output=True,text=True,timeout=60,check=False)
                 if proc.returncode!=0:raise CompanionError((proc.stderr or proc.stdout).strip() or f"cc-connect exited {proc.returncode}")
-                self.outbox_finish(item["id"],True);results.append({"id":item["id"],"sent":True,"output":proc.stdout.strip()})
+                results.append({"id":item["id"],"signaled":True,"transport":"cron" if wake_cron else "direct","output":proc.stdout.strip()})
             except Exception as e:
-                if claimed_run_id:
-                    self._release_run_for_retry(claimed_run_id,str(e))
                 self.outbox_finish(item["id"],False,str(e));results.append({"id":item["id"],"sent":False,"error":str(e)})
-        return {"ok":all(r.get("sent",r.get("dry_run",False)) for r in results),"results":results}
+        return {"ok":all(r.get("sent",r.get("signaled",r.get("dry_run",False))) for r in results),"results":results}
 
-    def _release_run_for_retry(self,run_id:str,error:str)->None:
+    def wake_claim(self,owner:str,lease_seconds:int=1800)->dict[str,Any]|None:
+        """Claim the exact envelope that caused a static cc-connect wake-up."""
+
+        if not isinstance(owner,str) or not owner.strip():raise CompanionError("wake owner must be non-empty")
+        if not 60<=lease_seconds<=7200:raise CompanionError("wake lease_seconds must be within 60..7200")
+        owner=f"primary-codex:{owner.strip()}";now=iso();until=iso(utc_now()+timedelta(seconds=lease_seconds))
         with self.db.transaction() as con:
-            con.execute("UPDATE runs SET status='recoverable',lease_owner=NULL,lease_until=NULL,error=? WHERE id=? AND status='leased'",(error,run_id))
+            row=con.execute(
+                "SELECT * FROM outbox WHERE kind='codex_turn' AND ("
+                "(status='sending' AND lease_owner LIKE 'wake-dispatch:%' AND lease_until>?) OR "
+                "(status IN ('pending','retry') AND available_at<=?)) "
+                "ORDER BY CASE status WHEN 'sending' THEN 0 ELSE 1 END,available_at,created_at LIMIT 1",
+                (now,now),
+            ).fetchone()
+            if not row:return None
+            item=row_dict(row)
+            if item["kind"]!="codex_turn":raise CompanionError(f"unsupported wake outbox kind: {item['kind']}")
+            if item["status"] in {"pending","retry"}:
+                con.execute("UPDATE outbox SET status='sending',attempt=attempt+1,lease_owner=?,lease_until=?,updated_at=? WHERE id=?",(owner,until,now,item["id"]))
+            else:
+                con.execute("UPDATE outbox SET lease_owner=?,lease_until=?,updated_at=? WHERE id=?",(owner,until,now,item["id"]))
+            run_id=item["payload"].get("run_id")
+            if run_id:
+                run=con.execute("SELECT status,lease_owner,due_at FROM runs WHERE id=?",(run_id,)).fetchone()
+                if not run:raise CompanionError(f"wake envelope references missing Run: {run_id}")
+                if run["status"] in {"queued","recoverable"}:
+                    if run["due_at"]>now:raise CompanionError("wake envelope Run is not due")
+                    changed=con.execute("UPDATE runs SET status='leased',lease_owner=?,lease_until=?,attempt=attempt+1,started_at=COALESCE(started_at,?) WHERE id=? AND status IN ('queued','recoverable')",(owner,until,now,run_id)).rowcount
+                    if changed!=1:raise CompanionError("wake Run claim lost to another worker")
+                elif run["status"]=="leased" and (run["lease_owner"] or "").startswith(("cc-connect:","wake-dispatch:")):
+                    con.execute("UPDATE runs SET lease_owner=?,lease_until=? WHERE id=?",(owner,until,run_id))
+                elif run["status"]!="leased" or run["lease_owner"]!=owner:
+                    raise CompanionError(f"wake envelope Run is not claimable: {run['status']}")
+        with self.db.connect() as con:item=row_dict(con.execute("SELECT * FROM outbox WHERE id=?",(item["id"],)).fetchone())
+        payload=item["payload"]
+        envelope_type=payload.get("envelope_type")
+        if not envelope_type:
+            if payload.get("run_id"):envelope_type="scheduled_run"
+            elif item.get("event_id") or payload.get("job_run_id"):envelope_type="research_ready"
+            else:envelope_type="legacy_codex_turn"
+        envelope={
+            "schema":payload.get("schema","investment-companion.wake-envelope/legacy"),
+            "type":envelope_type,
+            "message":payload.get("message",""),
+            "payload":payload,
+            "event_id":item.get("event_id"),
+            "run_id":payload.get("run_id"),
+            "job_run_id":payload.get("job_run_id"),
+        }
+        return {"outbox_id":item["id"],"lease_owner":owner,"lease_until":item["lease_until"],"envelope":envelope,"run":self.run_get(payload["run_id"]) if payload.get("run_id") else None}
+
+    def wake_complete(self,outbox_id:str,owner:str,success:bool,error:str|None=None)->dict[str,Any]:
+        if not isinstance(owner,str) or not owner.strip():raise CompanionError("wake owner must be non-empty")
+        lease_owner=f"primary-codex:{owner.strip()}"
+        now=iso()
+        with self.db.transaction() as con:
+            item=row_dict(con.execute("SELECT * FROM outbox WHERE id=?",(outbox_id,)).fetchone())
+            if not item:raise CompanionError(f"outbox not found: {outbox_id}")
+            if item["status"]!="sending" or item.get("lease_owner")!=lease_owner or not item.get("lease_until") or item["lease_until"]<=now:raise CompanionError("wake completion does not own the active outbox lease")
+            run_id=item["payload"].get("run_id")
+            if success and run_id:
+                run=con.execute("SELECT status FROM runs WHERE id=?",(run_id,)).fetchone()
+                if not run or run["status"] not in {"succeeded","failed","cancelled"}:raise CompanionError("complete the parent Run before successful wake completion")
+            if success:
+                con.execute("UPDATE outbox SET status='sent',sent_at=?,last_error=NULL,lease_owner=NULL,lease_until=NULL,updated_at=? WHERE id=?",(now,now,outbox_id))
+                if item.get("event_id"):con.execute("UPDATE events SET status='delivered' WHERE id=? AND status IN ('detected','queued')",(item["event_id"],))
+            else:
+                if run_id:con.execute("UPDATE runs SET status='recoverable',lease_owner=NULL,lease_until=NULL,error=? WHERE id=? AND status='leased' AND lease_owner=?",(error or "wake failed",run_id,lease_owner))
+                attempt=item["attempt"];status="dead" if attempt>=5 else "retry";delay=min(3600,30*(2**max(0,attempt-1)))
+                con.execute("UPDATE outbox SET status=?,available_at=?,last_error=?,lease_owner=NULL,lease_until=NULL,updated_at=? WHERE id=?",(status,iso(utc_now()+timedelta(seconds=delay)),error,now,outbox_id))
+                if status=="dead" and item.get("event_id"):con.execute("UPDATE events SET status='dead' WHERE id=? AND status IN ('detected','queued')",(item["event_id"],))
+            result=row_dict(con.execute("SELECT * FROM outbox WHERE id=?",(outbox_id,)).fetchone())
+        return result
 
     def recover(self)->dict[str,Any]:
         now=iso();recovered={"runs":0,"patrols":0,"outbox":0,"job_runs":0,"job_steps":0}
@@ -915,7 +998,7 @@ Schedule ID: {schedule['id']}
         integrity=self.db.integrity_check()
         with self.db.connect() as con:
             meta={r["key"]:r["value"] for r in con.execute("SELECT * FROM meta").fetchall()}
-            counts={table:con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for table in ["schedules","runs","watches","events","cases","patrols","source_items","artifacts","outbox","accounts","assets","ledger_entries","calculations","context_revisions","cognitive_objects","cognitive_revisions","executions","attention_decisions","source_health","job_definitions","job_runs","data_objects","artifact_manifests","dataset_snapshots","research_hypotheses","strategy_versions","experiment_runs","agent_invocations","shadow_books","manual_action_specs"]}
+            counts={table:con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for table in ["schedules","runs","watches","events","cases","patrols","source_items","artifacts","outbox","accounts","assets","ledger_entries","calculations","context_revisions","cognitive_objects","cognitive_revisions","executions","attention_decisions","source_health","job_definitions","job_runs","data_objects","artifact_manifests","dataset_snapshots","research_hypotheses","strategy_versions","experiment_runs","agent_invocations","shadow_books","manual_action_specs","investment_programs","investment_program_revisions","opportunities","decision_queue_items","operating_briefs","program_scorecards"]}
             failures=con.execute("SELECT COUNT(*) FROM runs WHERE status='failed'").fetchone()[0]
             pending=con.execute("SELECT COUNT(*) FROM outbox WHERE status IN ('pending','retry','sending')").fetchone()[0]
             migrations=rows_dict(con.execute("SELECT * FROM schema_migrations ORDER BY version").fetchall())
@@ -939,15 +1022,19 @@ Schedule ID: {schedule['id']}
                 "cases":con.execute("SELECT COUNT(*) FROM cases WHERE status NOT IN ('resolved','rejected','superseded','expired')").fetchone()[0],
                 "pending_runs":con.execute("SELECT COUNT(*) FROM runs WHERE status IN ('queued','recoverable','leased')").fetchone()[0],
                 "theses":con.execute("SELECT COUNT(*) FROM cognitive_objects WHERE object_type='thesis' AND status='active'").fetchone()[0],
+                "opportunities":con.execute("SELECT COUNT(*) FROM opportunities WHERE status='active'").fetchone()[0],
+                "decision_queue":con.execute("SELECT COUNT(*) FROM decision_queue_items WHERE state IN ('ready','presented','snoozed','accepted') AND valid_until>?",(iso(),)).fetchone()[0],
             }
+        program=self.operating.program_current()
         lines=[
             "Investment Companion workspace detected.",
             f"Database integrity: {status['integrity']}; schema: {status['meta'].get('schema_version','unknown')}.",
             "Contexts: "+", ".join(f"{kind}={item['state']}" for kind,item in contexts.items())+".",
             "Active state: "+", ".join(f"{key}={value}" for key,value in active.items())+".",
             f"Financial facts: accounts={status['counts']['accounts']}, ledger_entries={status['counts']['ledger_entries']}.",
+            f"Investment program: {program['id'] if program else 'missing'}; user decision queue={active['decision_queue']}.",
             "This is orientation, not investment evidence. Do not infer facts from chat history or Markdown current views.",
-            "For an investment task, use manage-investment-lifecycle and create a bounded Recovery Package for the user's subject before analysis.",
+            "For an investment task, enter through the V5 operating loop, then use lifecycle/research/decision skills and create a bounded Recovery Package as required.",
         ]
         return {"ok":status["ok"],"workspace":str(self.root),"contexts":contexts,"active":active,"financial":{"accounts":status["counts"]["accounts"],"ledger_entries":status["counts"]["ledger_entries"]},"text":"\n".join(lines)}
 
@@ -955,7 +1042,7 @@ Schedule ID: {schedule['id']}
         status=self.system_status();checks={"database_integrity":status["integrity"]=="ok","workspace_writable":os.access(self.root,os.W_OK),"attention_policy":self.cognition.context_current("attention") is not None,"investor_confirmed":bool(self.cognition.context_current("investor")),"mandate_confirmed":bool(self.cognition.context_current("mandate"))}
         checks["financial_facts_ready"]=status["counts"]["accounts"]>0 and status["counts"]["ledger_entries"]>0
         checks["schema_current"]=status["meta"].get("schema_version")==str(SCHEMA_VERSION)
-        checks["ordered_migrations"]=len(status.get("migrations",[]))>=2
+        checks["ordered_migrations"]=len(status.get("migrations",[]))>=3
         project_config=self.root/".codex"/"config.toml"
         if project_config.is_file():
             from .agent_config import validate_agent_config

@@ -254,6 +254,7 @@ class TushareAdapter:
         ingestion_key:str|None=None,
     )->dict[str,Any]:
         """Fetch once, retain raw bytes, normalize, validate, and close one canary batch."""
+        self.c.jobs.feature_require("v4_live_data_canary")
         return self._ingest(capability,params=params,fields=fields,account_scope=account_scope,stream_mode="canary",ingestion_key=ingestion_key)
 
     def ingest(

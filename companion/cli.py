@@ -18,7 +18,7 @@ def emit(value):
 def parser() -> argparse.ArgumentParser:
     p=argparse.ArgumentParser(prog="companion",description="Investment Companion operational CLI")
     p.add_argument("--root",default=os.environ.get("COMPANION_ROOT","/home/ghk/investment-home"));sub=p.add_subparsers(dest="command",required=True)
-    for name in ["init","status","doctor","tick","recover","bootstrap","agent-check","session-brief"]:sub.add_parser(name)
+    for name in ["init","status","doctor","tick","recover","bootstrap","agent-check","session-brief","v5-status","today"]:sub.add_parser(name)
     migrate=sub.add_parser("migrate");migrate.add_argument("--backup-directory",required=True)
     sub.add_parser("v4-status")
     bootstrap_v4=sub.add_parser("v4-bootstrap-jobs");bootstrap_v4.add_argument("--activate",action="store_true")
@@ -38,6 +38,8 @@ def parser() -> argparse.ArgumentParser:
     sp=sub.add_parser("snapshot-publish");sp.add_argument("manifest_file")
     wi=sub.add_parser("workspace-init");wi.add_argument("--finance-source")
     dispatch=sub.add_parser("dispatch");dispatch.add_argument("--dry-run",action="store_true");dispatch.add_argument("--limit",type=int,default=1)
+    wake_claim=sub.add_parser("wake-claim");wake_claim.add_argument("--owner",required=True);wake_claim.add_argument("--lease-seconds",type=int,default=1800)
+    wake_complete=sub.add_parser("wake-complete");wake_complete.add_argument("id");wake_complete.add_argument("--owner",required=True);wake_complete.add_argument("--failed",action="store_true");wake_complete.add_argument("--error")
     b=sub.add_parser("backup");b.add_argument("destination")
     ba=sub.add_parser("backup-auto");ba.add_argument("directory")
     sl=sub.add_parser("schedule-list");sl.add_argument("--status");sl.add_argument("--kind")
@@ -64,6 +66,8 @@ def main(argv=None) -> int:
             c.initialize()
             if a.command=="status":result=c.system_status()
             elif a.command=="v4-status":result=c.v4_status()
+            elif a.command=="v5-status":result=c.v5_status()
+            elif a.command=="today":result=c.operating.today()
             elif a.command=="v4-bootstrap-jobs":result=c.v4_bootstrap_jobs(activate=a.activate)
             elif a.command=="job-work":
                 owner=a.owner or f"{socket.gethostname()}:{os.getpid()}";runs=[]
@@ -101,6 +105,8 @@ def main(argv=None) -> int:
             elif a.command=="recover":result=c.recover()
             elif a.command=="bootstrap":result=c.bootstrap_defaults()
             elif a.command=="dispatch":result=c.dispatch_outbox(a.dry_run,a.limit)
+            elif a.command=="wake-claim":result=c.wake_claim(a.owner,a.lease_seconds)
+            elif a.command=="wake-complete":result=c.wake_complete(a.id,a.owner,not a.failed,a.error)
             elif a.command=="backup":result=c.backup(a.destination)
             elif a.command=="backup-auto":result=c.backup_auto(a.directory)
             elif a.command=="schedule-list":result=c.schedule_list(a.status,a.kind)

@@ -10,7 +10,7 @@ from typing import Any, Iterator
 
 from .timeutil import iso
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA = r"""
 CREATE TABLE IF NOT EXISTS meta (
@@ -734,9 +734,187 @@ INSERT OR IGNORE INTO feature_flags(key,enabled,config_json,updated_at) VALUES
 """
 
 
+MIGRATION_005_ID = "0005_v5_investment_operating_system"
+MIGRATION_005_SQL = r"""
+CREATE TABLE investment_programs (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'draft'
+    CHECK(status IN ('draft','active','paused','superseded','archived')),
+  current_revision_id TEXT,
+  version INTEGER NOT NULL DEFAULT 1,
+  activated_at TEXT,
+  closed_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX idx_investment_programs_status ON investment_programs(status,updated_at);
+CREATE UNIQUE INDEX idx_investment_program_single_active
+  ON investment_programs(status) WHERE status='active';
+
+CREATE TABLE investment_program_revisions (
+  id TEXT PRIMARY KEY,
+  program_id TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'draft'
+    CHECK(status IN ('draft','trial','current','superseded','expired')),
+  content_json TEXT NOT NULL,
+  context_refs_json TEXT NOT NULL,
+  parent_id TEXT,
+  reason TEXT,
+  effective_from TEXT,
+  expires_at TEXT,
+  user_approval_ref TEXT,
+  content_hash TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  confirmed_at TEXT,
+  UNIQUE(program_id,revision),
+  FOREIGN KEY(program_id) REFERENCES investment_programs(id),
+  FOREIGN KEY(parent_id) REFERENCES investment_program_revisions(id)
+);
+CREATE INDEX idx_program_revisions_current
+  ON investment_program_revisions(program_id,status,revision);
+
+CREATE TABLE opportunities (
+  id TEXT PRIMARY KEY,
+  program_id TEXT NOT NULL,
+  subject_json TEXT NOT NULL,
+  stage TEXT NOT NULL DEFAULT 'observed'
+    CHECK(stage IN ('observed','researching','qualified','actionable')),
+  status TEXT NOT NULL DEFAULT 'active'
+    CHECK(status IN ('active','rejected','expired','closed')),
+  thesis_id TEXT,
+  strategy_version_id TEXT,
+  decision_revision_id TEXT,
+  qualification_json TEXT NOT NULL DEFAULT '{}',
+  version INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  closed_at TEXT,
+  FOREIGN KEY(program_id) REFERENCES investment_programs(id),
+  FOREIGN KEY(thesis_id) REFERENCES cognitive_objects(id),
+  FOREIGN KEY(strategy_version_id) REFERENCES strategy_versions(id),
+  FOREIGN KEY(decision_revision_id) REFERENCES cognitive_revisions(id)
+);
+CREATE INDEX idx_opportunities_program_stage
+  ON opportunities(program_id,status,stage,updated_at);
+
+CREATE TABLE opportunity_transitions (
+  id TEXT PRIMARY KEY,
+  opportunity_id TEXT NOT NULL,
+  from_stage TEXT NOT NULL,
+  to_stage TEXT NOT NULL,
+  from_status TEXT NOT NULL,
+  to_status TEXT NOT NULL,
+  evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+  reason TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(opportunity_id) REFERENCES opportunities(id)
+);
+CREATE INDEX idx_opportunity_transitions_history
+  ON opportunity_transitions(opportunity_id,created_at);
+
+CREATE TABLE decision_queue_items (
+  id TEXT PRIMARY KEY,
+  program_id TEXT NOT NULL,
+  opportunity_id TEXT NOT NULL,
+  decision_revision_id TEXT NOT NULL,
+  manual_action_spec_id TEXT,
+  state TEXT NOT NULL DEFAULT 'ready'
+    CHECK(state IN ('ready','presented','snoozed','accepted','rejected','expired','closed')),
+  version INTEGER NOT NULL DEFAULT 1,
+  attention_decision_id TEXT,
+  valid_until TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  response_reason TEXT,
+  presented_at TEXT,
+  snoozed_until TEXT,
+  responded_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(program_id) REFERENCES investment_programs(id),
+  FOREIGN KEY(opportunity_id) REFERENCES opportunities(id),
+  FOREIGN KEY(decision_revision_id) REFERENCES cognitive_revisions(id),
+  FOREIGN KEY(manual_action_spec_id) REFERENCES manual_action_specs(id),
+  FOREIGN KEY(attention_decision_id) REFERENCES attention_decisions(id)
+);
+CREATE INDEX idx_decision_queue_ready
+  ON decision_queue_items(program_id,state,valid_until,created_at);
+CREATE UNIQUE INDEX idx_decision_queue_active_decision
+  ON decision_queue_items(decision_revision_id)
+  WHERE state IN ('ready','presented','snoozed','accepted');
+
+CREATE TABLE operating_briefs (
+  id TEXT PRIMARY KEY,
+  program_id TEXT NOT NULL,
+  program_revision_id TEXT NOT NULL,
+  brief_type TEXT NOT NULL CHECK(brief_type IN ('daily','weekly','monthly')),
+  period_key TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  as_of TEXT NOT NULL,
+  conclusion TEXT NOT NULL
+    CHECK(conclusion IN ('no_action','action','review_required','insufficient_evidence')),
+  payload_json TEXT NOT NULL,
+  source_refs_json TEXT NOT NULL DEFAULT '[]',
+  content_hash TEXT NOT NULL UNIQUE,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL DEFAULT 'ready'
+    CHECK(status IN ('ready','presented','superseded')),
+  supersedes TEXT,
+  attention_decision_id TEXT,
+  presented_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(program_id) REFERENCES investment_programs(id),
+  FOREIGN KEY(program_revision_id) REFERENCES investment_program_revisions(id),
+  FOREIGN KEY(attention_decision_id) REFERENCES attention_decisions(id),
+  FOREIGN KEY(supersedes) REFERENCES operating_briefs(id),
+  UNIQUE(program_id,brief_type,period_key,revision)
+);
+CREATE INDEX idx_operating_briefs_recent
+  ON operating_briefs(program_id,brief_type,as_of);
+
+CREATE TABLE program_scorecards (
+  id TEXT PRIMARY KEY,
+  program_id TEXT NOT NULL,
+  program_revision_id TEXT NOT NULL,
+  period_start TEXT NOT NULL,
+  period_end TEXT NOT NULL,
+  revision INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('ready','insufficient_evidence')),
+  metrics_json TEXT NOT NULL,
+  comparisons_json TEXT NOT NULL DEFAULT '{}',
+  source_refs_json TEXT NOT NULL DEFAULT '[]',
+  caveats_json TEXT NOT NULL DEFAULT '[]',
+  content_hash TEXT NOT NULL UNIQUE,
+  supersedes TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(program_id) REFERENCES investment_programs(id),
+  FOREIGN KEY(program_revision_id) REFERENCES investment_program_revisions(id),
+  FOREIGN KEY(supersedes) REFERENCES program_scorecards(id),
+  UNIQUE(program_id,period_start,period_end,revision)
+);
+CREATE INDEX idx_program_scorecards_period
+  ON program_scorecards(program_id,period_end);
+
+INSERT OR IGNORE INTO feature_flags(key,enabled,config_json,updated_at) VALUES
+  ('v4_live_data_canary',0,'{}',CURRENT_TIMESTAMP),
+  ('v4_decision_support_beta',0,'{}',CURRENT_TIMESTAMP),
+  ('v5_operating_system',0,'{}',CURRENT_TIMESTAMP);
+"""
+
+
 BASELINE_MIGRATION_ID = "0003_v3_baseline"
 BASELINE_CHECKSUM = hashlib.sha256((SCHEMA + "\n" + V3_SCHEMA).encode("utf-8")).hexdigest()
 MIGRATION_004_CHECKSUM = hashlib.sha256(MIGRATION_004_SQL.encode("utf-8")).hexdigest()
+MIGRATION_005_CHECKSUM = hashlib.sha256(MIGRATION_005_SQL.encode("utf-8")).hexdigest()
+MIGRATIONS = (
+    (4, MIGRATION_004_ID, MIGRATION_004_SQL, MIGRATION_004_CHECKSUM),
+    (5, MIGRATION_005_ID, MIGRATION_005_SQL, MIGRATION_005_CHECKSUM),
+)
 
 
 class Database:
@@ -800,30 +978,44 @@ class Database:
                     (BASELINE_MIGRATION_ID, 3, BASELINE_CHECKSUM, iso()),
                 )
 
-            applied = con.execute(
-                "SELECT checksum FROM schema_migrations WHERE migration_id=?",
-                (MIGRATION_004_ID,),
-            ).fetchone()
-            if applied and applied[0] != MIGRATION_004_CHECKSUM:
-                raise RuntimeError("Schema 4 migration checksum mismatch")
-            if current == 4:
-                if not applied:
-                    raise RuntimeError("schema version 4 is missing its ordered migration record")
-                return
-            if current != 3:
+            if current not in {3, 4, 5}:
                 raise RuntimeError(f"unsupported source schema version: {current}")
 
-            migration_id = MIGRATION_004_ID.replace("'", "''")
-            checksum = MIGRATION_004_CHECKSUM.replace("'", "''")
-            applied_at = iso().replace("'", "''")
-            script = (
-                "BEGIN IMMEDIATE;\n"
-                + MIGRATION_004_SQL
-                + "\nINSERT INTO schema_migrations(migration_id,version,checksum,applied_at) "
-                + f"VALUES('{migration_id}',4,'{checksum}','{applied_at}');\n"
-                + "UPDATE meta SET value='4' WHERE key='schema_version';\n"
-                + "COMMIT;"
-            )
+            for version, migration_id, _sql, checksum in MIGRATIONS:
+                applied = con.execute(
+                    "SELECT version,checksum FROM schema_migrations WHERE migration_id=?",
+                    (migration_id,),
+                ).fetchone()
+                if applied and (applied[0] != version or applied[1] != checksum):
+                    raise RuntimeError(f"Schema {version} migration checksum mismatch")
+                if version <= current and not applied:
+                    raise RuntimeError(
+                        f"schema version {current} is missing ordered migration {migration_id}"
+                    )
+
+            if current == SCHEMA_VERSION:
+                return
+
+            pending = [item for item in MIGRATIONS if item[0] > current]
+            if not pending or pending[-1][0] != SCHEMA_VERSION:
+                raise RuntimeError(
+                    f"no complete migration path from schema {current} to {SCHEMA_VERSION}"
+                )
+            script_parts = ["BEGIN IMMEDIATE;"]
+            for version, migration_id, sql, checksum in pending:
+                safe_id = migration_id.replace("'", "''")
+                safe_checksum = checksum.replace("'", "''")
+                applied_at = iso().replace("'", "''")
+                script_parts.extend(
+                    [
+                        sql,
+                        "INSERT INTO schema_migrations(migration_id,version,checksum,applied_at) "
+                        f"VALUES('{safe_id}',{version},'{safe_checksum}','{applied_at}');",
+                        f"UPDATE meta SET value='{version}' WHERE key='schema_version';",
+                    ]
+                )
+            script_parts.append("COMMIT;")
+            script = "\n".join(script_parts)
             try:
                 con.executescript(script)
             except Exception:
