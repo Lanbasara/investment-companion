@@ -1,8 +1,10 @@
 # Investment Companion：项目状态与会话交棒
 
-更新时间：2026-08-15
+更新时间：2026-08-18
 当前发布：主项目为 `v3.0.4`，Plugin 为 `v3.0.1`
-当前定位：V3 Core 已发布，等待真实用户数据初始化与 2–4 周使用验证。
+当前定位：V3 Core 已发布并完成首批真实个人事实初始化，正在真实使用验证；V4 已完成架构定义，尚未开始代码实现。
+
+用户已确认 V4 定义：**可审计、Codex 驱动、确定性量化内核支撑、飞书协作、人工执行的专业个人投资研究与决策系统**。代码起始点已用本地注释标签 `pre-v4.0.0` 固定在 `b6ec6fe`（V3.0.4）。V4 必须先完成数据资格与 golden cases，再决定 Qlib/QuantRuntime，之后才建设 typed Job、研究内核、组合 Shadow 和人工 Decision 闭环。权威设计见 `V4-DESIGN.md`、`V4-ARCHITECTURE-DECISIONS.md`、`V4-IMPLEMENTATION-PLAN.md` 和 `V4-ACCEPTANCE.md`。
 
 ## 1. 新会话从这里开始
 
@@ -23,8 +25,10 @@ codex plugin list
 1. 本文：当前真相、边界和下一步；
 2. [V3-DESIGN.md](V3-DESIGN.md)：目标架构和长期不变量；
 3. [V3-ACCEPTANCE.md](V3-ACCEPTANCE.md)：已经验证与尚未验证；
-4. [V2-OPERATIONS.md](V2-OPERATIONS.md)：本机运行、恢复和备份；
-5. `AGENTS.md` 与已安装 Plugin Skills：Codex 实际行为契约。
+4. [V4-DESIGN.md](V4-DESIGN.md) 与 [V4-ARCHITECTURE-DECISIONS.md](V4-ARCHITECTURE-DECISIONS.md)：下一版本的整体架构与外部能力边界；
+5. [V4-IMPLEMENTATION-PLAN.md](V4-IMPLEMENTATION-PLAN.md) 与 [V4-ACCEPTANCE.md](V4-ACCEPTANCE.md)：实施顺序和不可跳过的 Gate；
+6. [V2-OPERATIONS.md](V2-OPERATIONS.md)：本机运行、恢复和备份；
+7. `AGENTS.md` 与已安装 Plugin Skills：Codex 实际行为契约。
 
 可视化文档中心位于 [index.html](index.html)，它直接渲染本目录的权威 Markdown；交棒时仍以本文的状态与验收记录为准。
 
@@ -61,12 +65,11 @@ Primary Codex 是唯一最终判断、Agent 派遣、正式认知发布和用户
 
 ## 4. 当前生产运行状态
 
-- 默认 Schedule：工作日 17:30 信息巡视、周日 10:00 周度园丁、每月 1 日 10:30 月度园丁。
+- 当前存在日常市场巡视、A 股收盘复盘、周度展望、交易后 Review 与一次性检查等主动任务；精确清单始终通过 Companion 工具读取。
 - 基础心跳：每 30 分钟，仅执行本地到期检查；每 Tick 最多投递一个 Run。
-- Investor 与 Mandate：只有未初始化 Draft，尚无 Current。
-- Attention Policy：保守默认版本已生效。
-- Account、Asset、Ledger、Thesis、Decision、Execution：尚未录入真实用户数据。
-- `doctor` 中 `investor_confirmed`、`mandate_confirmed`、`financial_facts_ready` 为 false 是业务未初始化，不是系统故障。
+- Investor、Mandate 与 Attention Policy 已有确认的当前版本。
+- Account、Asset、Ledger、Calculation、Thesis、Decision、Execution 已有首批真实运行记录；具体金额、持仓和版本只能通过 Lifecycle/Financial 工具按需读取，不能从本文推断。
+- 2026-08-18 最近一次 `doctor` 全部检查通过，数据库完整，无 failed Run 和 pending Outbox；这些是时点状态，下一会话仍需现场复核。
 
 ## 5. 已知限制
 
@@ -78,19 +81,20 @@ Primary Codex 是唯一最终判断、Agent 派遣、正式认知发布和用户
 - cc-connect 唤醒依赖一条休眠 Cron 作为唤醒原语；投资任务频率只在 Companion Schedule 中。
 - Run 的 claim/lease 元数据尚未完全贯穿 cc-connect 唤醒执行链；当前成功重跑仍显示 `attempt=0`、`started_at=null`，需单独修复。
 - 文件信息源首次巡视曾报告覆盖为 0，但重试时已存在可审计材料；Source cursor/coverage 诊断仍需加强，不能把该次结果解读为真实世界没有信息。
+- 当前所有到期 Schedule 最终都进入 `codex_turn`；尚无 typed `data_job/quant_job`、Dataset Snapshot、Experiment Registry、QuantRuntime 或 Strategy Shadow Book。
+- 当前 Observation/Market Snapshot 不具备完整 PIT、历史 Universe、公司行动和批量列式数据语义，不能被误用为 V4 市场数据库。
 - `docs/EVENT-SYSTEM-PLAN.md` 是历史设计，不是当前实施说明。
+- `docs/PRD-MARKET-DATA-ADAPTERS-AND-SHADOW-EVALUATION.md` 已废弃，只保留迁移说明；不得按旧 Phase 0 路线实现。
 
 ## 6. 下一步，不要提前扩张
 
-先让用户在飞书完成：
+1. V3 继续正常运行和复盘，不因 V4 开发暂停账本、主动任务或认知生命周期；
+2. 执行 V4 Phase 0：冻结实现基线、引入 ordered migration、修复 Run claim/lease 完成链；
+3. 执行 Phase 1：DataCapabilityMatrix 与官方 golden corpus，先决定哪些历史研究有资格；
+4. 只有数据资格通过后执行 Qlib/QuantRuntime 生死 Spike；
+5. 在 typed Job、PIT Snapshot、研究治理和组合 Shadow 通过前，不向用户开放 V4 自动候选或行动建议。
 
-1. 确认 Investor Revision；
-2. 确认 Mandate Revision；
-3. 建立账户、资产、现金和当前持仓；
-4. 用一笔小额真实成交验证 Draft → Confirm → Portfolio；
-5. 正常使用 2–4 周，记录漏报、误报、工具路由、上下文恢复和录入摩擦。
-
-第一次真实复盘后再决定 V3.1/V4。优先修真实摩擦，不以增加 Agent、Adapter 或数据表作为进展指标。
+不得以接口数、模型数、Agent 数、实验数或 Token 消耗代替进展。每个阶段按 V4 Acceptance 的独立 Gate 决定 Go/No-Go。
 
 ## 7. 未来版本候选
 
@@ -98,7 +102,7 @@ Primary Codex 是唯一最终判断、Agent 派遣、正式认知发布和用户
 
 - V3.1：账本导入/对账体验、收益率与成本基础、多币种 FX；
 - V3.2：Thesis/Decision/Review 的真实生命周期与月末 Close；
-- V4：注意力策略学习提案、Tushare Watch 与官方公告 Adapter；
+- V4：可审计的数据资格、确定性量化研究、组合 Shadow、Codex 判断、飞书人工 Decision/Execution 闭环；
 - V5：跨机器安装、加密备份、长期恢复演练和公开发行。
 
 版本号只是建议，不是已批准路线。

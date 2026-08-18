@@ -23,7 +23,7 @@ systemd timer → Companion Schedule/Run/Outbox → cc-connect
               → Markdown 文件句柄与 SQLite 精确状态
 ```
 
-从 [项目状态与交棒入口](docs/PROJECT-STATUS.md) 开始阅读。当前架构见 [V3 设计](docs/V3-DESIGN.md)，运行与恢复见 [运维手册](docs/V2-OPERATIONS.md)，历史决策见 [V2 设计](docs/V2-DESIGN.md)。
+从 [项目状态与交棒入口](docs/PROJECT-STATUS.md) 开始阅读。当前生产架构见 [V3 设计](docs/V3-DESIGN.md)，下一版本见 [V4 总体设计](docs/V4-DESIGN.md)、[架构决策](docs/V4-ARCHITECTURE-DECISIONS.md)、[实施计划](docs/V4-IMPLEMENTATION-PLAN.md) 与 [验收契约](docs/V4-ACCEPTANCE.md)。V4 尚未实现，不能把设计能力当成当前能力。运行与恢复见 [运维手册](docs/V2-OPERATIONS.md)，历史决策见 [V2 设计](docs/V2-DESIGN.md)。
 浏览器阅读入口为 [docs/index.html](docs/index.html)；它直接渲染上述权威 Markdown，不维护第二份易过期的文档副本。
 
 ## 验证

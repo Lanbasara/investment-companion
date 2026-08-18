@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="description" content="Investment Companion V3 架构、使用与维护文档">
+  <meta name="description" content="Investment Companion V3 运行架构与 V4 专业研究系统设计文档">
   <title>Investment Companion · 文档中心</title>
   <link rel="stylesheet" href="site.css">
 </head>
@@ -11,7 +11,7 @@
   <header class="topbar">
     <a class="brand" href="#overview" aria-label="返回总览">
       <span class="brand-mark">IC</span>
-      <span><strong>Investment Companion</strong><small>V3 文档中心</small></span>
+      <span><strong>Investment Companion</strong><small>V3 运行 · V4 设计</small></span>
     </a>
     <button id="nav-toggle" class="nav-toggle" aria-label="展开目录">目录</button>
   </header>
@@ -26,20 +26,25 @@
         <p class="nav-label">架构与验收</p>
         <a href="#doc=V3-DESIGN.md" data-doc="V3-DESIGN.md">V3 完整架构设计</a>
         <a href="#doc=V3-ACCEPTANCE.md" data-doc="V3-ACCEPTANCE.md">V3 验收与边界</a>
+        <p class="nav-label">V4 · 已设计，未实现</p>
+        <a href="#doc=V4-DESIGN.md" data-doc="V4-DESIGN.md">V4 总体设计</a>
+        <a href="#doc=V4-ARCHITECTURE-DECISIONS.md" data-doc="V4-ARCHITECTURE-DECISIONS.md">V4 架构决策</a>
+        <a href="#doc=V4-IMPLEMENTATION-PLAN.md" data-doc="V4-IMPLEMENTATION-PLAN.md">V4 实施计划</a>
+        <a href="#doc=V4-ACCEPTANCE.md" data-doc="V4-ACCEPTANCE.md">V4 验收契约</a>
         <p class="nav-label">历史决策</p>
         <a href="#doc=V2-DESIGN.md" data-doc="V2-DESIGN.md">V2 主动系统设计</a>
         <a href="#doc=V2-ACCEPTANCE.md" data-doc="V2-ACCEPTANCE.md">V2 验收记录</a>
         <a href="#doc=EVENT-SYSTEM-PLAN.md" data-doc="EVENT-SYSTEM-PLAN.md">早期事件系统基线</a>
       </nav>
-      <div class="sidebar-note">权威状态：<code>v3.0.1</code><br>文档日期：2026-08-13</div>
+      <div class="sidebar-note">当前发布：<code>v3.0.4</code><br>V4：已设计，未实现<br>文档日期：2026-08-18</div>
     </aside>
 
     <main id="main" class="main" tabindex="-1">
       <section id="overview" class="overview">
         <div class="hero">
-          <p class="eyebrow">CODEX-NATIVE · EVENT-DRIVEN · HUMAN-IN-CONTROL</p>
+          <p class="eyebrow">CODEX-NATIVE · AUDITABLE · HUMAN-IN-CONTROL</p>
           <h1>个人全生命周期<br>投资伴侣</h1>
-          <p class="lede">系统生长在 Codex 内：服务保存不可模糊的事实与事件，Primary Codex 恢复认知、组织调查、形成判断并通过飞书与用户协作。</p>
+          <p class="lede">当前 V3 保存真实个人事实、认知与主动任务；已批准的 V4 设计将在此基础上增加 PIT 数据、确定性量化研究与人工决策闭环，不改变 Codex 主体和用户执行权。</p>
           <div class="hero-actions">
             <a class="button primary" href="#doc=PROJECT-STATUS.md">从当前状态开始</a>
             <a class="button" href="#doc=V2-OPERATIONS.md">查看使用手册</a>
@@ -101,8 +106,8 @@
           <div class="section-heading"><span>04</span><div><h2>当前能力边界</h2><p>V3 Core 已可开始真实使用，但长期托付仍需要真实数据和运行时间验证。</p></div></div>
           <div class="status-grid">
             <div><b>已经具备</b><p>可靠主动调度、事实账本、认知版本、注意力治理、崩溃恢复、专业 Agent 协作。</p></div>
-            <div><b>等待真实初始化</b><p>Investor、Mandate、账户、现金、持仓、首笔成交和实际 Thesis。</p></div>
-            <div><b>尚未完整交付</b><p>复杂收益率与税务、通用 FX、专用公告/财报 Adapter、90 天长期验证。</p></div>
+            <div><b>已经初始化</b><p>Investor、Mandate、账户、资产、首批 Ledger、Calculation、认知与 Execution 已进入真实使用。</p></div>
+            <div><b>V4 尚未实现</b><p>PIT 数据、typed Job、QuantRuntime、Experiment Registry、组合 Shadow 与专业研究 Gate 仍是设计。</p></div>
           </div>
         </section>
       </section>
