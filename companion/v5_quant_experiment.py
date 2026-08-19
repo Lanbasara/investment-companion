@@ -4,7 +4,7 @@ import json
 import math
 import re
 from collections import Counter
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation, localcontext
 from pathlib import Path
 from typing import Any
@@ -603,6 +603,9 @@ class ControlledQuantExperiment:
                 input_ids,
             )
         effective_on = future_open[0]
+        forward_observation_eligible = self._generated_before_effective_open(
+            context["inputs"]["knowledge_cutoff"], effective_on
+        )
         bars, histories, exclusions, source_ids = self._build_adjusted_bars(
             selected_dates, daily, adjustments
         )
@@ -718,6 +721,7 @@ class ControlledQuantExperiment:
             "status": "ready",
             "as_of": as_of,
             "effective_on": effective_on,
+            "forward_observation_eligible": forward_observation_eligible,
             "knowledge_cutoff": context["inputs"]["knowledge_cutoff"],
             "strategy": {
                 "id": STRATEGY_ID,
@@ -758,6 +762,11 @@ class ControlledQuantExperiment:
                 "provider_amount_units_are_used_only_for_cross_sectional_ranking",
                 "short_forward_observation_is_not_alpha_evidence",
                 "no_costed_portfolio_or_execution_claim",
+                *(
+                    []
+                    if forward_observation_eligible
+                    else ["scan_generated_after_effective_session_open_forward_observation_excluded"]
+                ),
             ],
         }
         report = self.c.data.manifest_publish(
@@ -945,7 +954,12 @@ class ControlledQuantExperiment:
     ) -> dict[str, Any] | None:
         body = self._scan_body(previous)
         prior_date = body.get("as_of")
-        if body.get("status") != "ready" or not prior_date or prior_date >= as_of:
+        if (
+            body.get("status") != "ready"
+            or body.get("forward_observation_eligible") is not True
+            or not prior_date
+            or prior_date >= as_of
+        ):
             return None
         selected_returns = []
         for item in body.get("candidates", []):
@@ -1047,6 +1061,7 @@ class ControlledQuantExperiment:
             "status": body.get("status"),
             "as_of": body.get("as_of"),
             "effective_on": body.get("effective_on"),
+            "forward_observation_eligible": body.get("forward_observation_eligible", False),
             "candidate_count": len(body.get("candidates", [])),
             "candidates": body.get("candidates", []),
             "trial_scorecard": body.get("trial_scorecard"),
@@ -1064,6 +1079,13 @@ class ControlledQuantExperiment:
         ) or (
             exchange == "SZ" and code.startswith(("000", "001", "002", "003"))
         )
+
+    @staticmethod
+    def _generated_before_effective_open(knowledge_cutoff: str, effective_on: str) -> bool:
+        market_open = datetime.fromisoformat(f"{effective_on}T09:30:00").replace(
+            tzinfo=ZoneInfo("Asia/Shanghai")
+        )
+        return parse(knowledge_cutoff) < market_open
 
     @staticmethod
     def _volatility(closes: list[Decimal]) -> Decimal:

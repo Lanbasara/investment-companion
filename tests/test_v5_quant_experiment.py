@@ -11,7 +11,12 @@ from companion.core import Companion, CompanionError
 from companion.governance import GATE_CHECKLISTS
 from companion.timeutil import iso, utc_now
 from companion.tushare_adapter import TushareAdapter
-from companion.v5_quant_experiment import DATA_HANDLER, REQUEST_FIELDS, SCAN_HANDLER
+from companion.v5_quant_experiment import (
+    DATA_HANDLER,
+    REQUEST_FIELDS,
+    SCAN_HANDLER,
+    ControlledQuantExperiment,
+)
 
 
 def pass_g0(companion: Companion) -> None:
@@ -127,10 +132,15 @@ def test_canary_bundle_job_uses_only_frozen_tushare_contract(tmp_path: Path, mon
 
 
 def test_real_data_shape_scan_records_forward_outcome_without_decision_or_ledger(
-    tmp_path: Path,
+    tmp_path: Path, monkeypatch,
 ):
     companion = setup_trial(tmp_path)
-    start = date(2026, 6, 1)
+    monkeypatch.setattr(
+        ControlledQuantExperiment,
+        "_generated_before_effective_open",
+        staticmethod(lambda *_args: True),
+    )
+    start = date.today() - timedelta(days=40)
     sessions = [start + timedelta(days=index) for index in range(23)]
     assets = [f"{600000 + index:06d}.SH" for index in range(120)]
 
@@ -195,6 +205,7 @@ def test_real_data_shape_scan_records_forward_outcome_without_decision_or_ledger
     first_body = companion.data.manifest_get(completed["output_manifest_id"])["manifest"]["manifest"]
     assert first_body["status"] == "ready" and len(first_body["candidates"]) == 10
     assert first_body["research_only"] is True and first_body["not_a_decision"] is True
+    assert first_body["forward_observation_eligible"] is True
     assert first_body["trial_scorecard"]["observations"] == 0
 
     next_day = sessions[21]
@@ -214,6 +225,16 @@ def test_real_data_shape_scan_records_forward_outcome_without_decision_or_ledger
     assert companion.system_status()["counts"]["ledger_entries"] == ledger_before
     assert companion.operating.opportunity_list(status=None) == []
     assert companion.jobs.feature_get("v4_live_data")["enabled"] is False
+
+
+def test_scan_generated_after_effective_market_open_is_not_counted_forward(tmp_path: Path):
+    companion = setup_trial(tmp_path)
+    assert companion.quant_experiment._generated_before_effective_open(
+        "2026-08-19T03:06:20Z", "2026-08-19"
+    ) is False
+    assert companion.quant_experiment._generated_before_effective_open(
+        "2026-08-18T10:10:00Z", "2026-08-19"
+    ) is True
 
 
 def test_expired_trial_fails_closed(tmp_path: Path):
