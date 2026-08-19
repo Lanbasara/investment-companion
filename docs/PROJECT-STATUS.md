@@ -8,7 +8,7 @@
 
 V4 冻结：annotated tag `v4.0.0-engineering-baseline`
 
-当前 Plugin：`0.1.0+codex.20260819025156`，新 Skill 在新会话加载
+当前 Plugin：`0.1.0+codex.20260819040624`，新 Skill 在新会话加载
 
 ## 1. 当前结论
 
