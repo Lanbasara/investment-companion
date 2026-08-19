@@ -1,11 +1,11 @@
 # Investment Companion V5：运维与生产切换
 
-状态：工程候选；本文不构成当前生产切换授权
-日期：2026-08-18
+状态：V5 已在生产；受控量化实验按独立用户授权启用
+日期：2026-08-19
 
 ## 1. 当前边界
 
-V5 开发分支和 Schema 5 代码可以在隔离根测试。生产仍使用固定的 V3 稳定运行时和旧数据库；不要让开发分支普通启动隐式打开生产库。V5 普通启动遇到 Schema 3/4 会 fail closed，只有 `migrate` 能升级。
+生产使用只读 Git worktree 固定 V5 Runtime，业务状态仍位于 `/home/ghk/investment-home/.state`。数据库已是 Schema 5，`v5_operating_system` 已启用；正式 Live Data、Shadow、Decision Support 和自动交易仍关闭。开发工作树不能直接充当生产 Runtime，切换代码版本后必须重新生成当前提交的 G0 证据。
 
 ## 2. 离线验收
 
@@ -21,9 +21,9 @@ python3 -m pytest -q
 
 全新库应显示 Schema 5 和 0003/0004/0005 三条 migration。`today` 在未设置时应返回 setup_required，而不是候选股票。
 
-## 3. 生产变更前检查
+## 3. 每次生产变更前检查
 
-需要用户明确批准后再执行：
+涉及 Runtime、Plugin、Feature 或 systemd 的变更仍需要用户明确批准：
 
 1. 固定主项目和 Plugin release commit；
 2. 读取 live Schedule/Run/Outbox/Context/Account 数量并保存变更前报告；
@@ -34,9 +34,9 @@ python3 -m pytest -q
 
 不要使用手工 `UPDATE meta`、复制单个 WAL 文件或删除旧运行时来代替变更窗口。
 
-## 4. 显式迁移
+## 4. Schema 迁移与恢复参考
 
-在已停止服务的生产根执行：
+仅当旧环境仍是 Schema 3/4 时，在已停止服务的生产根执行：
 
 ```bash
 ./bin/companion migrate \
@@ -49,7 +49,7 @@ python3 -m pytest -q
 
 必须核对：`schema_version=5`、`integrity=ok`、三条 migration、旧 Schedule 数量一致、旧 Context/Ledger 数量一致、全部新 Feature 默认 disabled。
 
-迁移本身不会创建 Program、启用 Worker、打开数据采集或修改 cron。
+当前生产已经完成 Schema 5 迁移。迁移本身不会创建 Program、启用 Worker、打开数据采集或修改 cron。
 
 ## 5. Plugin 更新
 
@@ -63,7 +63,7 @@ Plugin 源通过 validator 后，按 plugin-creator 的 cachebuster 流程更新
 
 ## 6. cc-connect 静态 wake prompt
 
-V5 的 cron prompt 不再写死“只领取一个 V3 Run”。变更窗口中把现有 wake cron 的 prompt 更新为以下语义：
+V5 的生产 cron prompt 已使用 version-neutral wake envelope。需要恢复或审计时，目标语义如下：
 
 ```text
 [Investment Companion wake bridge/v1]
@@ -82,14 +82,14 @@ cc-connect cron edit <wake-cron-id> prompt '<上面的静态提示>'
 cc-connect cron info <wake-cron-id>
 ```
 
-不要在开发阶段编辑 live cron。更新后用一个隔离测试 Run 验证 Outbox `pending → sending → sent` 和 Run `queued → leased → succeeded`。
+更新后用一个隔离测试 Run 验证 Outbox `pending → sending → sent` 和 Run `queued → leased → succeeded`。
 
 ## 7. Feature 启用顺序
 
-1. 生产 G0 通过后启用 `v5_operating_system`；
+1. 生产 G0 通过后启用 `v5_operating_system`；当前已完成；
 2. 用户共同起草并确认 Program；
 3. 旧主动任务继续运行，不批量重建；
-4. 数据 Canary 只开 `v4_live_data_canary`；
+4. 数据 Canary 只开 `v4_live_data_canary`，并绑定用户批准、到期和请求预算；
 5. G1 后才能开 active live data；
 6. G0–G4 且有用户 opt-in/到期时，才可开 Decision Beta；
 7. G5 后评审 Full Decision Support；
@@ -105,9 +105,9 @@ Beta 配置示意：
 
 ## 8. Worker
 
-V5 没有新增常驻 AI Worker。`companion-job-worker` 仍只运行 allow-listed、资源受限、默认无模型 Token 的确定性 Job。Systemd 模板存在只表示仓库提供部署单元，不代表生产已经 enable。
+V5 没有新增常驻 AI Worker。`companion-job-worker` 只运行 allow-listed、资源受限、默认无模型 Token 的确定性 Job。受控量化实验获批后，生产启用该 timer，每 5 分钟最多领取两个 Job；它不是 Codex 会话，也不会自行形成投资判断。
 
-启用前必须验证 G0、JobDefinition 状态、数据凭据边界和恢复；启用命令属于生产授权范围，不在代码发布时自动执行。
+启用或切换 Runtime 前必须验证 G0、JobDefinition 状态、数据凭据边界和恢复。受控实验的定义、启动、停止和验收见 [V5-QUANT-EXPERIMENT.md](V5-QUANT-EXPERIMENT.md)。
 
 ## 9. 回滚
 
@@ -124,4 +124,4 @@ Plugin/wake prompt 可独立回退到其上一 Git commit 和静态提示。若�
 
 ## 10. 发布后观察
 
-首日只验证 session restore、旧任务、wake、today 和一份 Trial Program；首周验证周报、通知预算和无行动；首月才发布第一份真实 Scorecard。任何阶段发现重复通知、证据断链、虚假数值或自动改变持仓，立即关闭对应 Feature 并保留审计。
+经营层继续验证 session restore、旧任务、wake、today、周报、通知预算和无行动。量化实验首日验证真实数据、回填、Scan Manifest、零模型 Token 和不写决策/持仓；随后按 5/10/20 个前向观测里程碑复核。任何阶段发现重复通知、证据断链、虚假数值或自动改变持仓，立即关闭对应 Feature 并保留审计。

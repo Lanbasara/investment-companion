@@ -251,7 +251,7 @@ class GateRegistry:
         effective_scope = scope or self.c.gate_scope
         if effective_scope not in {"production","test_fixture"}:raise CompanionError("invalid gate requirement scope")
         missing = []
-        current=self._git_head() if effective_scope=="production" else "test-fixture"
+        current=self.c.data._code_version() if effective_scope=="production" else "test-fixture"
         for gate in gates:
             item = self.latest(gate, effective_scope)
             accepted = {"go", "conditional_go"} if allow_conditional else {"go"}

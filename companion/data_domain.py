@@ -106,6 +106,9 @@ class DataDomain:
             configured_path,
             root_id="investment-companion-v4-data",
         )
+        # Resolve once before any bounded Job child installs its process-spawn
+        # audit guard.  A deployed runtime is immutable for the process lifetime.
+        self._resolved_code_version = self._resolve_code_version()
 
     @property
     def root(self) -> Path:
@@ -544,8 +547,12 @@ class DataDomain:
         return failures
 
     def _code_version(self)->str:
+        return self._resolved_code_version
+
+    def _resolve_code_version(self)->str:
         if self.c.gate_scope=="test_fixture":return "test-fixture"
-        proc=subprocess.run(["git","rev-parse","HEAD"],cwd=self.c.root,capture_output=True,text=True,timeout=10,check=False)
+        runtime_root=Path(__file__).resolve().parents[1]
+        proc=subprocess.run(["git","rev-parse","HEAD"],cwd=runtime_root,capture_output=True,text=True,timeout=10,check=False)
         value=proc.stdout.strip()
         if proc.returncode!=0 or not re.fullmatch(r"[0-9a-f]{40}",value):raise CompanionError("cannot resolve production code version")
         return value

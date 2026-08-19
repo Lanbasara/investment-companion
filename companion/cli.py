@@ -18,10 +18,12 @@ def emit(value):
 def parser() -> argparse.ArgumentParser:
     p=argparse.ArgumentParser(prog="companion",description="Investment Companion operational CLI")
     p.add_argument("--root",default=os.environ.get("COMPANION_ROOT","/home/ghk/investment-home"));sub=p.add_subparsers(dest="command",required=True)
-    for name in ["init","status","doctor","tick","recover","bootstrap","agent-check","session-brief","v5-status","today"]:sub.add_parser(name)
+    for name in ["init","status","doctor","tick","recover","bootstrap","agent-check","session-brief","v5-status","today","v5-experiment-status"]:sub.add_parser(name)
     migrate=sub.add_parser("migrate");migrate.add_argument("--backup-directory",required=True)
     sub.add_parser("v4-status")
     bootstrap_v4=sub.add_parser("v4-bootstrap-jobs");bootstrap_v4.add_argument("--activate",action="store_true")
+    bootstrap_v5_experiment=sub.add_parser("v5-experiment-bootstrap");bootstrap_v5_experiment.add_argument("--activate",action="store_true")
+    backfill_v5_experiment=sub.add_parser("v5-experiment-backfill");backfill_v5_experiment.add_argument("--through-date",required=True);backfill_v5_experiment.add_argument("--sessions",type=int,default=21)
     worker=sub.add_parser("job-work");worker.add_argument("--limit",type=int,default=1);worker.add_argument("--owner")
     gates=sub.add_parser("gate-list");gates.add_argument("--scope",choices=["production","test_fixture"])
     gate_report=sub.add_parser("gate-report-publish");gate_report.add_argument("kind");gate_report.add_argument("--checks",required=True);gate_report.add_argument("--input-refs",required=True);gate_report.add_argument("--commands",required=True);gate_report.add_argument("--observations",required=True);gate_report.add_argument("--scope",choices=["production","test_fixture"])
@@ -67,8 +69,11 @@ def main(argv=None) -> int:
             if a.command=="status":result=c.system_status()
             elif a.command=="v4-status":result=c.v4_status()
             elif a.command=="v5-status":result=c.v5_status()
+            elif a.command=="v5-experiment-status":result=c.quant_experiment.status()
             elif a.command=="today":result=c.operating.today()
             elif a.command=="v4-bootstrap-jobs":result=c.v4_bootstrap_jobs(activate=a.activate)
+            elif a.command=="v5-experiment-bootstrap":result=c.quant_experiment.bootstrap(activate=a.activate)
+            elif a.command=="v5-experiment-backfill":result=c.quant_experiment.prepare_backfill(through_date=a.through_date,sessions=a.sessions)
             elif a.command=="job-work":
                 owner=a.owner or f"{socket.gethostname()}:{os.getpid()}";runs=[]
                 for _ in range(max(0,a.limit)):

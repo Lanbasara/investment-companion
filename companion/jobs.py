@@ -80,7 +80,9 @@ class JobEngine:
     }
     HANDLER_FEATURES={
         "data.tushare_ingest":"v4_live_data",
+        "data.tushare_canary_bundle":"v4_live_data_canary",
         "data.publish_snapshot":"v4_live_data",
+        "research.canary_market_scan":"v4_live_data_canary",
         "shadow.rebalance":"v4_shadow",
     }
 
@@ -698,8 +700,9 @@ class JobEngine:
     def _validate_network_profile(budget:dict[str,Any],steps:list[dict[str,Any]])->None:
         profile=budget.get("network","deny")
         if profile=="deny":return
-        if profile!="tushare_official" or not steps or any(step.get("handler")!="data.tushare_ingest" for step in steps):
-            raise CompanionError("network access is restricted to the allow-listed data.tushare_ingest handler")
+        allowed={"data.tushare_ingest","data.tushare_canary_bundle"}
+        if profile!="tushare_official" or not steps or any(step.get("handler") not in allowed for step in steps):
+            raise CompanionError("network access is restricted to the allow-listed Tushare data handlers")
 
     def _validate_output_refs(self, refs: list[Any]) -> None:
         if not isinstance(refs, list) or not refs:

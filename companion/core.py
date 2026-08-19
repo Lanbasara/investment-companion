@@ -55,6 +55,7 @@ class Companion:
         from .shadow import ShadowLedger
         from .governance import GateRegistry
         from .operating import InvestmentOperatingSystem
+        from .v5_quant_experiment import ControlledQuantExperiment
         self.financial=FinancialKernel(self)
         self.cognition=CognitiveLedger(self)
         self.attention=AttentionEngine(self)
@@ -65,6 +66,7 @@ class Companion:
         self.research=ResearchRegistry(self)
         self.shadow=ShadowLedger(self)
         self.operating=InvestmentOperatingSystem(self)
+        self.quant_experiment=ControlledQuantExperiment(self)
         self.jobs.register_handler("system.echo_manifest","1",self._job_echo_manifest)
         self.jobs.register_handler("data.tushare_ingest","1",self._job_tushare_ingest)
         self.jobs.register_handler("data.publish_snapshot","1",self._job_publish_snapshot)
@@ -307,6 +309,7 @@ class Companion:
         if kind not in {"patrol", "review", "maintenance", "one_shot"}:
             raise CompanionError("invalid schedule kind")
         self._validate_dispatch(dispatch_type, job_definition_id)
+        self._validate_schedule_policy(policy or {})
         schedule_id, now = new_id("sch"), iso()
         next_run_at = self._next_run(cadence)
         record = {"id": schedule_id, "name": name, "kind": kind, "status": "active", "mission": mission, "scope": scope or {}, "cadence": cadence, "policy": policy or {}, "origin": origin or {}, "timezone": timezone, "dispatch_type": dispatch_type, "job_definition_id": job_definition_id, "next_run_at": next_run_at, "version": 1, "created_at": now, "updated_at": now}
@@ -360,6 +363,7 @@ class Companion:
             after = dict(before)
             after.update(changes)
             self._validate_dispatch(after["dispatch_type"], after.get("job_definition_id"))
+            self._validate_schedule_policy(after.get("policy", {}), allow_expired=before["status"] != "active")
             next_run = self._next_run(after["cadence"]) if "cadence" in changes else before["next_run_at"]
             con.execute("UPDATE schedules SET name=?,mission=?,scope_json=?,cadence_json=?,policy_json=?,origin_json=?,timezone=?,next_run_at=?,dispatch_type=?,job_definition_id=?,version=version+1,updated_at=? WHERE id=? AND version=?", (after["name"],after["mission"],canonical(after["scope"]),canonical(after["cadence"]),canonical(after["policy"]),canonical(after["origin"]),after["timezone"],next_run,after["dispatch_type"],after.get("job_definition_id"),iso(),schedule_id,expected_version))
             self._audit(con, actor, "patch", "schedule", schedule_id, before, after, reason)
@@ -371,6 +375,7 @@ class Companion:
         with self.db.transaction() as con:
             before = row_dict(con.execute("SELECT * FROM schedules WHERE id=?", (schedule_id,)).fetchone())
             if not before: raise CompanionError(f"schedule not found: {schedule_id}")
+            if status=="active":self._validate_schedule_policy(before.get("policy",{}))
             next_run = self._next_run(before["cadence"]) if status == "active" else before["next_run_at"]
             con.execute("UPDATE schedules SET status=?,next_run_at=?,version=version+1,updated_at=? WHERE id=?", (status,next_run,iso(),schedule_id))
             self._audit(con, actor, status, "schedule", schedule_id, before, {**before,"status":status}, reason)
@@ -427,6 +432,18 @@ class Companion:
         with self.db.transaction() as con:
             if not self._acquire_lock(con,"tick",owner,300): return {"ok":True,"skipped":"tick already leased","created_runs":[]}
             con.execute("UPDATE watches SET status='expired',version=version+1,updated_at=? WHERE status='active' AND ((ttl_at IS NOT NULL AND ttl_at<=?) OR (max_runs IS NOT NULL AND run_count>=max_runs))",(now,now))
+            active_schedules=rows_dict(con.execute("SELECT * FROM schedules WHERE status='active'").fetchall())
+            for active_schedule in active_schedules:
+                policy=active_schedule.get("policy",{})
+                expires_at=policy.get("expires_at") if isinstance(policy,dict) else None
+                max_runs=policy.get("max_runs") if isinstance(policy,dict) else None
+                run_count=int(con.execute("SELECT COUNT(*) FROM runs WHERE schedule_id=?",(active_schedule["id"],)).fetchone()[0])
+                reason=None
+                if expires_at and parse(expires_at)<=utc_now():reason="policy_expires_at"
+                elif max_runs is not None and run_count>=int(max_runs):reason="policy_max_runs"
+                if reason:
+                    con.execute("UPDATE schedules SET status='expired',next_run_at=NULL,version=version+1,updated_at=? WHERE id=? AND status='active'",(now,active_schedule["id"]))
+                    self._audit(con,"scheduler","expire","schedule",active_schedule["id"],before=active_schedule,after={**active_schedule,"status":"expired","next_run_at":None},reason=reason)
             due = con.execute("SELECT * FROM schedules WHERE status='active' AND next_run_at IS NOT NULL AND next_run_at<=? ORDER BY next_run_at LIMIT ?",(now,limit)).fetchall()
             for raw in due:
                 schedule=row_dict(raw); due_at=schedule["next_run_at"]
@@ -454,6 +471,16 @@ class Companion:
         recovered_routes=self.route_pending_runs(limit=max(1,limit*2),exclude_run_ids=set(created))
         queued.extend(recovered_routes["queued_outbox"]);job_runs.extend(recovered_routes["queued_job_runs"]);dispatch_errors.extend(recovered_routes["errors"])
         return {"ok":not dispatch_errors,"created_runs":created,"queued_outbox":queued,"queued_job_runs":job_runs,"recovered_routes":recovered_routes["routed_runs"],"dispatch_errors":dispatch_errors,"due_count":len(due),"at":now}
+
+    @staticmethod
+    def _validate_schedule_policy(policy:dict[str,Any],*,allow_expired:bool=False)->None:
+        if not isinstance(policy,dict):raise CompanionError("schedule policy must be an object")
+        expires_at=policy.get("expires_at")
+        if expires_at is not None:
+            if not isinstance(expires_at,str):raise CompanionError("schedule policy.expires_at must be an ISO timestamp")
+            if not allow_expired and parse(expires_at)<=utc_now():raise CompanionError("active schedule policy.expires_at must be in the future")
+        max_runs=policy.get("max_runs")
+        if max_runs is not None and (isinstance(max_runs,bool) or not isinstance(max_runs,int) or max_runs<=0):raise CompanionError("schedule policy.max_runs must be a positive integer")
 
     def route_pending_runs(self,limit:int=10,exclude_run_ids:set[str]|None=None)->dict[str,Any]:
         exclude=exclude_run_ids or set();queued=[];jobs=[];errors=[];routed=[]

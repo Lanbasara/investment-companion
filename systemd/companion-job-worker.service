@@ -1,5 +1,5 @@
 [Unit]
-Description=Investment Companion V4 deterministic job worker
+Description=Investment Companion V5 deterministic job worker
 After=network-online.target
 RequiresMountsFor=/home/ghk/investment-home /home/ghk/.local/share/investment-companion
 

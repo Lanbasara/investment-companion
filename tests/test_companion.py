@@ -26,6 +26,13 @@ class CompanionTest(unittest.TestCase):
         self.assertEqual(patched["mission"],"better scan")
         with self.assertRaises(CompanionError):self.c.schedule_patch(s["id"],current["version"],{"mission":"stale"})
 
+    def test_schedule_policy_max_runs_expires_without_an_extra_run(self):
+        s=self.c.schedule_create(name="bounded",kind="maintenance",mission="bounded",cadence={"type":"interval","seconds":1800},policy={"max_runs":1,"expires_at":iso(utc_now()+timedelta(days=1))})
+        with self.c.db.transaction() as con:con.execute("UPDATE schedules SET next_run_at=? WHERE id=?",(iso(utc_now()-timedelta(minutes=1)),s["id"]))
+        self.assertEqual(len(self.c.tick()["created_runs"]),1)
+        self.assertEqual(self.c.tick()["created_runs"],[])
+        self.assertEqual(self.c.schedule_get(s["id"])["status"],"expired")
+
     def test_derived_watch_requires_ttl_and_triggers_on_transition_only(self):
         with self.assertRaises(CompanionError):self.c.watch_create(name="x",subject_type="etf",subject_id="159101.SZ",intent="x",condition={"operator":"lt","threshold":.72},origin={"type":"case","id":"c"})
         w=self.c.watch_create(name="x",subject_type="etf",subject_id="159101.SZ",intent="x",condition={"operator":"lt","threshold":.72},origin={"type":"case","id":"c"},ttl_at=iso(utc_now()+timedelta(days=7)))

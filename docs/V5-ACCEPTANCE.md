@@ -120,7 +120,7 @@
 
 | 能力 | 受控证据生成 | 正式放行 |
 |---|---|---|
-| 数据 | `v4_live_data_canary`：G0、受限端点 | `v4_live_data`：G0+G1 |
+| 数据 | `v4_live_data_canary`：G0、限时、冻结端点与请求预算 | `v4_live_data`：G0+G1 |
 | Decision | `v4_decision_support_beta`：G0–G4、opt-in、expires | Full：G0–G5 |
 | V5 经营层 | G0 后、用户确认 Program | 真实产品范围扩大仍看 G5/G6 |
 | Strategy eligible | Shadow 可产生样本 | G6 + 样本门 + Primary 评审 |
@@ -129,7 +129,7 @@ Beta 配置缺 `user_opt_in_ref` 或未来 `expires_at` 时必须失败。Featur
 
 ## 11. J：MCP、CLI、Plugin
 
-- MCP server version 为 5.0.0；
+- MCP server version 为 5.1.0；
 - `tools/list` 中所有 V5/Wake 工具有 implementation；
 - 参数 Schema 拒绝未知字段；
 - CLI 提供 status/today/wake claim/wake complete；
@@ -169,3 +169,15 @@ python3 /home/ghk/.codex/skills/.system/plugin-creator/scripts/validate_plugin.p
 ```
 
 涉及 MCP/Agent 后还需真实 smoke。生产迁移、Plugin 切换、systemd enable 和 cron edit 不属于自动化测试授权。
+
+## 14. L：受控量化实验
+
+- 只有 `v4_jobs`、生产 G0 和配置完整的 `v4_live_data_canary` 同时有效时才可运行；
+- Trial 必须绑定用户批准、开始时间、到期时间、10–20 个交易日上限和单 Job 请求上限；
+- 数据 Handler 只允许冻结的 Tushare 日线、复权因子和交易日历端点；
+- 扫描规则、输入哈希、候选和前向观测必须写入不可变 Manifest；
+- 扫描 Job 的模型 Token 必须为 0，普通无变化日不得唤醒 Primary；
+- Handler 不得创建 Opportunity、Decision、ActionCard、Execution、Shadow 或 Ledger Entry；
+- 10–20 日结果只能决定继续采证、用新版本重开或停止，不能自动晋级 Strategy；
+- Schedule 到期或达到最大运行次数后必须自动 `expired`，恢复也不能绕过；
+- 真实首跑需核对：数据对象、Scan Manifest、Job 终态、Ledger/Decision/Opportunity 计数不变和飞书 research-ready 交接。

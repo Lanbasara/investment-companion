@@ -101,6 +101,7 @@ TOOLS={
  "v4_job_run_list":("列出确定性 JobRun。",schema({"status":S,"limit":I})),
  "v4_job_run_get":("读取 JobRun、Step、资源用量和产物。",schema({"job_run_id":S},["job_run_id"])),
  "v4_data_health":("读取数据根、阻断问题与真实 Probe 状态。",schema()),
+ "v4_manifest_get":("读取并校验一个不可变研究 Manifest。",schema({"manifest_id":S},["manifest_id"])),
  "v4_source_capability_list":("列出 Adapter Probe 产生的能力记录。",schema({"provider":S,"capability":S})),
  "v4_asset_identity_list":("读取带生效期和知识截止语义的 provider 证券身份版本。",schema({"provider":S,"identifier_value":S})),
  "v4_agent_review_record":("冻结材料性 Agent 评审的调用标识、模型、输入引用、Token、输出与采用决定；不会发布投资判断。",schema({"invocation_ref":S,"role":S,"model":S,"prompt_template":S,"input_refs":{"type":"array","items":S},"review":O,"token_usage":O,"started_at":S,"finished_at":S,"adopted":{"type":"boolean"},"adoption_reason":S},["invocation_ref","role","model","prompt_template","input_refs","review","token_usage","started_at","finished_at","adopted","adoption_reason"])),
@@ -127,6 +128,8 @@ TOOLS={
  "wake_claim":("由被静态 cron 唤醒的 Primary Codex 原子领取真正触发本次唤醒的一个信封；兼容旧 Run 和 V4 研究事件。",schema({"owner":S,"lease_seconds":I},["owner"])),
  "wake_complete":("在 Run 或事件确实处理后结束唤醒信封；成功的 scheduled_run 必须已先调用 run_complete。",schema({"outbox_id":S,"owner":S,"success":{"type":"boolean"},"error":S},["outbox_id","owner","success"])),
  "v5_status":("读取 V5 投资经营计划、机会漏斗和用户决策队列的确定性状态。",schema()),
+ "v5_quant_experiment_status":("读取受控真实数据量化实验、任务、计划和最新扫描状态；不会开启能力。",schema()),
+ "v5_quant_scan_get":("读取并校验一个受控量化扫描；它是研究线索，不是行动建议。",schema({"manifest_id":S},["manifest_id"])),
  "v5_today":("读取面向用户的今日入口：设置缺口、行动卡、无行动结论或待复核状态。",schema()),
  "v5_program_create":("创建投资经营计划草稿；只引用现有 Context 和账户，不复制投资事实。",schema({"name":S,"content":O,"context_refs":O,"reason":S,"expires_at":S},["name","content","context_refs","reason"])),
  "v5_program_revise":("按乐观版本创建投资经营计划的新草稿版本。",schema({"program_id":S,"expected_version":I,"content":O,"context_refs":O,"reason":S,"expires_at":S},["program_id","expected_version","content","context_refs","reason"])),
@@ -242,6 +245,7 @@ def call(name:str,a:dict[str,Any]):
     if name=="v4_job_run_list":return C.jobs.run_list(a.get("status"),a.get("limit",50))
     if name=="v4_job_run_get":return C.jobs.run_get(a["job_run_id"])
     if name=="v4_data_health":return C.data.health()
+    if name=="v4_manifest_get":return C.data.manifest_get(a["manifest_id"],verify=True)
     if name=="v4_source_capability_list":return C.data.capability_list(a.get("provider"),a.get("capability"))
     if name=="v4_asset_identity_list":return C.data.identity_list(a.get("provider"),a.get("identifier_value"))
     if name=="v4_agent_review_record":return C.cognition.agent_review_record(**a)
@@ -268,6 +272,8 @@ def call(name:str,a:dict[str,Any]):
     if name=="wake_claim":return C.wake_claim(a["owner"],a.get("lease_seconds",1800))
     if name=="wake_complete":return C.wake_complete(a["outbox_id"],a["owner"],a["success"],a.get("error"))
     if name=="v5_status":return C.v5_status()
+    if name=="v5_quant_experiment_status":return C.quant_experiment.status()
+    if name=="v5_quant_scan_get":return C.quant_experiment.scan_get(a["manifest_id"])
     if name=="v5_today":return C.operating.today()
     if name=="v5_program_create":return C.operating.program_create(name=a["name"],content=a["content"],context_refs=a["context_refs"],reason=a["reason"],expires_at=a.get("expires_at"),actor=actor)
     if name=="v5_program_revise":return C.operating.program_revise(program_id=a["program_id"],expected_version=a["expected_version"],content=a["content"],context_refs=a["context_refs"],reason=a["reason"],expires_at=a.get("expires_at"),actor=actor)
@@ -301,7 +307,7 @@ def call(name:str,a:dict[str,Any]):
 def reply(request:dict[str,Any])->dict[str,Any]|None:
     method=request.get("method");rid=request.get("id")
     if rid is None:return None
-    if method=="initialize":result={"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":False}},"serverInfo":{"name":"investment-companion","version":"5.0.0"}}
+    if method=="initialize":result={"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":False}},"serverInfo":{"name":"investment-companion","version":"5.1.0"}}
     elif method=="tools/list":result={"tools":[{"name":n,"description":d,"inputSchema":s} for n,(d,s) in TOOLS.items()]}
     elif method=="tools/call":
         p=request.get("params",{})
