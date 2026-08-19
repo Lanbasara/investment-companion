@@ -16,7 +16,7 @@ V5 是：**Codex 驱动、确定性证据支撑、飞书协作、人工执行、
 
 生产已经完成 Schema 5、V5 operating layer、version-neutral wake 和 active InvestmentProgram 的切换。原有主动任务、事件、Ledger、Context 和历史研究均原位保留，不需要重置。
 
-本次新增受控量化实验：Tushare 真实数据 → 内容寻址数据对象 → 零模型 Token 的确定性扫描 → 不可变 Scan Manifest → 必要时唤醒 Primary 研究。它不是自动交易，也不代表策略已经有效。
+持续量化研究已经改为真实世界长期运行：Tushare 真实数据 → 内容寻址对象 → 零模型 Token 的确定性扫描 → 当日收盘复盘/完整研究 → 每月严格前向复盘。它没有试用到期或运行次数上限，也不是自动交易或盈利承诺。
 
 ## 2. 新会话从这里开始
 
@@ -25,7 +25,7 @@ cd /home/ghk/investment-home
 git status -sb
 ./bin/companion doctor
 ./bin/companion v5-status
-./bin/companion v5-experiment-status
+./bin/companion v5-quant-status
 systemctl --user status companion-job-worker.timer --no-pager
 codex plugin list
 ```
@@ -34,7 +34,7 @@ codex plugin list
 
 1. 本文：当前生产事实和边界；
 2. [V5-DESIGN.md](V5-DESIGN.md) 与 [V5-USER-GUIDE.md](V5-USER-GUIDE.md)：系统为什么存在、用户怎么用；
-3. [V5-QUANT-EXPERIMENT.md](V5-QUANT-EXPERIMENT.md)：真实数据试运行的规则和停止条件；
+3. [V5-CONTINUOUS-QUANT-RESEARCH.md](V5-CONTINUOUS-QUANT-RESEARCH.md)：持续真实运行、每日产出和月度复盘；
 4. [V5-ARCHITECTURE-DECISIONS.md](V5-ARCHITECTURE-DECISIONS.md) 与 [V5-ACCEPTANCE.md](V5-ACCEPTANCE.md)：对象边界和验收；
 5. [V5-OPERATIONS.md](V5-OPERATIONS.md)：生产恢复、Feature 和 Worker 运维。
 
@@ -46,13 +46,14 @@ codex plugin list
 飞书 → cc-connect → Primary Investment Codex
                    ├─ V5 Program / Opportunity / Decision / Lifecycle
                    ├─ 只读专业 Agents
-                   └─ 受控研究交接
+                   └─ 持续量化研究交接
 
 systemd Tick → Schedule / Run / Outbox → version-neutral wake
 systemd Worker → allow-listed deterministic Job → immutable Manifest
 
-Tushare canary → Raw / Canonical → deterministic scan
-               → research_ready → Primary 判断是否值得继续研究
+Tushare research stream → Raw / Canonical → deterministic scan
+                        → 当日复盘 / 完整研究
+                        → 月度严格前向 Review
 ```
 
 Primary Codex 仍是唯一最终语义判断、正式发布和用户沟通主体。Companion 不包裹 Codex，不连接券商，不自动交易。
@@ -65,9 +66,10 @@ Primary Codex 仍是唯一最终语义判断、正式发布和用户沟通主体
 - 原 V2/V3/V4 Schedule、Run、Event、Watch、Case、Ledger、Context 和 Job 兼容；
 - Tushare 日线/复权因子/交易日历的冻结 Canary 契约；
 - 21 日真实数据回填、确定性横截面扫描和下一交易日前向观测；
-- Trial 到期、最大运行次数、请求预算和失败修复；
+- 持续运行、单 Job 请求预算、失败修复和旧试用配置无损迁移；
+- 候选持续性研究触发与每月确定性前向复盘；
 - 扫描 Handler 不创建 Opportunity、Decision、Shadow、Execution 或 Ledger Entry；
-- MCP 5.1.0 的实验状态/扫描只读入口，以及对应 CLI 和 Plugin 路由；
+- MCP 5.2.0 的持续研究状态/扫描/月度复盘只读入口，以及对应 CLI 和 Plugin 路由；
 - 全量自动化测试、Agent 检查与 Plugin 校验。
 
 最终测试数量和 release commit 以 Git 历史和最新验证报告为准，不从本文猜。
@@ -76,28 +78,28 @@ Primary Codex 仍是唯一最终语义判断、正式发布和用户沟通主体
 
 - `.state/runtime-code-root` 是当前固定 Runtime 的权威指针；
 - 生产数据库是 `/home/ghk/investment-home/.state/companion.db`，Schema 5；
-- `v5_operating_system`、确定性 Job 能力和限时 `v4_live_data_canary` 可启用；
+- `v5_operating_system`、确定性 Job 能力和持续研究用 `v4_live_data_canary` 可启用；
 - `v4_live_data`、Shadow、Decision Support 与自动交易保持关闭；
 - Job Worker 每 5 分钟最多执行两个白名单任务，模型 Token 为 0；
-- 实验 Schedule 有到期时间和最大次数，到期自动 `expired`；
+- 量化研究 Schedule 不设到期或最大次数；用户可随时明确暂停；
 - 旧主动任务继续原样运行，不批量重建；
 - 用户升级后只需在飞书 `/new`，无需重置项目或数据库。
 
 具体账户、持仓、金额、对象 ID、任务数量和最新扫描只能现场读取，不在本文复制。
 
-## 6. 受控量化实验的合法输出
+## 6. 持续量化研究的合法输出
 
-实验可以输出：数据健康、不可变候选清单、规则解释、输入哈希、前向过程观测和一个 `research_ready` 信号。
+系统每天可以输出：数据健康、不可变候选清单、规则解释、输入哈希、前向过程观测、候选持续性和完整研究触发；每月输出严格前向复盘。
 
-实验不能输出：自动买卖、正式 Decision、行动卡、真实持仓变更、“高胜率”结论或策略资格。Primary 只有在形成明确研究问题、核验来源与反证并确认没有重复项后，才可登记一个 `observed` Opportunity。
+扫描 Handler 不能直接输出自动买卖、正式 Decision、行动卡或真实持仓变更。Primary 可在任何一天把持续候选推进为完整研究；完整研究满足来源、反证、个人约束和 Decision 契约后，可以形成只供人工执行的建议，不必等待月度复盘。
 
-10–20 个真实交易日后只允许三种结论：继续采证、改变规则并以新版本重开、停止该基线。
+月度复盘的结论是继续、深化研究、调查失效环境、发布修改版或停止该基线；月度节点不限制日常功能。
 
 ## 7. 尚待真实世界完成
 
 - Tushare 数据连续性、延迟、失败率和修复成本；
 - 候选变化率、误报、漏报、重复唤醒和 Token 净成本；
-- 至少 10–20 个交易日的完整前向观测；
+- 持续积累完整前向观测，并按月公开证据是否足够；
 - 官方 golden cases、研究完整性和 Shadow 的 G2–G4 证据；
 - 决策 Beta 的真实飞书使用证据 G5；
 - 足够时间、样本、成本和组合结果后的 G6 价值评审。
@@ -110,7 +112,7 @@ Primary Codex 仍是唯一最终语义判断、正式发布和用户沟通主体
 2. 每个生产 commit 重新生成并评估 G0，不沿用旧提交的放行；
 3. Feature、Plugin、systemd 和 cc-connect 变更需要用户明确授权；
 4. 生产数据库变更前创建并验证可恢复备份；
-5. 发生重复通知、证据断链、自动写决策/持仓或数据异常时，先停用实验 Feature 与 Schedule，保留审计。
+5. 发生重复通知、证据断链、自动写决策/持仓或数据异常时，先暂停对应 Feature 与 Schedule，保留审计。
 
 ## 9. 仓库与敏感信息
 

@@ -1,6 +1,6 @@
 # Investment Companion V5：运维与生产切换
 
-状态：V5 已在生产；受控量化实验按独立用户授权启用
+状态：V5 已在生产；持续量化研究按独立用户授权运行
 日期：2026-08-19
 
 ## 1. 当前边界
@@ -89,7 +89,7 @@ cc-connect cron info <wake-cron-id>
 1. 生产 G0 通过后启用 `v5_operating_system`；当前已完成；
 2. 用户共同起草并确认 Program；
 3. 旧主动任务继续运行，不批量重建；
-4. 数据 Canary 只开 `v4_live_data_canary`，并绑定用户批准、到期和请求预算；
+4. 数据研究链开 `v4_live_data_canary`，绑定用户批准、开始时间和单 Job 请求预算，不设置到期或运行次数上限；
 5. G1 后才能开 active live data；
 6. G0–G4 且有用户 opt-in/到期时，才可开 Decision Beta；
 7. G5 后评审 Full Decision Support；
@@ -105,9 +105,9 @@ Beta 配置示意：
 
 ## 8. Worker
 
-V5 没有新增常驻 AI Worker。`companion-job-worker` 只运行 allow-listed、资源受限、默认无模型 Token 的确定性 Job。受控量化实验获批后，生产启用该 timer，每 5 分钟最多领取两个 Job；它不是 Codex 会话，也不会自行形成投资判断。
+V5 没有新增常驻 AI Worker。`companion-job-worker` 只运行 allow-listed、资源受限、默认无模型 Token 的确定性 Job。持续量化研究获批后，生产启用该 timer，每 5 分钟最多领取两个 Job；它不是 Codex 会话，也不会自行形成投资判断。
 
-启用或切换 Runtime 前必须验证 G0、JobDefinition 状态、数据凭据边界和恢复。受控实验的定义、启动、停止和验收见 [V5-QUANT-EXPERIMENT.md](V5-QUANT-EXPERIMENT.md)。
+启用或切换 Runtime 前必须验证 G0、JobDefinition 状态、数据凭据边界和恢复。持续研究的定义、启动、停止和月度复盘见 [V5-CONTINUOUS-QUANT-RESEARCH.md](V5-CONTINUOUS-QUANT-RESEARCH.md)。
 
 ## 9. 回滚
 
@@ -124,4 +124,4 @@ Plugin/wake prompt 可独立回退到其上一 Git commit 和静态提示。若�
 
 ## 10. 发布后观察
 
-经营层继续验证 session restore、旧任务、wake、today、周报、通知预算和无行动。量化实验首日验证真实数据、回填、Scan Manifest、零模型 Token 和不写决策/持仓；随后按 5/10/20 个前向观测里程碑复核。任何阶段发现重复通知、证据断链、虚假数值或自动改变持仓，立即关闭对应 Feature 并保留审计。
+经营层继续验证 session restore、旧任务、wake、today、周报、通知预算和无行动。持续量化研究每天进入收盘复盘；每月 19 日强制生成前向 Review Manifest 和用户报告。任何阶段发现重复通知、证据断链、虚假数值或自动改变持仓，立即暂停对应 Schedule 或 Feature 并保留审计。

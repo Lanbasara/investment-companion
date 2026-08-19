@@ -55,7 +55,7 @@ class Companion:
         from .shadow import ShadowLedger
         from .governance import GateRegistry
         from .operating import InvestmentOperatingSystem
-        from .v5_quant_experiment import ControlledQuantExperiment
+        from .v5_quant_experiment import ContinuousQuantResearch
         self.financial=FinancialKernel(self)
         self.cognition=CognitiveLedger(self)
         self.attention=AttentionEngine(self)
@@ -66,7 +66,8 @@ class Companion:
         self.research=ResearchRegistry(self)
         self.shadow=ShadowLedger(self)
         self.operating=InvestmentOperatingSystem(self)
-        self.quant_experiment=ControlledQuantExperiment(self)
+        self.quant_research=ContinuousQuantResearch(self)
+        self.quant_experiment=self.quant_research
         self.jobs.register_handler("system.echo_manifest","1",self._job_echo_manifest)
         self.jobs.register_handler("data.tushare_ingest","1",self._job_tushare_ingest)
         self.jobs.register_handler("data.publish_snapshot","1",self._job_publish_snapshot)
@@ -299,10 +300,10 @@ class Companion:
         if kind == "monthly":
             from calendar import monthrange
             from zoneinfo import ZoneInfo
-            zone=ZoneInfo(cadence.get("timezone","Asia/Shanghai"));local=now.astimezone(zone);hour,minute=(int(x) for x in cadence["at"].split(":"));day=int(cadence.get("day",1))
+            zone=ZoneInfo(cadence.get("timezone","Asia/Shanghai"));local=now.astimezone(zone);hour,minute=(int(x) for x in cadence["at"].split(":"));day=int(cadence.get("day",1));not_before=parse(cadence["not_before"]).astimezone(zone) if cadence.get("not_before") else None
             for offset in range(0,14):
                 year=local.year+(local.month-1+offset)//12;month=(local.month-1+offset)%12+1;actual=min(day,monthrange(year,month)[1]);candidate=local.replace(year=year,month=month,day=actual,hour=hour,minute=minute,second=0,microsecond=0)
-                if candidate>local:return iso(candidate.astimezone(utc_now().tzinfo))
+                if candidate>local and (not_before is None or candidate>=not_before):return iso(candidate.astimezone(utc_now().tzinfo))
         raise CompanionError(f"unsupported cadence type: {kind}")
 
     def schedule_create(self, *, name: str, kind: str, mission: str, cadence: dict[str, Any], scope: dict[str, Any] | None = None, policy: dict[str, Any] | None = None, origin: dict[str, Any] | None = None, timezone: str = "Asia/Shanghai", dispatch_type: str = "codex_turn", job_definition_id: str | None = None, actor: str = "primary-codex") -> dict[str, Any]:

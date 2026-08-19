@@ -83,6 +83,7 @@ class JobEngine:
         "data.tushare_canary_bundle":"v4_live_data_canary",
         "data.publish_snapshot":"v4_live_data",
         "research.canary_market_scan":"v4_live_data_canary",
+        "research.continuous_quant_review":"v4_live_data_canary",
         "shadow.rebalance":"v4_shadow",
     }
 
