@@ -8,6 +8,7 @@ Type=oneshot
 WorkingDirectory=/home/ghk/investment-home
 Environment="COMPANION_ROOT=/home/ghk/investment-home"
 Environment="COMPANION_GATE_SCOPE=production"
+Environment="COMPANION_CC_WAKE_CRON=cce0678e"
 ExecStart=/home/ghk/investment-home/bin/companion job-work --limit 2
 TimeoutStartSec=900
 NoNewPrivileges=true

@@ -1,11 +1,11 @@
 [Unit]
-Description=Run Investment Companion scheduler every 30 minutes
+Description=Run Investment Companion scheduler every five minutes
 
 [Timer]
 OnBootSec=5min
-OnUnitActiveSec=30min
+OnUnitActiveSec=5min
 Persistent=true
-RandomizedDelaySec=60
+RandomizedDelaySec=15
 Unit=companion-tick.service
 
 [Install]

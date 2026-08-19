@@ -109,6 +109,16 @@ V5 没有新增常驻 AI Worker。`companion-job-worker` 只运行 allow-listed�
 
 启用或切换 Runtime 前必须验证 G0、JobDefinition 状态、数据凭据边界和恢复。持续研究的定义、启动、停止和月度复盘见 [V5-CONTINUOUS-QUANT-RESEARCH.md](V5-CONTINUOUS-QUANT-RESEARCH.md)。
 
+## 8.1 主动研究质量检查
+
+```bash
+./bin/companion v5-research-quality --days 30
+```
+
+该回执检查 Patrol 来源覆盖、原始来源比例、任务启动延迟和 Outbox 积压。`needs_attention` 表示本期研究或交付证据未达到契约门槛，不等于投资结论失败。
+
+生产 Tick 每五分钟批量处理最多 20 个到期任务。确定性 Worker 完成材料性 Job 后立即触发 Primary；收盘复盘等待同日量化扫描，最长等待 15 分钟，之后必须标记缺口并继续生成报告。
+
 ## 9. 回滚
 
 若迁移或启动检查失败：

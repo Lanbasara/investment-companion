@@ -4,6 +4,12 @@
 日期：2026-08-18
 关联设计：[V5-DESIGN.md](V5-DESIGN.md)
 
+## ADR-000：主动研究必须证明覆盖，而不是把空输入解释成无变化
+
+**决策**：Patrol 必须提交来源覆盖回执。只有达到最低来源与原始来源门槛，才允许 `no_material_change`；否则必须使用 `insufficient_coverage`。
+
+**结果**：本地 Feed 为零只表示本地输入为空，Primary 仍须完成契约规定的结构化、官方和受约束 Web 检查。调度器每五分钟批量领取到期任务；确定性 Job 完成后立即投递。下游复盘等待同周期上游，超过等待上限后带缺口继续，避免永久阻塞。
+
 ## ADR-001：V5 是经营层，不是第二套投资真相
 
 **决策**：InvestmentProgram、Opportunity、DecisionQueue、Brief 和 Scorecard 只协调现有权威对象。

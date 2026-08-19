@@ -9,6 +9,7 @@ import uuid
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from .db import SCHEMA_VERSION, Database, row_dict, rows_dict
 from .timeutil import iso, next_interval, next_local_time, parse, utc_now
@@ -427,7 +428,29 @@ class Companion:
         except Exception:
             return False
 
-    def tick(self, owner: str | None = None, limit: int = 1) -> dict[str, Any]:
+    def _schedule_dependencies_ready(self, con, schedule: dict[str, Any], now: str) -> tuple[bool, list[dict[str, Any]]]:
+        scope=schedule.get("scope",{});dependencies=scope.get("dependencies",[]) if isinstance(scope,dict) else []
+        continuous=scope.get("continuous_quant_research",{}) if isinstance(scope,dict) else {}
+        if not dependencies and isinstance(continuous,dict) and continuous.get("scan_schedule_id"):
+            dependencies=[{"schedule_id":continuous["scan_schedule_id"],"same_local_date":True,"max_wait_seconds":900}]
+        if not dependencies:return True,[]
+        due_at=parse(schedule["next_run_at"]);blocked=[]
+        for dependency in dependencies:
+            if not isinstance(dependency,dict) or not dependency.get("schedule_id"):
+                blocked.append({"reason":"invalid_dependency_contract"});continue
+            dependency_id=dependency["schedule_id"]
+            row=con.execute("SELECT * FROM runs WHERE schedule_id=? AND status='succeeded' ORDER BY finished_at DESC LIMIT 1",(dependency_id,)).fetchone()
+            satisfied=bool(row)
+            if satisfied and dependency.get("same_local_date",True):
+                timezone=ZoneInfo(schedule.get("timezone") or "Asia/Shanghai")
+                satisfied=parse(row["due_at"]).astimezone(timezone).date()==due_at.astimezone(timezone).date()
+            if not satisfied:
+                max_wait=int(dependency.get("max_wait_seconds",900))
+                if (parse(now)-due_at).total_seconds()>=max_wait:continue
+                blocked.append({"schedule_id":dependency_id,"reason":"awaiting_same_period_success","max_wait_seconds":max_wait})
+        return not blocked,blocked
+
+    def tick(self, owner: str | None = None, limit: int = 20) -> dict[str, Any]:
         owner = owner or f"{socket.gethostname()}:{os.getpid()}"
         now = iso(); created=[]
         with self.db.transaction() as con:
@@ -445,7 +468,14 @@ class Companion:
                 if reason:
                     con.execute("UPDATE schedules SET status='expired',next_run_at=NULL,version=version+1,updated_at=? WHERE id=? AND status='active'",(now,active_schedule["id"]))
                     self._audit(con,"scheduler","expire","schedule",active_schedule["id"],before=active_schedule,after={**active_schedule,"status":"expired","next_run_at":None},reason=reason)
-            due = con.execute("SELECT * FROM schedules WHERE status='active' AND next_run_at IS NOT NULL AND next_run_at<=? ORDER BY next_run_at LIMIT ?",(now,limit)).fetchall()
+            due_rows = con.execute("SELECT * FROM schedules WHERE status='active' AND next_run_at IS NOT NULL AND next_run_at<=? ORDER BY next_run_at LIMIT 100",(now,)).fetchall()
+            due=[];blocked_dependencies=[]
+            for raw in due_rows:
+                schedule=row_dict(raw);ready,blocked=self._schedule_dependencies_ready(con,schedule,now)
+                if not ready:
+                    blocked_dependencies.append({"schedule_id":schedule["id"],"dependencies":blocked});continue
+                due.append(raw)
+                if len(due)>=limit:break
             for raw in due:
                 schedule=row_dict(raw); due_at=schedule["next_run_at"]
                 key=f"schedule:{schedule['id']}:{due_at}"
@@ -471,7 +501,7 @@ class Companion:
                 self.complete_run(run_id,False,str(exc));dispatch_errors.append({"run_id":run_id,"error":str(exc)})
         recovered_routes=self.route_pending_runs(limit=max(1,limit*2),exclude_run_ids=set(created))
         queued.extend(recovered_routes["queued_outbox"]);job_runs.extend(recovered_routes["queued_job_runs"]);dispatch_errors.extend(recovered_routes["errors"])
-        return {"ok":not dispatch_errors,"created_runs":created,"queued_outbox":queued,"queued_job_runs":job_runs,"recovered_routes":recovered_routes["routed_runs"],"dispatch_errors":dispatch_errors,"due_count":len(due),"at":now}
+        return {"ok":not dispatch_errors,"created_runs":created,"queued_outbox":queued,"queued_job_runs":job_runs,"recovered_routes":recovered_routes["routed_runs"],"dispatch_errors":dispatch_errors,"blocked_dependencies":blocked_dependencies,"due_count":len(due),"at":now}
 
     @staticmethod
     def _validate_schedule_policy(policy:dict[str,Any],*,allow_expired:bool=False)->None:
@@ -515,8 +545,17 @@ class Companion:
             try:ingested.append(self.ingest_directory(source["path"],source.get("source","filesystem"),source.get("glob","*.md"),source.get("recursive",True),source.get("limit",200)))
             except Exception as exc:
                 self.source_health_record(source.get("source","filesystem"),"failed",str(exc),coverage={"path":source.get("path")});ingested.append({"path":source.get("path"),"error":str(exc)})
+        receipt={
+            "configured_local_sources":len(scope.get("inbox_sources",[])),
+            "local_sources_attempted":len(ingested),
+            "local_items_matched":sum(int(item.get("matched",0)) for item in ingested if not item.get("error")),
+            "local_items_added":sum(int(item.get("added",0)) for item in ingested if not item.get("error")),
+            "local_source_errors":[item for item in ingested if item.get("error")],
+            "coverage_status":"local_input_available" if any(int(item.get("matched",0))>0 for item in ingested if not item.get("error")) else "external_checks_required",
+        }
         prompt=self._run_prompt(run,schedule)
-        if ingested:prompt += "\n\n本次到期扫描的信息源摄入结果："+canonical(ingested)
+        prompt += "\n\n本次来源覆盖预检："+canonical(receipt)
+        prompt += "\n本地输入为零不等于市场没有新信息。必须按研究质量契约补做指定的结构化数据、官方原始来源与受约束 Web 检查；未达到最低覆盖时只能记录 insufficient_coverage，禁止记录 no_material_change。"
         item=self.outbox_enqueue(
             kind="codex_turn",
             destination="investment-companion",
@@ -526,6 +565,7 @@ class Companion:
                 "message":prompt,
                 "run_id":run["id"],
                 "schedule_id":schedule["id"],
+                "coverage_receipt":receipt,
             },
             idempotency_key=f"run-dispatch:{run['id']}",
         )
@@ -761,6 +801,35 @@ Schedule ID: {schedule['id']}
     def source_health_list(self)->list[dict[str,Any]]:
         with self.db.connect() as con:return rows_dict(con.execute("SELECT * FROM source_health ORDER BY source").fetchall())
 
+    def research_quality_status(self,days:int=30)->dict[str,Any]:
+        if isinstance(days,bool) or not isinstance(days,int) or days<1 or days>365:raise CompanionError("research quality window must be within 1..365 days")
+        cutoff=iso(utc_now()-timedelta(days=days));now=iso()
+        with self.db.connect() as con:
+            patrols=rows_dict(con.execute("SELECT * FROM patrols WHERE created_at>=? ORDER BY created_at DESC",(cutoff,)).fetchall())
+            artifacts={item["path"]:item for item in rows_dict(con.execute("SELECT * FROM artifacts WHERE kind='patrol_result' AND created_at>=?",(cutoff,)).fetchall())}
+            runs=rows_dict(con.execute("SELECT * FROM runs WHERE created_at>=? AND status IN ('succeeded','failed')",(cutoff,)).fetchall())
+            pending=con.execute("SELECT COUNT(*) FROM outbox WHERE status IN ('pending','retry','sending')").fetchone()[0]
+            dead=con.execute("SELECT COUNT(*) FROM outbox WHERE status='dead'").fetchone()[0]
+        receipts=[];missing_receipts=0
+        for patrol in patrols:
+            artifact=artifacts.get(patrol.get("result_path"));receipt=(artifact or {}).get("subject",{}).get("evidence_receipt") if artifact else None
+            if receipt:receipts.append(receipt)
+            elif patrol.get("status")=="returned":missing_receipts+=1
+        latencies=[]
+        for run in runs:
+            endpoint=run.get("started_at") or run.get("finished_at")
+            if endpoint:latencies.append(max(0,int((parse(endpoint)-parse(run["due_at"])).total_seconds())))
+        passed=sum(1 for item in receipts if item.get("coverage_status")=="passed")
+        insufficient=sum(1 for item in receipts if item.get("coverage_status") in {"partial","insufficient"})
+        checked=sum(int(item.get("checked_sources",0)) for item in receipts);primary=sum(int(item.get("primary_sources",0)) for item in receipts)
+        issues=[]
+        if missing_receipts:issues.append(f"{missing_receipts} returned patrols lack a source coverage receipt")
+        if insufficient:issues.append(f"{insufficient} patrols were below the source coverage floor")
+        if pending:issues.append(f"{pending} wake envelopes are still pending delivery")
+        if dead:issues.append(f"{dead} wake envelopes are dead")
+        if latencies and max(latencies)>900:issues.append("at least one task started more than 15 minutes late")
+        return {"schema":"investment-companion.research-quality-status/v1","as_of":now,"window_days":days,"source_coverage":{"patrols":len(patrols),"receipts":len(receipts),"passed":passed,"insufficient":insufficient,"missing_receipts":missing_receipts,"checked_sources":checked,"primary_sources":primary,"primary_source_ratio":str(primary/checked) if checked else None},"scheduler":{"terminal_runs":len(runs),"latency_observations":len(latencies),"within_10_minutes":sum(1 for value in latencies if value<=600),"max_start_delay_seconds":max(latencies) if latencies else None,"mean_start_delay_seconds":round(sum(latencies)/len(latencies),2) if latencies else None},"delivery":{"pending":pending,"dead":dead},"sources":self.source_health_list(),"issues":issues,"status":"healthy" if not issues else "needs_attention"}
+
     def bootstrap_defaults(self,finance_source:str|None=None)->dict[str,Any]:
         existing=self.schedule_list();created=[]
         finance_source=finance_source or os.environ.get("COMPANION_FINANCE_SOURCE")
@@ -840,12 +909,26 @@ Schedule ID: {schedule['id']}
         with self.db.connect() as con:rows=con.execute("SELECT * FROM patrols"+(" WHERE status=?" if status else "")+" ORDER BY created_at DESC",((status,) if status else ())).fetchall()
         return rows_dict(rows)
 
-    def patrol_complete(self,patrol_id:str,result_path:str,disposition:str)->dict[str,Any]:
+    def patrol_complete(self,patrol_id:str,result_path:str,disposition:str,evidence_receipt:dict[str,Any]|None=None)->dict[str,Any]:
         full=(self.root/result_path).resolve()
         if not full.is_file() or self.root not in full.parents:raise CompanionError("result_path must be an existing file inside workspace")
+        item=self.patrol_get(patrol_id);schedule=self.schedule_get(item["schedule_id"]) if item.get("schedule_id") else None
+        contract=(schedule or {}).get("policy",{}).get("research_quality_contract",{})
+        receipt=evidence_receipt or {}
+        if contract.get("required"):
+            required={"as_of","checked_sources","primary_sources","discovery_sources","material_findings","coverage_status","gaps"}
+            if set(receipt)!=required:raise CompanionError("patrol evidence_receipt does not match the required quality contract")
+            for field in ("checked_sources","primary_sources","discovery_sources","material_findings"):
+                if isinstance(receipt[field],bool) or not isinstance(receipt[field],int) or receipt[field]<0:raise CompanionError(f"patrol evidence_receipt.{field} must be a non-negative integer")
+            if receipt["coverage_status"] not in {"passed","partial","insufficient"}:raise CompanionError("invalid patrol coverage_status")
+            if not isinstance(receipt["gaps"],list):raise CompanionError("patrol evidence_receipt.gaps must be a list")
+            minimum=int(contract.get("min_checked_sources",3));primary_min=int(contract.get("min_primary_sources",1))
+            passed=receipt["checked_sources"]>=minimum and receipt["primary_sources"]>=primary_min and receipt["coverage_status"]=="passed"
+            if disposition=="no_material_change" and not passed:raise CompanionError("no_material_change requires passed source coverage; use insufficient_coverage")
+            if not passed and disposition!="insufficient_coverage":raise CompanionError("patrol below its source quality floor must use insufficient_coverage")
         with self.db.transaction() as con:
             con.execute("UPDATE patrols SET status='returned',disposition=?,result_path=?,finished_at=?,lease_owner=NULL,lease_until=NULL WHERE id=?",(disposition,result_path,iso(),patrol_id))
-        item=self.patrol_get(patrol_id);self.artifact_register(result_path,"patrol_result",case_id=item.get("case_id"));return item
+        item=self.patrol_get(patrol_id);self.artifact_register(result_path,"patrol_result",subject={"evidence_receipt":receipt},case_id=item.get("case_id"));return item
 
     def artifact_register(self,path:str,kind:str,subject:dict[str,Any]|None=None,case_id:str|None=None,watch_id:str|None=None,event_id:str|None=None,status:str="current",effective_at:str|None=None,supersedes:str|None=None)->dict[str,Any]:
         full=(self.root/path).resolve()

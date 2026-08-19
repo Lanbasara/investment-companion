@@ -46,6 +46,7 @@ TOOLS={
  "inbox_set_status":("标记一项材料已分流、关联、归档或判重。",schema({"item_id":S,"status":{"type":"string","enum":["new","triaged","linked","archived","duplicate"]}},["item_id","status"])),
  "source_health_record":("登记数据源成功、陈旧、部分、无权限或失败状态。",schema({"source":S,"status":S,"error":S,"cursor":S,"coverage":O},["source","status"])),
  "source_health_list":("列出所有数据源健康度、游标和连续失败。",schema()),
+ "v5_research_quality_status":("读取主动研究的来源覆盖、调度延迟和交付质量记分卡。",schema({"days":I})),
  "event_list":("列出事件。",schema({"status":S,"limit":I})),
  "event_get":("读取事件事实与来源。",schema({"event_id":S},["event_id"])),
  "event_acknowledge":("记录 Primary Codex 对事件的处理结论。",schema({"event_id":S,"note":S},["event_id","note"])),
@@ -57,7 +58,7 @@ TOOLS={
  "patrol_commission":("基于现有委托文件登记一次短命哨骑行动。此工具不直接派遣 Agent。",schema({"brief_path":S,"case_id":S,"schedule_id":S,"budget":O},["brief_path"])),
  "patrol_list":("列出哨骑行动。",schema({"status":S})),
  "patrol_get":("读取哨骑行动和结果文件句柄。",schema({"patrol_id":S},["patrol_id"])),
- "patrol_complete":("登记哨骑返回的工作材料。",schema({"patrol_id":S,"result_path":S,"disposition":S},["patrol_id","result_path","disposition"])),
+ "patrol_complete":("登记哨骑返回的工作材料及来源覆盖回执。",schema({"patrol_id":S,"result_path":S,"disposition":S,"evidence_receipt":O},["patrol_id","result_path","disposition"])),
  "artifact_register":("登记工作目录中的认知材料句柄。",schema({"path":S,"kind":S,"subject":O,"case_id":S,"watch_id":S,"event_id":S,"status":S,"effective_at":S,"supersedes":S},["path","kind"])),
  "artifact_list":("按案件和状态取得少量文件句柄。",schema({"case_id":S,"status":S,"limit":I})),
  "artifact_get":("读取一个认知材料的稳定文件句柄。",schema({"artifact_id":S},["artifact_id"])),
@@ -192,6 +193,7 @@ def call(name:str,a:dict[str,Any]):
     if name=="inbox_set_status":return C.inbox_set_status(a["item_id"],a["status"],actor)
     if name=="source_health_record":return C.source_health_record(**a)
     if name=="source_health_list":return C.source_health_list()
+    if name=="v5_research_quality_status":return C.research_quality_status(a.get("days",30))
     if name=="event_list":return C.event_list(a.get("status"),a.get("limit",50))
     if name=="event_get":return C.event_get(a["event_id"])
     if name=="event_acknowledge":return C.event_acknowledge(a["event_id"],a["note"],actor)
@@ -203,7 +205,7 @@ def call(name:str,a:dict[str,Any]):
     if name=="patrol_commission":return C.patrol_commission(**a,actor=actor)
     if name=="patrol_list":return C.patrol_list(a.get("status"))
     if name=="patrol_get":return C.patrol_get(a["patrol_id"])
-    if name=="patrol_complete":return C.patrol_complete(a["patrol_id"],a["result_path"],a["disposition"])
+    if name=="patrol_complete":return C.patrol_complete(a["patrol_id"],a["result_path"],a["disposition"],a.get("evidence_receipt"))
     if name=="artifact_register":return C.artifact_register(**a)
     if name=="artifact_list":return C.artifact_list(a.get("case_id"),a.get("status"),a.get("limit",100))
     if name=="artifact_get":return C.artifact_get(a["artifact_id"])

@@ -18,7 +18,9 @@ def emit(value):
 def parser() -> argparse.ArgumentParser:
     p=argparse.ArgumentParser(prog="companion",description="Investment Companion operational CLI")
     p.add_argument("--root",default=os.environ.get("COMPANION_ROOT","/home/ghk/investment-home"));sub=p.add_subparsers(dest="command",required=True)
-    for name in ["init","status","doctor","tick","recover","bootstrap","agent-check","session-brief","v5-status","today","v5-quant-status","v5-experiment-status"]:sub.add_parser(name)
+    for name in ["init","status","doctor","recover","bootstrap","agent-check","session-brief","v5-status","today","v5-quant-status","v5-experiment-status"]:sub.add_parser(name)
+    tick=sub.add_parser("tick");tick.add_argument("--limit",type=int,default=20)
+    quality=sub.add_parser("v5-research-quality");quality.add_argument("--days",type=int,default=30)
     migrate=sub.add_parser("migrate");migrate.add_argument("--backup-directory",required=True)
     sub.add_parser("v4-status")
     bootstrap_v4=sub.add_parser("v4-bootstrap-jobs");bootstrap_v4.add_argument("--activate",action="store_true")
@@ -41,13 +43,14 @@ def parser() -> argparse.ArgumentParser:
     pv=sub.add_parser("partition-validate");pv.add_argument("object_id");pv.add_argument("--name",required=True);pv.add_argument("--stream",required=True);pv.add_argument("--role",required=True);pv.add_argument("--knowledge-cutoff",required=True)
     sp=sub.add_parser("snapshot-publish");sp.add_argument("manifest_file")
     wi=sub.add_parser("workspace-init");wi.add_argument("--finance-source")
-    dispatch=sub.add_parser("dispatch");dispatch.add_argument("--dry-run",action="store_true");dispatch.add_argument("--limit",type=int,default=1)
+    dispatch=sub.add_parser("dispatch");dispatch.add_argument("--dry-run",action="store_true");dispatch.add_argument("--limit",type=int,default=20)
     wake_claim=sub.add_parser("wake-claim");wake_claim.add_argument("--owner",required=True);wake_claim.add_argument("--lease-seconds",type=int,default=1800)
     wake_complete=sub.add_parser("wake-complete");wake_complete.add_argument("id");wake_complete.add_argument("--owner",required=True);wake_complete.add_argument("--failed",action="store_true");wake_complete.add_argument("--error")
     b=sub.add_parser("backup");b.add_argument("destination")
     ba=sub.add_parser("backup-auto");ba.add_argument("directory")
     sl=sub.add_parser("schedule-list");sl.add_argument("--status");sl.add_argument("--kind")
     sg=sub.add_parser("schedule-get");sg.add_argument("id")
+    patch_schedule=sub.add_parser("schedule-patch");patch_schedule.add_argument("id");patch_schedule.add_argument("--expected-version",type=int,required=True);patch_schedule.add_argument("--changes",required=True);patch_schedule.add_argument("--reason",required=True)
     sc=sub.add_parser("schedule-create");sc.add_argument("--name",required=True);sc.add_argument("--kind",required=True);sc.add_argument("--mission",required=True);sc.add_argument("--cadence",required=True);sc.add_argument("--scope",default="{}");sc.add_argument("--policy",default="{}");sc.add_argument("--dispatch-type",choices=["codex_turn","deterministic_pipeline"],default="codex_turn");sc.add_argument("--job-definition-id")
     ss=sub.add_parser("schedule-status");ss.add_argument("id");ss.add_argument("status",choices=["active","paused","archived"])
     sr=sub.add_parser("schedule-run-now");sr.add_argument("id")
@@ -72,6 +75,7 @@ def main(argv=None) -> int:
             elif a.command=="v4-status":result=c.v4_status()
             elif a.command=="v5-status":result=c.v5_status()
             elif a.command in {"v5-quant-status","v5-experiment-status"}:result=c.quant_research.status()
+            elif a.command=="v5-research-quality":result=c.research_quality_status(a.days)
             elif a.command=="today":result=c.operating.today()
             elif a.command=="v4-bootstrap-jobs":result=c.v4_bootstrap_jobs(activate=a.activate)
             elif a.command in {"v5-quant-bootstrap","v5-experiment-bootstrap"}:result=c.quant_research.bootstrap(activate=a.activate)
@@ -82,7 +86,8 @@ def main(argv=None) -> int:
                     item=c.jobs.run_once(owner)
                     if item is None:break
                     runs.append(item)
-                result={"ok":True,"owner":owner,"runs":runs}
+                delivery=c.dispatch_outbox(limit=20) if os.environ.get("COMPANION_CC_WAKE_CRON") else {"ok":True,"results":[]}
+                result={"ok":delivery["ok"],"owner":owner,"runs":runs,"delivery":delivery}
             elif a.command=="gate-list":result=c.gates.list(a.scope or c.gate_scope)
             elif a.command=="gate-report-publish":result=c.gates.validation_report_publish(kind=a.kind,checks=json.loads(a.checks),input_refs=json.loads(a.input_refs),commands=json.loads(a.commands),observations=json.loads(a.observations),scope=a.scope,actor="primary-codex")
             elif a.command=="gate-evidence-publish":
@@ -108,7 +113,7 @@ def main(argv=None) -> int:
             elif a.command=="snapshot-publish":result=c.data.snapshot_validate_and_publish(json.loads(Path(a.manifest_file).read_text(encoding="utf-8")))
             elif a.command=="session-brief":result=c.session_brief()
             elif a.command=="doctor":result=c.doctor()
-            elif a.command=="tick":result=c.tick()
+            elif a.command=="tick":result=c.tick(limit=a.limit)
             elif a.command=="recover":result=c.recover()
             elif a.command=="bootstrap":result=c.bootstrap_defaults()
             elif a.command=="dispatch":result=c.dispatch_outbox(a.dry_run,a.limit)
@@ -118,6 +123,7 @@ def main(argv=None) -> int:
             elif a.command=="backup-auto":result=c.backup_auto(a.directory)
             elif a.command=="schedule-list":result=c.schedule_list(a.status,a.kind)
             elif a.command=="schedule-get":result=c.schedule_get(a.id)
+            elif a.command=="schedule-patch":result=c.schedule_patch(a.id,a.expected_version,json.loads(a.changes),actor="cli",reason=a.reason)
             elif a.command=="schedule-create":result=c.schedule_create(name=a.name,kind=a.kind,mission=a.mission,cadence=json.loads(a.cadence),scope=json.loads(a.scope),policy=json.loads(a.policy),dispatch_type=a.dispatch_type,job_definition_id=a.job_definition_id,actor="cli")
             elif a.command=="schedule-status":result=c.schedule_set_status(a.id,a.status,actor="cli")
             elif a.command=="schedule-run-now":result=c.schedule_run_now(a.id,actor="cli")

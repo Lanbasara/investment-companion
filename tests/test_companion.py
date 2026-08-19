@@ -26,6 +26,19 @@ class CompanionTest(unittest.TestCase):
         self.assertEqual(patched["mission"],"better scan")
         with self.assertRaises(CompanionError):self.c.schedule_patch(s["id"],current["version"],{"mission":"stale"})
 
+    def test_tick_drains_due_schedules_and_waits_for_dependencies(self):
+        upstream=self.c.schedule_create(name="upstream",kind="patrol",mission="upstream",cadence={"type":"interval","seconds":1800})
+        downstream=self.c.schedule_create(name="downstream",kind="review",mission="downstream",cadence={"type":"interval","seconds":1800},scope={"dependencies":[{"schedule_id":upstream["id"],"same_local_date":True,"max_wait_seconds":900}]})
+        due=iso(utc_now()-timedelta(minutes=1))
+        with self.c.db.transaction() as con:con.execute("UPDATE schedules SET next_run_at=? WHERE id IN (?,?)",(due,upstream["id"],downstream["id"]))
+        first=self.c.tick()
+        self.assertEqual(len(first["created_runs"]),1)
+        self.assertEqual(first["blocked_dependencies"][0]["schedule_id"],downstream["id"])
+        self.c.complete_run(first["created_runs"][0],True)
+        second=self.c.tick()
+        self.assertEqual(len(second["created_runs"]),1)
+        self.assertEqual(self.c.run_get(second["created_runs"][0])["schedule_id"],downstream["id"])
+
     def test_schedule_policy_max_runs_expires_without_an_extra_run(self):
         s=self.c.schedule_create(name="bounded",kind="maintenance",mission="bounded",cadence={"type":"interval","seconds":1800},policy={"max_runs":1,"expires_at":iso(utc_now()+timedelta(days=1))})
         with self.c.db.transaction() as con:con.execute("UPDATE schedules SET next_run_at=? WHERE id=?",(iso(utc_now()-timedelta(minutes=1)),s["id"]))
@@ -51,6 +64,20 @@ class CompanionTest(unittest.TestCase):
         a=self.c.inbox_add(source="user",title="article",content="same")
         b=self.c.inbox_add(source="user",title="article again",content="same")
         self.assertEqual(a["id"],b["id"])
+
+    def test_patrol_quality_contract_rejects_false_no_change_and_scores_receipt(self):
+        schedule=self.c.schedule_create(name="quality patrol",kind="patrol",mission="scan",cadence={"type":"interval","seconds":1800},policy={"research_quality_contract":{"required":True,"min_checked_sources":3,"min_primary_sources":1}})
+        case=self.c.case_create(title="quality",brief="# brief")
+        patrol=self.c.patrol_commission(brief_path=case["brief_path"],case_id=case["id"],schedule_id=schedule["id"])
+        result=self.root/case["root_path"]/"patrols"/"quality.md";result.write_text("# result\n",encoding="utf-8")
+        weak={"as_of":iso(),"checked_sources":0,"primary_sources":0,"discovery_sources":0,"material_findings":0,"coverage_status":"insufficient","gaps":["no input"]}
+        with self.assertRaisesRegex(CompanionError,"no_material_change requires passed source coverage"):
+            self.c.patrol_complete(patrol["id"],str(result.relative_to(self.root)),"no_material_change",weak)
+        complete=self.c.patrol_complete(patrol["id"],str(result.relative_to(self.root)),"insufficient_coverage",weak)
+        self.assertEqual(complete["disposition"],"insufficient_coverage")
+        quality=self.c.research_quality_status()
+        self.assertEqual(quality["source_coverage"]["insufficient"],1)
+        self.assertEqual(quality["status"],"needs_attention")
 
     def test_recover_leases_and_backup(self):
         s=self.c.schedule_create(name="once",kind="one_shot",mission="once",cadence={"type":"one_shot","at":iso(utc_now()+timedelta(hours=1))})
