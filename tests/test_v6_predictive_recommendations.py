@@ -124,6 +124,7 @@ def test_v6_bootstrap_creates_separate_task_lines_and_monthly_feedback_review(tm
     }
     assert len(result["schedules"]) == 6
     assert {item["origin"]["role"] for item in result["schedules"]} == {"stock_candidates", "stock_signals", "etf_data", "etf_candidates", "etf_signals", "monthly_feedback_review"}
+    assert len(companion.v6_predictive.status()["definitions"]) == 8
     assert result["boundaries"]["separate_stock_and_fund_task_lines"] is True
     assert result["boundaries"]["automatic_decision_or_execution"] is False
 

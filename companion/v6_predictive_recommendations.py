@@ -135,7 +135,7 @@ class V6PredictiveRecommendations:
         definitions = [
             item
             for item in self.c.jobs.definition_list()
-            if item["handler"] in {STOCK_HANDLER, FUND_HANDLER, FUND_CANDIDATE_HANDLER, FUND_SIGNAL_HANDLER, FUND_DATA_HANDLER, REVIEW_HANDLER}
+            if item["handler"] in {STOCK_HANDLER, STOCK_CANDIDATE_HANDLER, STOCK_SIGNAL_HANDLER, FUND_HANDLER, FUND_CANDIDATE_HANDLER, FUND_SIGNAL_HANDLER, FUND_DATA_HANDLER, REVIEW_HANDLER}
             and item["status"] != "archived"
         ]
         program_id = feature.get("config", {}).get("program_id") if isinstance(feature.get("config"), dict) else None
