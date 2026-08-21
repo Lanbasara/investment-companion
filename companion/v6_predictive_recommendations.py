@@ -688,13 +688,16 @@ class V6PredictiveRecommendations:
             {"role":"etf_data", "kind":"maintenance", "name":"V6 ETF：收盘数据与特征", "mission":"采集冻结的境内 ETF 身份、日线和份额，构建标的池与特征；不预测、不推荐、不交易。", "cadence":{"type":"local_time","at":"17:40","timezone":"Asia/Shanghai","weekdays":[0,1,2,3,4]}, "parameters":{"program_id":config["program_id"]}, "handler":FUND_DATA_HANDLER},
             {"role":"etf_candidates", "kind":"maintenance", "name":"V6 ETF：研究候选扫描", "mission":"从最新冻结 ETF 特征生成透明研究候选；候选不是预测或推荐。", "cadence":{"type":"local_time","at":"18:00","timezone":"Asia/Shanghai","weekdays":[0,1,2,3,4]}, "parameters":{"program_id":config["program_id"],"top_k":20}, "handler":FUND_CANDIDATE_HANDLER},
             {"role":"etf_signals", "kind":"maintenance", "name":"V6 ETF：冻结预测信号", "mission":"冻结可否证 ETF 趋势预测信号，输出暂定推荐或不推荐，并等待未来行情自动结算。", "cadence":{"type":"local_time","at":"18:10","timezone":"Asia/Shanghai","weekdays":[0,1,2,3,4]}, "parameters":{"program_id":config["program_id"],"horizon_sessions":20}, "handler":FUND_SIGNAL_HANDLER},
-            {"role":"monthly_feedback_review", "kind":"review", "name":"V6 预测推荐：月度反馈复核", "mission":"汇总股票与基金预测的冻结结果，报告命中、成本后相对收益、下行和未推荐原因；不得自动修改策略或生成交易。", "cadence":{"type":"monthly","day":19,"at":"19:20","timezone":"Asia/Shanghai","not_before":config["started_at"]}, "parameters":{"program_id":config["program_id"]}, "handler":REVIEW_HANDLER, "report":True},
+            {"role":"feedback_review", "kind":"review", "name":"V6 预测推荐：15 天反馈复核", "mission":"每 15 个自然日汇总股票与基金预测的冻结结果、待验证状态、命中、成本后相对收益、下行和未推荐原因；不得自动修改策略或生成交易。", "cadence":{"type":"interval","seconds":1296000}, "parameters":{"program_id":config["program_id"]}, "handler":REVIEW_HANDLER, "report":True},
         ]
         saved=[];existing=self.c.schedule_list()
         for spec in specifications:
             origin={"system":V6_MODE,"program_id":config["program_id"],"role":spec["role"],"user_approval_ref":config["user_approval_ref"]}
             expected={"name":spec["name"],"mission":spec["mission"],"cadence":spec["cadence"],"scope":{"refs":[],"parameters":spec["parameters"]},"policy":{**policy,"report_every_successful_run":bool(spec.get("report"))},"origin":origin,"dispatch_type":"deterministic_pipeline","job_definition_id":by_handler[spec["handler"]]["id"]}
-            item=next((value for value in existing if value.get("origin",{})==origin and value["status"]!="archived"),None)
+            accepted_roles={spec["role"]}
+            if spec["role"]=="feedback_review":
+                accepted_roles.add("monthly_feedback_review")
+            item=next((value for value in existing if value.get("origin",{}).get("system")==V6_MODE and value.get("origin",{}).get("program_id")==config["program_id"] and value.get("origin",{}).get("role") in accepted_roles and value["status"]!="archived"),None)
             if item:
                 observed={key:item.get(key) for key in expected}
                 if canonical(observed)!=canonical(expected):item=self.c.schedule_patch(item["id"],item["version"],expected,actor="v6-bootstrap",reason="align V6 ETF research schedule")

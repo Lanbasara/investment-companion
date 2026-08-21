@@ -109,7 +109,7 @@ def portfolio(*, conditions: list[str] | None = None) -> dict:
     }
 
 
-def test_v6_bootstrap_creates_separate_task_lines_and_monthly_feedback_review(tmp_path: Path):
+def test_v6_bootstrap_creates_separate_task_lines_and_15_day_feedback_review(tmp_path: Path):
     companion = setup_v6(tmp_path)
     result = companion.v6_predictive.bootstrap(activate=True)
     assert {item["handler"] for item in result["definitions"]} == {
@@ -123,7 +123,9 @@ def test_v6_bootstrap_creates_separate_task_lines_and_monthly_feedback_review(tm
         "research.v6_forecast_feedback",
     }
     assert len(result["schedules"]) == 6
-    assert {item["origin"]["role"] for item in result["schedules"]} == {"stock_candidates", "stock_signals", "etf_data", "etf_candidates", "etf_signals", "monthly_feedback_review"}
+    assert {item["origin"]["role"] for item in result["schedules"]} == {"stock_candidates", "stock_signals", "etf_data", "etf_candidates", "etf_signals", "feedback_review"}
+    review = next(item for item in result["schedules"] if item["origin"]["role"] == "feedback_review")
+    assert review["cadence"] == {"type": "interval", "seconds": 1296000}
     assert len(companion.v6_predictive.status()["definitions"]) == 8
     assert result["boundaries"]["separate_stock_and_fund_task_lines"] is True
     assert result["boundaries"]["automatic_decision_or_execution"] is False

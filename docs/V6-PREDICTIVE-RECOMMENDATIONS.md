@@ -45,17 +45,17 @@ V6 当前可输出 `research`、`conditional_action`、`action` 或 `no_action`�
 
 ## 反馈与反思
 
-每次预测写入不可变 `v6_predictive_forecast` Manifest；到期后写入不可变 `v6_predictive_feedback`，保存成本后相对收益、实际回撤及是否预测正确。月度 Job 汇总每条任务线的：
+每次预测写入不可变 `v6_predictive_forecast` Manifest；到期后写入不可变 `v6_predictive_feedback`，保存成本后相对收益、实际回撤及是否预测正确。每 15 个自然日的 Job 汇总每条任务线的：
 
 - 观察数、可行动比例、成本后正收益比例；
 - 平均成本后相对收益与最差实际回撤；
 - 观察数不足、长期无行动或其他需 Primary 复核的状态。
 
-月度复核不会自动调低门槛、修改策略或生成交易。连续无行动触发策略复核，不强迫凑出推荐。
+15 天复核不会把未满 20 个交易日的信号伪装成最终胜负：它报告待验证数量和阶段状态；成熟信号才计入命中率、实际相对收益和回撤。复核不会自动调低门槛、修改策略或生成交易。连续无行动触发策略复核，不强迫凑出推荐。
 
 ## 当前开发状态
 
-第一批实现提供：V6 Feature Flag、八个禁用的确定性 JobDefinition（股票候选、股票暂定信号、ETF 数据、ETF 候选、ETF 暂定信号、股票预测、基金预测、月度反馈）、不可变预测/反馈/复核 Manifest、CLI/MCP 只读状态入口和单元测试。激活后才会建立股票候选、股票暂定信号、ETF 数据、ETF 候选、ETF 暂定信号和月度反馈六个 Schedule；默认仍不启用。
+第一批实现提供：V6 Feature Flag、八个禁用的确定性 JobDefinition（股票候选、股票暂定信号、ETF 数据、ETF 候选、ETF 暂定信号、股票预测、基金预测、15 天反馈）、不可变预测/反馈/复核 Manifest、CLI/MCP 只读状态入口和单元测试。激活后才会建立股票候选、股票暂定信号、ETF 数据、ETF 候选、ETF 暂定信号和 15 天反馈六个 Schedule；默认仍不启用。
 
 股票线复用 V5 已冻结的 A 股 `daily` 与 `adj_factor` 原始事实，不重复拉取市场数据：V5 收盘扫描完成后，V6 在独立 Manifest 中形成股票候选、20 日暂定推荐和结果结算。股票与 ETF 具有独立候选、模型标识、信号、结果和月度任务线，绝不合并排名或统计。ETF 分类保留在每条推荐中供用户解释，但不作为推荐资格门槛。
 
@@ -63,7 +63,7 @@ ETF 日线现已具备 `tushare/fund_daily` 的隔离接入契约和 Canary 验�
 
 当前实现已可从上述冻结 Provider 行构建 `v6_fund_universe` 与 `v6_fund_feature_snapshot`，再生成透明的 `v6_fund_research_candidates`。候选按近端收益发现线索；它本身不是预测。候选随后由版本化模型生成带风险与验证状态的 V6 Forecast，前向样本不足会披露，不会压制该预测结论。
 
-激活 V6 后，交易日收盘会采集 `etf_basic`、全市场 `fund_daily` 与 `fund_share`，按知识截止点累积 20 个冻结交易日后生成特征和候选；候选后的 NAV 通过 `fund_nav` 按入围标的补充，因为该接口不支持无代码的全市场请求。月度反馈仍只评价真正发布过的 Forecast，不会把候选清单误当成预测结果。
+激活 V6 后，交易日收盘会采集 `etf_basic`、全市场 `fund_daily` 与 `fund_share`，按知识截止点累积 20 个冻结交易日后生成特征和候选；候选后的 NAV 通过 `fund_nav` 按入围标的补充，因为该接口不支持无代码的全市场请求。15 天反馈仍只评价真正发布过的 Forecast，不会把候选清单误当成预测结果。
 
 候选之后，`v6-domestic-etf-trend-baseline-v1` 会冻结 20 个交易日的趋势信号：`预期相对现金收益 = 0.25 × 近端收益`。这是已注册、可被未来价格结算的工程基线，会上线即输出“暂定推荐”或“不推荐”；所有信号初始为 `insufficient_evidence` / `unvalidated`，系统保存到期后的真实收益和方向是否正确，供月度复核和用户说明。
 
@@ -80,4 +80,4 @@ ETF 日线现已具备 `tushare/fund_daily` 的隔离接入契约和 Canary 验�
 }
 ```
 
-启用只激活 V6 Job 与月度反馈 Schedule；不修改 V5 股票扫描、历史 Manifest、账本、持仓或通知。
+启用只激活 V6 Job 与 15 天反馈 Schedule；不修改 V5 股票扫描、历史 Manifest、账本、持仓或通知。
