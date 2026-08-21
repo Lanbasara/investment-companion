@@ -77,6 +77,7 @@ class JobEngine:
         "v4_decision_support_beta":["G0","G1","G2","G3","G4"],
         "v4_decision_support":["G0","G1","G2","G3","G4","G5"],
         "v5_operating_system":["G0"],
+        "v6_predictive_recommendations":["G0"],
     }
     HANDLER_FEATURES={
         "data.tushare_ingest":"v4_live_data",
@@ -84,6 +85,13 @@ class JobEngine:
         "data.publish_snapshot":"v4_live_data",
         "research.canary_market_scan":"v4_live_data_canary",
         "research.continuous_quant_review":"v4_live_data_canary",
+        "research.v6_stock_forecast":"v6_predictive_recommendations",
+        "research.v6_stock_candidate_scan":"v6_predictive_recommendations",
+        "research.v6_stock_provisional_signal":"v6_predictive_recommendations",
+        "research.v6_fund_forecast":"v6_predictive_recommendations",
+        "research.v6_fund_candidate_scan":"v6_predictive_recommendations",
+        "research.v6_fund_provisional_signal":"v6_predictive_recommendations",
+        "research.v6_forecast_feedback":"v6_predictive_recommendations",
         "shadow.rebalance":"v4_shadow",
     }
 
@@ -701,7 +709,7 @@ class JobEngine:
     def _validate_network_profile(budget:dict[str,Any],steps:list[dict[str,Any]])->None:
         profile=budget.get("network","deny")
         if profile=="deny":return
-        allowed={"data.tushare_ingest","data.tushare_canary_bundle"}
+        allowed={"data.tushare_ingest","data.tushare_canary_bundle","data.v6_fund_canary_bundle"}
         if profile!="tushare_official" or not steps or any(step.get("handler") not in allowed for step in steps):
             raise CompanionError("network access is restricted to the allow-listed Tushare data handlers")
 

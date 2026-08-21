@@ -800,6 +800,29 @@ class DataDomain:
             assets.append(asset["id"]);identifiers.append(row_dict(saved)["id"])
         return {"asset_ids":sorted(set(assets)),"asset_identifier_ids":sorted(set(identifiers)),"count":len(set(identifiers))}
 
+    def identity_apply_tushare_etf_basic(self,rows:list[dict[str,Any]],*,checked_at:str,raw_hash:str)->dict[str,Any]:
+        """Append provider identity revisions for validated, listed ETFs only."""
+        assets=[];identifiers=[]
+        for index,row in enumerate(rows):
+            code=str(row.get("ts_code") or "").strip();name=str(row.get("csname") or "").strip();listed=str(row.get("list_date") or "")
+            exchange=str(row.get("exchange") or "").upper();list_status=str(row.get("list_status") or "").upper()
+            if not code or not name or not re.fullmatch(r"\d{8}",listed):raise CompanionError(f"etf_basic identity row {index} is incomplete")
+            if exchange not in {"SSE","SZSE"}:raise CompanionError(f"etf_basic identity row {index} has unsupported exchange")
+            if list_status!="L":continue
+            with self.db.connect() as con:
+                existing=con.execute("SELECT asset_id FROM asset_identifiers WHERE provider='tushare' AND identifier_type='ts_code' AND identifier_value=? ORDER BY first_known_at DESC,id DESC LIMIT 1",(code,)).fetchone()
+            metadata={"provider":"tushare","exchange":exchange,"list_status":list_status,"index_code":row.get("index_code"),"index_name":row.get("index_name"),"mgt_fee":row.get("mgt_fee"),"etf_type":row.get("etf_type")}
+            asset=self.c.financial.asset_get(existing[0]) if existing else self.c.financial.asset_upsert("etf",name,"CNY",{"tushare_ts_code":code},metadata)
+            effective_at=iso(parse(f"{listed[:4]}-{listed[4:6]}-{listed[6:]}T00:00:00+08:00"))
+            revision_id=digest("asset-identity/tushare-etf-basic/v1",code,name,effective_at,exchange,list_status,metadata,raw_hash)
+            with self.db.transaction() as con:
+                current=con.execute("SELECT id,revision_id FROM asset_identifiers WHERE provider='tushare' AND identifier_type='ts_code' AND identifier_value=? ORDER BY first_known_at DESC,id DESC LIMIT 1",(code,)).fetchone()
+                iid=new_id("assetid")
+                con.execute("INSERT OR IGNORE INTO asset_identifiers(id,asset_id,provider,identifier_type,identifier_value,effective_at,effective_to,first_known_at,ingested_at,revision_id,supersedes,raw_hash,parser_version,quality_json) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(iid,asset["id"],"tushare","ts_code",code,effective_at,None,checked_at,checked_at,revision_id,current[0] if current and current[1]!=revision_id else None,raw_hash,"tushare-etf-basic-identity/1",canonical({"status":"provider_response_validated","list_status":list_status,"exchange":exchange,"name":name})))
+                saved=con.execute("SELECT * FROM asset_identifiers WHERE provider='tushare' AND identifier_type='ts_code' AND identifier_value=? AND revision_id=?",(code,revision_id)).fetchone()
+            assets.append(asset["id"]);identifiers.append(row_dict(saved)["id"])
+        return {"asset_ids":sorted(set(assets)),"asset_identifier_ids":sorted(set(identifiers)),"count":len(set(identifiers))}
+
     def identity_resolve(self,provider:str,identifier_type:str,identifier_value:str,*,effective_at:str,knowledge_cutoff:str)->dict[str,Any]:
         at=iso(parse(effective_at));cutoff=iso(parse(knowledge_cutoff))
         with self.db.connect() as con:

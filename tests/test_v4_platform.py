@@ -12,7 +12,7 @@ from pathlib import Path
 import pytest
 
 from companion.core import Companion, CompanionError
-from companion.db import SCHEMA, V3_SCHEMA
+from companion.db import SCHEMA, SCHEMA_VERSION, V3_SCHEMA
 from companion.governance import G1_REQUIRED_TUSHARE_CAPABILITIES, GATE_CHECKLISTS, REPORT_VALIDATORS
 from companion.quant_runtime import canonical_hash
 from companion.timeutil import iso, utc_now
@@ -305,10 +305,10 @@ def test_latest_schema_requires_explicit_migration_and_is_repeatable(tmp_path: P
     assert con.execute("SELECT count(*) FROM sqlite_master WHERE name='schema_migrations'").fetchone()[0]==0
     con.close()
     result=companion.migrate(tmp_path/"backups")
-    assert result["schema_version"]=="5" and result["integrity"]=="ok"
+    assert result["schema_version"]==str(SCHEMA_VERSION) and result["integrity"]=="ok"
     assert Path(result["from_backup"]).is_file()
     companion.initialize()
-    assert len(companion.system_status()["migrations"])==3
+    assert len(companion.system_status()["migrations"])==4
 
 
 def test_failed_migration_rolls_back_schema_changes(tmp_path: Path):
@@ -577,6 +577,10 @@ def test_tushare_canary_retains_raw_and_semantically_validates(tmp_path: Path,mo
     companion.data.stream_configure(provider="tushare",capability="daily",schema_version="tushare-normalizer/2",config={"mode":"canary"})
     responses={
         "daily":{"code":0,"msg":None,"data":{"fields":["ts_code","trade_date","open","high","low","close","vol"],"items":[["000001.SZ","20260817",10,11,9,10.5,1000]]}},
+        "fund_daily":{"code":0,"msg":None,"data":{"fields":["ts_code","trade_date","open","high","low","close","vol","amount"],"items":[["510300.SH","20260817",4,4.1,3.9,4.05,2000,8100]]}},
+        "fund_nav":{"code":0,"msg":None,"data":{"fields":["ts_code","ann_date","nav_date","unit_nav","accum_nav","accum_div","net_asset","adj_nav","update_flag"],"items":[["510300.SH","20260818","20260817",4.05,4.05,0,1000000,4.05,"0"]]}},
+        "fund_share":{"code":0,"msg":None,"data":{"fields":["ts_code","trade_date","fd_share","fund_type","market"],"items":[["510300.SH","20260817",250000,"股票型","E"]]}},
+        "etf_basic":{"code":0,"msg":None,"data":{"fields":["ts_code","csname","extname","cname","index_code","index_name","setup_date","list_date","list_status","exchange","mgr_name","custod_name","mgt_fee","etf_type"],"items":[["510300.SH","沪深300ETF","沪深300ETF","沪深300ETF","000300.SH","沪深300","20120504","20120528","L","SSE","fixture manager","fixture custodian",0.15,"股票型"]]}},
         "dividend":{"code":0,"msg":None,"data":{"fields":["ts_code","end_date","ann_date","div_proc","stk_div","cash_div_tax","ex_date"],"items":[["000001.SZ","20251231","20260301","实施",0.2,0.5,"20260601"]]}},
     }
     seen={}
@@ -591,6 +595,24 @@ def test_tushare_canary_retains_raw_and_semantically_validates(tmp_path: Path,mo
     assert "fixture-token-123" not in raw
     canonical=json.loads(companion.data.object_read(batch["canonical_object_ids"][0]))
     assert canonical[0]["asset_id"]=="tushare:000001.SZ" and canonical[0]["parser_version"]=="tushare-daily/2"
+    companion.data.stream_configure(provider="tushare",capability="fund_daily",schema_version="tushare-normalizer/2",config={"mode":"canary"})
+    fund_batch=adapter.ingest_canary("fund_daily",params={"ts_code":"510300.SH","start_date":"20260817","end_date":"20260817"})
+    fund_rows=json.loads(companion.data.object_read(fund_batch["canonical_object_ids"][0]))
+    assert fund_batch["status"]=="ready" and fund_batch["row_count"]==1
+    assert fund_rows[0]["asset_id"]=="tushare:510300.SH" and fund_rows[0]["amount"]=="8100" and fund_rows[0]["parser_version"]=="tushare-fund-daily/1"
+    companion.data.stream_configure(provider="tushare",capability="fund_nav",schema_version="tushare-normalizer/2",config={"mode":"canary"})
+    nav_batch=adapter.ingest_canary("fund_nav",params={"ts_code":"510300.SH","start_date":"20260817","end_date":"20260817"})
+    nav=json.loads(companion.data.object_read(nav_batch["canonical_object_ids"][0]))
+    assert nav_batch["status"]=="ready" and nav["stream"]=="fund_nav" and nav["facts"][0]["value"]["unit_nav"]==4.05
+    companion.data.stream_configure(provider="tushare",capability="fund_share",schema_version="tushare-normalizer/2",config={"mode":"canary"})
+    share_batch=adapter.ingest_canary("fund_share",params={"ts_code":"510300.SH","start_date":"20260817","end_date":"20260817"})
+    shares=json.loads(companion.data.object_read(share_batch["canonical_object_ids"][0]))
+    assert share_batch["status"]=="ready" and shares["stream"]=="fund_share" and shares["facts"][0]["value"]["fd_share"]==250000
+    companion.data.stream_configure(provider="tushare",capability="etf_basic",schema_version="tushare-normalizer/2",config={"mode":"canary"})
+    universe_batch=adapter.ingest_canary("etf_basic",params={})
+    universe=json.loads(companion.data.object_read(universe_batch["canonical_object_ids"][0]))
+    assert universe_batch["status"]=="ready" and universe_batch["row_count"]==1
+    assert universe["stream"]=="etf_basic" and universe["facts"][0]["value"]["csname"]=="沪深300ETF"
     companion.data.stream_configure(provider="tushare",capability="dividend",schema_version="tushare-normalizer/2",config={"mode":"canary"})
     dividend_batch=adapter.ingest_canary("dividend",params={"ts_code":"000001.SZ"})
     actions=json.loads(companion.data.object_read(dividend_batch["canonical_object_ids"][0]))
@@ -643,12 +665,14 @@ def test_active_tushare_batches_require_gates_and_resolve_asset_identity(tmp_pat
     responses={
         "stock_basic":{"code":0,"msg":None,"data":{"fields":["ts_code","symbol","name","list_date","list_status"],"items":[["000001.SZ","000001","平安银行","19910403","L"]]}},
         "daily":{"code":0,"msg":None,"data":{"fields":["ts_code","trade_date","open","high","low","close","vol"],"items":[["000001.SZ","20260817",10,11,9,10.5,1000]]}},
+        "etf_basic":{"code":0,"msg":None,"data":{"fields":["ts_code","csname","index_code","index_name","list_date","list_status","exchange","mgt_fee","etf_type"],"items":[["510300.SH","沪深300ETF","000300.SH","沪深300","20120528","L","SSE",0.15,"股票型"]]}},
+        "fund_daily":{"code":0,"msg":None,"data":{"fields":["ts_code","trade_date","open","high","low","close","vol"],"items":[["510300.SH","20260817",4,4.1,3.9,4.05,1000]]}},
     }
     def transport(body:bytes,_timeout:float)->bytes:
         request=json.loads(body.decode())
         return json.dumps(responses[request["api_name"]]).encode()
     adapter=TushareAdapter(companion,token="fixture-token-value",transport=transport)
-    for capability,params in (("stock_basic",{}),("daily",{"trade_date":"20260817"})):
+    for capability,params in (("stock_basic",{}),("daily",{"trade_date":"20260817"}),("etf_basic",{}),("fund_daily",{"trade_date":"20260817"})):
         companion.data.stream_configure(provider="tushare",capability=capability,schema_version="tushare-normalizer/2",config={"mode":"active-fixture"})
         companion.data.stream_set_status("tushare",capability,"active")
         batch=adapter.ingest(capability,params=params)
@@ -662,6 +686,12 @@ def test_active_tushare_batches_require_gates_and_resolve_asset_identity(tmp_pat
     daily_batch=companion.data.batch_list(daily_stream["id"])[0]
     rows=json.loads(companion.data.object_read(daily_batch["canonical_object_ids"][0]).decode())
     assert rows[0]["asset_id"]==identity[0]["asset_id"]
+    etf_identity=companion.data.identity_list("tushare","510300.SH")
+    assert len(etf_identity)==1
+    fund_stream=companion.data.stream_get("tushare","fund_daily")
+    fund_batch=companion.data.batch_list(fund_stream["id"])[0]
+    fund_rows=json.loads(companion.data.object_read(fund_batch["canonical_object_ids"][0]).decode())
+    assert fund_rows[0]["asset_id"]==etf_identity[0]["asset_id"]
     companion.data.stream_configure(provider="tushare",capability="suspend_d",schema_version="tushare-normalizer/2",config={"mode":"active-empty-fixture"})
     companion.data.stream_set_status("tushare","suspend_d","active")
     monkeypatch.setattr(TushareAdapter,"_load_token",staticmethod(lambda _token,_token_file:"fixture-job-token"))
@@ -761,7 +791,7 @@ def test_deterministic_schedule_routes_strict_typed_inputs(tmp_path: Path):
     with pytest.raises(CompanionError,match="release gates not satisfied"):
         companion.jobs.run_once("pytest-stale-gate",lease_seconds=10)
     assert companion.jobs.run_get(job["id"])["status"]=="queued"
-    with companion.db.transaction() as con:con.execute("UPDATE gate_assessments SET schema_version=5 WHERE gate='G0' AND scope='test_fixture'")
+    with companion.db.transaction() as con:con.execute("UPDATE gate_assessments SET schema_version=? WHERE gate='G0' AND scope='test_fixture'",(SCHEMA_VERSION,))
     completed=companion.jobs.run_once("pytest-schedule",lease_seconds=10)
     assert completed["status"]=="succeeded"
     assert companion.run_get(completed["parent_run_id"])["status"]=="succeeded"

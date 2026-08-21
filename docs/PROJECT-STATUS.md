@@ -2,7 +2,7 @@
 
 更新时间：2026-08-19
 
-当前生产：V5 / SQLite Schema 5 / 固定 Git Runtime
+当前发布目标：V6 / SQLite Schema 6 / 固定 Git Runtime
 
 当前分支：`feature/v5-investment-operating-system`
 
@@ -14,7 +14,7 @@ V4 冻结：annotated tag `v4.0.0-engineering-baseline`
 
 V5 是：**Codex 驱动、确定性证据支撑、飞书协作、人工执行、可审计并能用真实结果持续自我否证的个人投资研究与决策系统**。
 
-生产已经完成 Schema 5、V5 operating layer、version-neutral wake 和 active InvestmentProgram 的切换。原有主动任务、事件、Ledger、Context 和历史研究均原位保留，不需要重置。
+V6 在保留 Schema 5、V5 operating layer、version-neutral wake 和 active InvestmentProgram 的基础上，追加股票与 ETF 的独立预测、推荐、结果结算与周期复核。原有主动任务、事件、Ledger、Context 和历史研究均原位保留，不需要重置。
 
 持续量化研究已经改为真实世界长期运行：Tushare 真实数据 → 内容寻址对象 → 零模型 Token 的确定性扫描 → 当日收盘复盘/完整研究 → 每月严格前向复盘。它没有试用到期或运行次数上限，也不是自动交易或盈利承诺。
 
@@ -60,7 +60,7 @@ Primary Codex 仍是唯一最终语义判断、正式发布和用户沟通主体
 
 ## 4. 已实现并验证
 
-- Schema 5 有序迁移、备份恢复、完整性检查和固定 Runtime；
+- Schema 6 有序迁移、备份恢复、完整性检查和固定 Runtime；
 - Program → Opportunity → DecisionQueue → 人工成交 → Review/Scorecard 经营闭环；
 - `v5_today` 四态入口和 version-neutral wake claim/complete；
 - 原 V2/V3/V4 Schedule、Run、Event、Watch、Case、Ledger、Context 和 Job 兼容；
@@ -69,7 +69,7 @@ Primary Codex 仍是唯一最终语义判断、正式发布和用户沟通主体
 - 持续运行、单 Job 请求预算、失败修复和旧试用配置无损迁移；
 - 候选持续性研究触发与每月确定性前向复盘；
 - 扫描 Handler 不创建 Opportunity、Decision、Shadow、Execution 或 Ledger Entry；
-- MCP 5.2.0 的持续研究状态/扫描/月度复盘只读入口，以及对应 CLI 和 Plugin 路由；
+- MCP 6.0.0 的持续研究、股票/ETF 预测状态与月度复盘只读入口，以及对应 CLI 和 Plugin 路由；
 - 全量自动化测试、Agent 检查与 Plugin 校验。
 
 最终测试数量和 release commit 以 Git 历史和最新验证报告为准，不从本文猜。
@@ -77,8 +77,8 @@ Primary Codex 仍是唯一最终语义判断、正式发布和用户沟通主体
 ## 5. 生产运行边界
 
 - `.state/runtime-code-root` 是当前固定 Runtime 的权威指针；
-- 生产数据库是 `/home/ghk/investment-home/.state/companion.db`，Schema 5；
-- `v5_operating_system`、确定性 Job 能力和持续研究用 `v4_live_data_canary` 可启用；
+- 生产数据库是 `/home/ghk/investment-home/.state/companion.db`，Schema 6；
+- `v5_operating_system`、确定性 Job 能力、持续研究和 `v6_predictive_recommendations` 可独立启用；
 - `v4_live_data`、Shadow、Decision Support 与自动交易保持关闭；
 - Job Worker 每 5 分钟最多执行两个白名单任务，模型 Token 为 0；
 - 量化研究 Schedule 不设到期或最大次数；用户可随时明确暂停；

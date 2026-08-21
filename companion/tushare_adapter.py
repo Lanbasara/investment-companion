@@ -21,6 +21,15 @@ CAPABILITIES: dict[str, dict[str, Any]] = {
     "stock_basic": {"required_fields": {"ts_code", "symbol", "name", "list_date"}},
     "trade_cal": {"required_fields": {"exchange", "cal_date", "is_open"}},
     "daily": {"required_fields": {"ts_code", "trade_date", "open", "high", "low", "close", "vol"}},
+    # ETF prices use a distinct endpoint and stream.  V6 must preserve the
+    # data lineage separation between the stock and fund prediction lines.
+    "fund_daily": {"required_fields": {"ts_code", "trade_date", "open", "high", "low", "close", "vol"}},
+    # Verified against the configured account on 2026-08-21.
+    "fund_nav": {"required_fields": {"ts_code", "ann_date", "nav_date", "unit_nav", "accum_nav", "accum_div", "net_asset", "adj_nav", "update_flag"}},
+    "fund_share": {"required_fields": {"ts_code", "trade_date", "fd_share", "fund_type", "market"}},
+    # Verified against the configured account on 2026-08-21.  A caller may
+    # request a smaller projection, which is deliberately classified partial.
+    "etf_basic": {"required_fields": {"ts_code", "csname", "index_code", "index_name", "list_date", "list_status", "exchange", "mgt_fee", "etf_type"}},
     "adj_factor": {"required_fields": {"ts_code", "trade_date", "adj_factor"}},
     "daily_basic": {"required_fields": {"ts_code", "trade_date"}},
     "bak_basic": {"required_fields": {"ts_code", "trade_date"}},
@@ -298,6 +307,8 @@ class TushareAdapter:
             terminal="ready" if validation_body.get("eligible") else "blocked"
             if terminal=="ready" and stream_mode=="active" and capability=="stock_basic":
                 self.data.identity_apply_tushare_stock_basic(result.rows,checked_at=checked_at,raw_hash=raw["content_hash"])
+            if terminal=="ready" and stream_mode=="active" and capability=="etf_basic":
+                self.data.identity_apply_tushare_etf_basic(result.rows,checked_at=checked_at,raw_hash=raw["content_hash"])
             return self.data.batch_finish(batch["id"],status=terminal,raw_object_ids=raw_object_ids,canonical_object_ids=canonical_object_ids,row_count=int(validation_body.get("row_count",0)),error=None if terminal=="ready" else canonical(validation_body.get("violations",[])),cursor_after=self._cursor(params))
         except Exception as exc:
             return self.data.batch_finish(batch["id"],status="failed",raw_object_ids=raw_object_ids,canonical_object_ids=canonical_object_ids,row_count=0,error=str(exc))
@@ -317,8 +328,9 @@ class TushareAdapter:
         return f"{text[:4]}-{text[4:6]}-{text[6:]}"
 
     def _normalize(self,capability:str,rows:list[dict[str,Any]],checked_at:str,raw_hash:str,*,require_identity:bool=False)->tuple[Any,str]:
-        if capability=="daily":
+        if capability in {"daily","fund_daily"}:
             values=[]
+            parser_version="tushare-daily/2" if capability=="daily" else "tushare-fund-daily/1"
             for row in rows:
                 day=self._day(row["trade_date"])
                 asset_id=f"tushare:{row['ts_code']}"
@@ -330,7 +342,7 @@ class TushareAdapter:
                     "open":str(row["open"]),"high":str(row["high"]),"low":str(row["low"]),"close":str(row["close"]),"volume":str(row["vol"]),
                     "amount":str(row.get("amount")) if row.get("amount") is not None else None,
                     "suspended":False,"at_upper_limit":False,"at_lower_limit":False,
-                    "first_known_at":f"{day}T16:00:00+08:00","ingested_at":checked_at,"raw_hash":raw_hash,"parser_version":"tushare-daily/2",
+                    "first_known_at":f"{day}T16:00:00+08:00","ingested_at":checked_at,"raw_hash":raw_hash,"parser_version":parser_version,
                 })
             return values,"daily"
         if capability=="trade_cal":
@@ -366,7 +378,7 @@ class TushareAdapter:
             fact_key=f"{capability}:{raw_date}:{row.get('index_code','')}"
             revision_id=digest("tushare-pit/1",capability,entity,fact_key,row,raw_hash)
             entity_key=f"tushare:{entity}"
-            if require_identity and row.get("ts_code") and capability!="stock_basic":
+            if require_identity and row.get("ts_code") and capability not in {"stock_basic", "etf_basic"}:
                 entity_key=self.data.identity_resolve("tushare","ts_code",str(row["ts_code"]),effective_at=effective,knowledge_cutoff=checked_at)["asset_id"]
             facts.append({"entity_key":entity_key,"fact_key":fact_key,"effective_at":effective,"effective_to":None,"first_known_at":checked_at,"ingested_at":checked_at,"revision_id":revision_id,"supersedes":None,"raw_hash":raw_hash,"parser_version":"tushare-pit/1","quality":{"status":"provider_response_validated","identity_resolved":not entity_key.startswith("tushare:")},"provider":"tushare","capability":capability,"value":row})
         return {"stream":capability,"facts":facts,"metadata":{"provider":"tushare","parser_version":"tushare-pit/1"}},"pit_facts"

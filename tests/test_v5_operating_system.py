@@ -16,6 +16,7 @@ from companion.db import (
     MIGRATION_004_SQL,
     MIGRATION_TABLE_SCHEMA,
     SCHEMA,
+    SCHEMA_VERSION,
     V3_SCHEMA,
 )
 from companion.governance import GATE_CHECKLISTS
@@ -633,10 +634,10 @@ def test_schema4_to_schema5_is_explicit_and_preserves_v3_schedules(tmp_path: Pat
     con.commit()
     con.close()
     companion = Companion(root, gate_scope="test_fixture")
-    with pytest.raises(RuntimeError, match="requires explicit migration to 5"):
+    with pytest.raises(RuntimeError, match=f"requires explicit migration to {SCHEMA_VERSION}"):
         companion.initialize()
     result = companion.migrate(tmp_path / "backups")
-    assert result["schema_version"] == "5"
+    assert result["schema_version"] == str(SCHEMA_VERSION)
     assert companion.schedule_get("sch_legacy")["mission"] == "preserve me"
     assert companion.schedule_get("sch_legacy")["dispatch_type"] == "codex_turn"
-    assert len(companion.system_status()["migrations"]) == 3
+    assert len(companion.system_status()["migrations"]) == 4

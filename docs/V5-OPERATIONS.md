@@ -47,7 +47,7 @@ python3 -m pytest -q
 ./bin/companion v5-status
 ```
 
-必须核对：`schema_version=5`、`integrity=ok`、三条 migration、旧 Schedule 数量一致、旧 Context/Ledger 数量一致、全部新 Feature 默认 disabled。
+必须核对：当前 `schema_version`、`integrity=ok`、全部 ordered migration、旧 Schedule 数量一致、旧 Context/Ledger 数量一致、全部新 Feature 默认 disabled。
 
 当前生产已经完成 Schema 5 迁移。迁移本身不会创建 Program、启用 Worker、打开数据采集或修改 cron。
 

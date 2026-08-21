@@ -133,6 +133,15 @@ TOOLS={
  "v5_quant_experiment_status":("兼容旧客户端：读取持续量化研究状态；系统已不再采用限期试用。",schema()),
  "v5_quant_scan_get":("读取并校验一个持续量化扫描；它可触发完整研究，但本身不是行动建议。",schema({"manifest_id":S},["manifest_id"])),
  "v5_quant_review_get":("读取并校验一个月度严格前向复盘及其确定性指标。",schema({"manifest_id":S},["manifest_id"])),
+ "v6_predictive_status":("读取 V6 股票与基金预测任务、月度反馈复核及其边界；不会开启能力。",schema()),
+ "v6_forecast_get":("读取并校验一条冻结的 V6 股票或基金预测；它不是 Decision 或交易。",schema({"manifest_id":S},["manifest_id"])),
+ "v6_fund_universe_get":("读取并校验冻结的 V6 ETF 标的池及排除原因；它不是基金推荐。",schema({"manifest_id":S},["manifest_id"])),
+ "v6_fund_feature_snapshot_get":("读取冻结的 V6 ETF 特征快照；它不是预测或交易。",schema({"manifest_id":S},["manifest_id"])),
+ "v6_fund_candidates_get":("读取透明 ETF 研究候选；它不是预测、推荐或交易。",schema({"manifest_id":S},["manifest_id"])),
+ "v6_fund_data_bundle_get":("读取 V6 ETF 数据采集、预热与特征快照状态；不会推荐或交易。",schema({"manifest_id":S},["manifest_id"])),
+ "v6_fund_provisional_signals_get":("读取冻结的 V6 ETF 暂定推荐及其前向验证状态；不会下单。",schema({"manifest_id":S},["manifest_id"])),
+ "v6_stock_candidates_get":("读取 V6 股票研究候选；不会下单。",schema({"manifest_id":S},["manifest_id"])),
+ "v6_stock_provisional_signals_get":("读取 V6 股票暂定预测信号及其验证状态；不会下单。",schema({"manifest_id":S},["manifest_id"])),
  "v5_today":("读取面向用户的今日入口：设置缺口、行动卡、无行动结论或待复核状态。",schema()),
  "v5_program_create":("创建投资经营计划草稿；只引用现有 Context 和账户，不复制投资事实。",schema({"name":S,"content":O,"context_refs":O,"reason":S,"expires_at":S},["name","content","context_refs","reason"])),
  "v5_program_revise":("按乐观版本创建投资经营计划的新草稿版本。",schema({"program_id":S,"expected_version":I,"content":O,"context_refs":O,"reason":S,"expires_at":S},["program_id","expected_version","content","context_refs","reason"])),
@@ -279,6 +288,15 @@ def call(name:str,a:dict[str,Any]):
     if name in {"v5_quant_research_status","v5_quant_experiment_status"}:return C.quant_research.status()
     if name=="v5_quant_scan_get":return C.quant_research.scan_get(a["manifest_id"])
     if name=="v5_quant_review_get":return C.quant_research.review_get(a["manifest_id"])
+    if name=="v6_predictive_status":return C.v6_predictive.status()
+    if name=="v6_forecast_get":return C.v6_predictive.forecast_get(a["manifest_id"])
+    if name=="v6_fund_universe_get":return C.v6_predictive.fund_universe_get(a["manifest_id"])
+    if name=="v6_fund_feature_snapshot_get":return C.v6_predictive.fund_feature_snapshot_get(a["manifest_id"])
+    if name=="v6_fund_candidates_get":return C.v6_predictive.fund_candidates_get(a["manifest_id"])
+    if name=="v6_fund_data_bundle_get":return C.v6_predictive.fund_data_bundle_get(a["manifest_id"])
+    if name=="v6_fund_provisional_signals_get":return C.v6_predictive.fund_provisional_signals_get(a["manifest_id"])
+    if name=="v6_stock_candidates_get":return C.v6_predictive.stock_candidates_get(a["manifest_id"])
+    if name=="v6_stock_provisional_signals_get":return C.v6_predictive.stock_provisional_signals_get(a["manifest_id"])
     if name=="v5_today":return C.operating.today()
     if name=="v5_program_create":return C.operating.program_create(name=a["name"],content=a["content"],context_refs=a["context_refs"],reason=a["reason"],expires_at=a.get("expires_at"),actor=actor)
     if name=="v5_program_revise":return C.operating.program_revise(program_id=a["program_id"],expected_version=a["expected_version"],content=a["content"],context_refs=a["context_refs"],reason=a["reason"],expires_at=a.get("expires_at"),actor=actor)
@@ -312,7 +330,7 @@ def call(name:str,a:dict[str,Any]):
 def reply(request:dict[str,Any])->dict[str,Any]|None:
     method=request.get("method");rid=request.get("id")
     if rid is None:return None
-    if method=="initialize":result={"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":False}},"serverInfo":{"name":"investment-companion","version":"5.2.0"}}
+    if method=="initialize":result={"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":False}},"serverInfo":{"name":"investment-companion","version":"6.0.0"}}
     elif method=="tools/list":result={"tools":[{"name":n,"description":d,"inputSchema":s} for n,(d,s) in TOOLS.items()]}
     elif method=="tools/call":
         p=request.get("params",{})

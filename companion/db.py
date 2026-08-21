@@ -10,7 +10,7 @@ from typing import Any, Iterator
 
 from .timeutil import iso
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 SCHEMA = r"""
 CREATE TABLE IF NOT EXISTS meta (
@@ -907,13 +907,22 @@ INSERT OR IGNORE INTO feature_flags(key,enabled,config_json,updated_at) VALUES
 """
 
 
+MIGRATION_006_ID = "0006_v6_predictive_recommendations"
+MIGRATION_006_SQL = r"""
+INSERT OR IGNORE INTO feature_flags(key,enabled,config_json,updated_at) VALUES
+  ('v6_predictive_recommendations',0,'{}',CURRENT_TIMESTAMP);
+"""
+
+
 BASELINE_MIGRATION_ID = "0003_v3_baseline"
 BASELINE_CHECKSUM = hashlib.sha256((SCHEMA + "\n" + V3_SCHEMA).encode("utf-8")).hexdigest()
 MIGRATION_004_CHECKSUM = hashlib.sha256(MIGRATION_004_SQL.encode("utf-8")).hexdigest()
 MIGRATION_005_CHECKSUM = hashlib.sha256(MIGRATION_005_SQL.encode("utf-8")).hexdigest()
+MIGRATION_006_CHECKSUM = hashlib.sha256(MIGRATION_006_SQL.encode("utf-8")).hexdigest()
 MIGRATIONS = (
     (4, MIGRATION_004_ID, MIGRATION_004_SQL, MIGRATION_004_CHECKSUM),
     (5, MIGRATION_005_ID, MIGRATION_005_SQL, MIGRATION_005_CHECKSUM),
+    (6, MIGRATION_006_ID, MIGRATION_006_SQL, MIGRATION_006_CHECKSUM),
 )
 
 
@@ -978,7 +987,7 @@ class Database:
                     (BASELINE_MIGRATION_ID, 3, BASELINE_CHECKSUM, iso()),
                 )
 
-            if current not in {3, 4, 5}:
+            if current not in {3, 4, 5, 6}:
                 raise RuntimeError(f"unsupported source schema version: {current}")
 
             for version, migration_id, _sql, checksum in MIGRATIONS:

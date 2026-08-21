@@ -18,7 +18,7 @@ def emit(value):
 def parser() -> argparse.ArgumentParser:
     p=argparse.ArgumentParser(prog="companion",description="Investment Companion operational CLI")
     p.add_argument("--root",default=os.environ.get("COMPANION_ROOT","/home/ghk/investment-home"));sub=p.add_subparsers(dest="command",required=True)
-    for name in ["init","status","doctor","recover","bootstrap","agent-check","session-brief","v5-status","today","v5-quant-status","v5-experiment-status"]:sub.add_parser(name)
+    for name in ["init","status","doctor","recover","bootstrap","agent-check","session-brief","v5-status","today","v5-quant-status","v5-experiment-status","v6-predictive-status"]:sub.add_parser(name)
     tick=sub.add_parser("tick");tick.add_argument("--limit",type=int,default=20)
     quality=sub.add_parser("v5-research-quality");quality.add_argument("--days",type=int,default=30)
     migrate=sub.add_parser("migrate");migrate.add_argument("--backup-directory",required=True)
@@ -27,6 +27,7 @@ def parser() -> argparse.ArgumentParser:
     bootstrap_v5_experiment=sub.add_parser("v5-experiment-bootstrap");bootstrap_v5_experiment.add_argument("--activate",action="store_true")
     backfill_v5_experiment=sub.add_parser("v5-experiment-backfill");backfill_v5_experiment.add_argument("--through-date",required=True);backfill_v5_experiment.add_argument("--sessions",type=int,default=21)
     bootstrap_v5_quant=sub.add_parser("v5-quant-bootstrap");bootstrap_v5_quant.add_argument("--activate",action="store_true")
+    bootstrap_v6_predictive=sub.add_parser("v6-predictive-bootstrap");bootstrap_v6_predictive.add_argument("--activate",action="store_true")
     backfill_v5_quant=sub.add_parser("v5-quant-backfill");backfill_v5_quant.add_argument("--through-date",required=True);backfill_v5_quant.add_argument("--sessions",type=int,default=21)
     worker=sub.add_parser("job-work");worker.add_argument("--limit",type=int,default=1);worker.add_argument("--owner")
     gates=sub.add_parser("gate-list");gates.add_argument("--scope",choices=["production","test_fixture"])
@@ -75,10 +76,12 @@ def main(argv=None) -> int:
             elif a.command=="v4-status":result=c.v4_status()
             elif a.command=="v5-status":result=c.v5_status()
             elif a.command in {"v5-quant-status","v5-experiment-status"}:result=c.quant_research.status()
+            elif a.command=="v6-predictive-status":result=c.v6_predictive.status()
             elif a.command=="v5-research-quality":result=c.research_quality_status(a.days)
             elif a.command=="today":result=c.operating.today()
             elif a.command=="v4-bootstrap-jobs":result=c.v4_bootstrap_jobs(activate=a.activate)
             elif a.command in {"v5-quant-bootstrap","v5-experiment-bootstrap"}:result=c.quant_research.bootstrap(activate=a.activate)
+            elif a.command=="v6-predictive-bootstrap":result=c.v6_predictive.bootstrap(activate=a.activate)
             elif a.command in {"v5-quant-backfill","v5-experiment-backfill"}:result=c.quant_research.prepare_backfill(through_date=a.through_date,sessions=a.sessions)
             elif a.command=="job-work":
                 owner=a.owner or f"{socket.gethostname()}:{os.getpid()}";runs=[]

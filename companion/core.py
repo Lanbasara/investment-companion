@@ -57,6 +57,7 @@ class Companion:
         from .governance import GateRegistry
         from .operating import InvestmentOperatingSystem
         from .v5_quant_experiment import ContinuousQuantResearch
+        from .v6_predictive_recommendations import V6PredictiveRecommendations
         self.financial=FinancialKernel(self)
         self.cognition=CognitiveLedger(self)
         self.attention=AttentionEngine(self)
@@ -69,6 +70,7 @@ class Companion:
         self.operating=InvestmentOperatingSystem(self)
         self.quant_research=ContinuousQuantResearch(self)
         self.quant_experiment=self.quant_research
+        self.v6_predictive=V6PredictiveRecommendations(self)
         self.jobs.register_handler("system.echo_manifest","1",self._job_echo_manifest)
         self.jobs.register_handler("data.tushare_ingest","1",self._job_tushare_ingest)
         self.jobs.register_handler("data.publish_snapshot","1",self._job_publish_snapshot)
