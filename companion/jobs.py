@@ -501,8 +501,18 @@ class JobEngine:
                         "UPDATE schedules SET last_success_at=?,last_error=NULL WHERE id=?",
                         (now, parent["schedule_id"]),
                     )
-            if last_result.get("material"):
-                event=self.c.event_create(kind="deterministic_job_ready",occurred_at=now,summary=last_result.get("event_summary","Deterministic research artifact ready for Primary review"),payload={"job_run_id":job_run_id,"manifest_id":manifest_id,"research_only":True})
+            delivery = self.c.delivery.require_for_run(parent_run_id)
+            # A digest is a deferred user result, not an optional card.  Wake
+            # Primary Codex so it freezes a ResultEnvelope before the close
+            # summary batches it with other completed work.
+            must_prepare_delivery = delivery["mode"] in {"digest_required", "report_required", "action_required"}
+            if last_result.get("material") or must_prepare_delivery:
+                event_kind = "delivery_result_required" if must_prepare_delivery else "deterministic_job_ready"
+                event=self.c.event_create(kind=event_kind,occurred_at=now,summary=last_result.get("event_summary","Deterministic research artifact ready for Primary review"),payload={"job_run_id":job_run_id,"manifest_id":manifest_id,"research_only":True,"delivery_id":delivery["id"],"delivery_mode":delivery["mode"]})
+                delivery_message = (
+                    f"\nDelivery ID: {delivery['id']}\n本任务属于 {delivery['mode']}；请先核验研究产物，再调用 delivery_prepare 形成用户可见的结论、依据与下一步。"
+                    if must_prepare_delivery else ""
+                )
                 self.c.outbox_enqueue(
                     kind="codex_turn",
                     destination="investment-companion",
@@ -512,9 +522,9 @@ class JobEngine:
                         "envelope_type":"research_ready",
                         "job_run_id":job_run_id,
                         "manifest_id":manifest_id,
-                        "message":f"[Investment Companion research ready/v1]\nJob Run: {job_run_id}\nManifest: {manifest_id}\n这是待 Primary Codex 审阅的研究产物，不是用户行动建议。请核验 Gate、证据与反证后决定是否静默、继续研究或形成正式 Decision。",
+                        "message":f"[Investment Companion research ready/v1]\nJob Run: {job_run_id}\nManifest: {manifest_id}\n这是待 Primary Codex 审阅的研究产物，不是用户行动建议。请核验 Gate、证据与反证后决定是否静默、继续研究或形成正式 Decision。"+delivery_message,
                     },
-                    idempotency_key=f"job-ready:{job_run_id}",
+                    idempotency_key=f"job-ready:{job_run_id}:{delivery['id'] if must_prepare_delivery else 'material'}",
                 )
             return self.run_get(job_run_id)
         except Exception as exc:

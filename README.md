@@ -23,7 +23,7 @@ systemd timer → Companion Schedule/Run/Outbox → cc-connect
               → Markdown 文件句柄与 SQLite 精确状态
 ```
 
-从 [项目状态与交棒入口](docs/PROJECT-STATUS.md) 开始阅读。V4 是已冻结的专业研究内核基线；当前 V5 把它组织为面向用户的个人投资经营系统，见 [总体设计](docs/V5-DESIGN.md)、[架构决策](docs/V5-ARCHITECTURE-DECISIONS.md)、[实施计划](docs/V5-IMPLEMENTATION-PLAN.md)、[验收契约](docs/V5-ACCEPTANCE.md)、[用户手册](docs/V5-USER-GUIDE.md)、[持续量化研究](docs/V5-CONTINUOUS-QUANT-RESEARCH.md)与[运维手册](docs/V5-OPERATIONS.md)。V5 已在生产运行；量化研究持续接触真实市场并按月复盘，但不等于自动交易或盈利承诺。
+从 [项目状态与交棒入口](docs/PROJECT-STATUS.md) 开始阅读。V4 是已冻结的专业研究内核基线；V5 把它组织为面向用户的个人投资经营系统；V6 增加独立预测复核；V7 增加[结果交付闭环](docs/V7-RESULT-DELIVERY.md)：完成卡片不能代替用户结果，required result 只有 cc-connect 实际发送成功后才算交付。其余设计见 [总体设计](docs/V5-DESIGN.md)、[架构决策](docs/V5-ARCHITECTURE-DECISIONS.md)、[验收契约](docs/V5-ACCEPTANCE.md)、[用户手册](docs/V5-USER-GUIDE.md)、[持续量化研究](docs/V5-CONTINUOUS-QUANT-RESEARCH.md) 与 [运维手册](docs/V5-OPERATIONS.md)。系统不自动交易或承诺盈利。
 浏览器阅读入口为 [docs/index.html](docs/index.html)；它直接渲染上述权威 Markdown，不维护第二份易过期的文档副本。
 
 ## 验证

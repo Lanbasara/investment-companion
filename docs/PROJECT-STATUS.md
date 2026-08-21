@@ -1,8 +1,8 @@
 # Investment Companion：项目状态与会话交棒
 
-更新时间：2026-08-19
+更新时间：2026-08-21
 
-当前发布目标：V6 / SQLite Schema 6 / 固定 Git Runtime
+当前发布目标：V7 / SQLite Schema 7 / 固定 Git Runtime（代码与回归已完成；生产迁移须按 V7 手册执行）
 
 当前分支：`feature/v5-investment-operating-system`
 
@@ -14,7 +14,7 @@ V4 冻结：annotated tag `v4.0.0-engineering-baseline`
 
 V5 是：**Codex 驱动、确定性证据支撑、飞书协作、人工执行、可审计并能用真实结果持续自我否证的个人投资研究与决策系统**。
 
-V6 在保留 Schema 5、V5 operating layer、version-neutral wake 和 active InvestmentProgram 的基础上，追加股票与 ETF 的独立预测、推荐、结果结算与周期复核。原有主动任务、事件、Ledger、Context 和历史研究均原位保留，不需要重置。
+V6 在保留 Schema 5、V5 operating layer、version-neutral wake 和 active InvestmentProgram 的基础上，追加股票与 ETF 的独立预测、推荐、结果结算与周期复核。V7 继续保留全部历史对象，并新增独立的结果交付账本：Run 成功不等于用户已经收到结果。
 
 持续量化研究已经改为真实世界长期运行：Tushare 真实数据 → 内容寻址对象 → 零模型 Token 的确定性扫描 → 当日收盘复盘/完整研究 → 每月严格前向复盘。它没有试用到期或运行次数上限，也不是自动交易或盈利承诺。
 
@@ -34,7 +34,7 @@ codex plugin list
 
 1. 本文：当前生产事实和边界；
 2. [V5-DESIGN.md](V5-DESIGN.md) 与 [V5-USER-GUIDE.md](V5-USER-GUIDE.md)：系统为什么存在、用户怎么用；
-3. [V5-CONTINUOUS-QUANT-RESEARCH.md](V5-CONTINUOUS-QUANT-RESEARCH.md)：持续真实运行、每日产出和月度复盘；
+3. [V7-RESULT-DELIVERY.md](V7-RESULT-DELIVERY.md)：结果交付契约、Attention 边界与上线步骤；
 4. [V5-ARCHITECTURE-DECISIONS.md](V5-ARCHITECTURE-DECISIONS.md) 与 [V5-ACCEPTANCE.md](V5-ACCEPTANCE.md)：对象边界和验收；
 5. [V5-OPERATIONS.md](V5-OPERATIONS.md)：生产恢复、Feature 和 Worker 运维。
 
@@ -48,8 +48,10 @@ codex plugin list
                    ├─ 只读专业 Agents
                    └─ 持续量化研究交接
 
-systemd Tick → Schedule / Run / Outbox → version-neutral wake
+systemd Tick → Schedule / Run / DeliveryRecord / Outbox → version-neutral wake
 systemd Worker → allow-listed deterministic Job → immutable Manifest
+
+DeliveryRecord → immutable ResultEnvelope → cc-connect direct result / close digest → delivery receipt
 
 Tushare research stream → Raw / Canonical → deterministic scan
                         → 当日复盘 / 完整研究
@@ -60,7 +62,7 @@ Primary Codex 仍是唯一最终语义判断、正式发布和用户沟通主体
 
 ## 4. 已实现并验证
 
-- Schema 6 有序迁移、备份恢复、完整性检查和固定 Runtime；
+- Schema 7 有序迁移、备份恢复、完整性检查和固定 Runtime；
 - Program → Opportunity → DecisionQueue → 人工成交 → Review/Scorecard 经营闭环；
 - `v5_today` 四态入口和 version-neutral wake claim/complete；
 - 原 V2/V3/V4 Schedule、Run、Event、Watch、Case、Ledger、Context 和 Job 兼容；
@@ -69,7 +71,7 @@ Primary Codex 仍是唯一最终语义判断、正式发布和用户沟通主体
 - 持续运行、单 Job 请求预算、失败修复和旧试用配置无损迁移；
 - 候选持续性研究触发与每月确定性前向复盘；
 - 扫描 Handler 不创建 Opportunity、Decision、Shadow、Execution 或 Ledger Entry；
-- MCP 6.0.0 的持续研究、股票/ETF 预测状态与月度复盘只读入口，以及对应 CLI 和 Plugin 路由；
+- MCP 7.0.0 的 DeliveryRecord、ResultEnvelope、摘要批量发送、恢复和 Policy 映射入口；
 - 全量自动化测试、Agent 检查与 Plugin 校验。
 
 最终测试数量和 release commit 以 Git 历史和最新验证报告为准，不从本文猜。
@@ -77,7 +79,7 @@ Primary Codex 仍是唯一最终语义判断、正式发布和用户沟通主体
 ## 5. 生产运行边界
 
 - `.state/runtime-code-root` 是当前固定 Runtime 的权威指针；
-- 生产数据库是 `/home/ghk/investment-home/.state/companion.db`，Schema 6；
+- 生产数据库是 `/home/ghk/investment-home/.state/companion.db`；上线前为 Schema 6，执行 V7 迁移后为 Schema 7；
 - `v5_operating_system`、确定性 Job 能力、持续研究和 `v6_predictive_recommendations` 可独立启用；
 - `v4_live_data`、Shadow、Decision Support 与自动交易保持关闭；
 - Job Worker 每 5 分钟最多执行两个白名单任务，模型 Token 为 0；
@@ -110,7 +112,7 @@ Primary Codex 仍是唯一最终语义判断、正式发布和用户沟通主体
 
 1. 代码变更先通过全量测试，再固定为独立 Runtime；
 2. 每个生产 commit 重新生成并评估 G0，不沿用旧提交的放行；
-3. Feature、Plugin、systemd 和 cc-connect 变更需要用户明确授权；
+3. Feature、Plugin、systemd 和 cc-connect 变更需要用户明确授权；V7 的生产迁移与 Schedule Policy 固定也必须先完成备份和预览；
 4. 生产数据库变更前创建并验证可恢复备份；
 5. 发生重复通知、证据断链、自动写决策/持仓或数据异常时，先暂停对应 Feature 与 Schedule，保留审计。
 

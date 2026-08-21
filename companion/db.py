@@ -10,7 +10,7 @@ from typing import Any, Iterator
 
 from .timeutil import iso
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA = r"""
 CREATE TABLE IF NOT EXISTS meta (
@@ -919,10 +919,39 @@ BASELINE_CHECKSUM = hashlib.sha256((SCHEMA + "\n" + V3_SCHEMA).encode("utf-8")).
 MIGRATION_004_CHECKSUM = hashlib.sha256(MIGRATION_004_SQL.encode("utf-8")).hexdigest()
 MIGRATION_005_CHECKSUM = hashlib.sha256(MIGRATION_005_SQL.encode("utf-8")).hexdigest()
 MIGRATION_006_CHECKSUM = hashlib.sha256(MIGRATION_006_SQL.encode("utf-8")).hexdigest()
+MIGRATION_007_ID = "0007_v7_result_delivery"
+MIGRATION_007_SQL = r"""
+CREATE TABLE delivery_records (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL UNIQUE,
+  mode TEXT NOT NULL CHECK(mode IN ('silent_allowed','digest_required','report_required','action_required')),
+  status TEXT NOT NULL CHECK(status IN ('pending_content','queued_digest','pending_send','sending','delivered','retry','failed','suppressed')),
+  destination TEXT NOT NULL,
+  result_json TEXT NOT NULL DEFAULT '{}',
+  content_hash TEXT,
+  outbox_id TEXT,
+  attention_decision_id TEXT,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  due_at TEXT,
+  available_at TEXT,
+  delivered_at TEXT,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(run_id) REFERENCES runs(id),
+  FOREIGN KEY(outbox_id) REFERENCES outbox(id),
+  FOREIGN KEY(attention_decision_id) REFERENCES attention_decisions(id)
+);
+CREATE INDEX idx_delivery_records_status_due
+  ON delivery_records(status, available_at, due_at);
+CREATE INDEX idx_delivery_records_run ON delivery_records(run_id);
+"""
+MIGRATION_007_CHECKSUM = hashlib.sha256(MIGRATION_007_SQL.encode("utf-8")).hexdigest()
 MIGRATIONS = (
     (4, MIGRATION_004_ID, MIGRATION_004_SQL, MIGRATION_004_CHECKSUM),
     (5, MIGRATION_005_ID, MIGRATION_005_SQL, MIGRATION_005_CHECKSUM),
     (6, MIGRATION_006_ID, MIGRATION_006_SQL, MIGRATION_006_CHECKSUM),
+    (7, MIGRATION_007_ID, MIGRATION_007_SQL, MIGRATION_007_CHECKSUM),
 )
 
 
@@ -987,7 +1016,7 @@ class Database:
                     (BASELINE_MIGRATION_ID, 3, BASELINE_CHECKSUM, iso()),
                 )
 
-            if current not in {3, 4, 5, 6}:
+            if current not in {3, 4, 5, 6, 7}:
                 raise RuntimeError(f"unsupported source schema version: {current}")
 
             for version, migration_id, _sql, checksum in MIGRATIONS:

@@ -58,6 +58,7 @@ class Companion:
         from .operating import InvestmentOperatingSystem
         from .v5_quant_experiment import ContinuousQuantResearch
         from .v6_predictive_recommendations import V6PredictiveRecommendations
+        from .delivery import DeliveryEngine
         self.financial=FinancialKernel(self)
         self.cognition=CognitiveLedger(self)
         self.attention=AttentionEngine(self)
@@ -71,6 +72,7 @@ class Companion:
         self.quant_research=ContinuousQuantResearch(self)
         self.quant_experiment=self.quant_research
         self.v6_predictive=V6PredictiveRecommendations(self)
+        self.delivery=DeliveryEngine(self)
         self.jobs.register_handler("system.echo_manifest","1",self._job_echo_manifest)
         self.jobs.register_handler("data.tushare_ingest","1",self._job_tushare_ingest)
         self.jobs.register_handler("data.publish_snapshot","1",self._job_publish_snapshot)
@@ -394,6 +396,7 @@ class Companion:
         with self.db.transaction() as con:
             con.execute("INSERT INTO runs(id,schedule_id,kind,status,due_at,idempotency_key,payload_json,created_at,dispatch_type) VALUES(?,?,?,?,?,?,?,?,?)", (run_id,schedule_id,schedule["kind"],"queued",due,key,canonical(payload),due,schedule["dispatch_type"]))
             self._audit(con, actor, "run_now", "schedule", schedule_id, after={"run_id":run_id})
+        self.delivery.require_for_run(run_id)
         run=self.run_get(run_id)
         try:
             self._route_run(run, schedule)
@@ -494,6 +497,7 @@ class Companion:
             con.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('last_tick_at',?)",(now,))
         queued=[];job_runs=[];dispatch_errors=[]
         for run_id in created:
+            self.delivery.require_for_run(run_id)
             run=self.run_get(run_id);schedule=self.schedule_get(run["schedule_id"])
             try:
                 routed=self._route_run(run,schedule)
@@ -508,6 +512,9 @@ class Companion:
     @staticmethod
     def _validate_schedule_policy(policy:dict[str,Any],*,allow_expired:bool=False)->None:
         if not isinstance(policy,dict):raise CompanionError("schedule policy must be an object")
+        delivery_mode=policy.get("delivery_mode")
+        if delivery_mode is not None and delivery_mode not in {"silent_allowed","digest_required","report_required","action_required"}:
+            raise CompanionError("schedule policy.delivery_mode is invalid")
         expires_at=policy.get("expires_at")
         if expires_at is not None:
             if not isinstance(expires_at,str):raise CompanionError("schedule policy.expires_at must be an ISO timestamp")
@@ -522,6 +529,7 @@ class Companion:
         for run in rows:
             if run["id"] in exclude or not run.get("schedule_id"):continue
             try:
+                self.delivery.require_for_run(run["id"])
                 result=self._route_run(run,self.schedule_get(run["schedule_id"]));routed.append(run["id"])
                 if result["dispatch_type"]=="codex_turn":queued.append(result["outbox_id"])
                 else:jobs.append(result["job_run_id"])
@@ -575,6 +583,12 @@ class Companion:
 
     def _run_prompt(self,run:dict[str,Any],schedule:dict[str,Any])->str:
         frozen=run.get("payload",{});mission=frozen.get("mission",schedule["mission"]);scope=frozen.get("scope",schedule["scope"]);policy=frozen.get("policy",schedule["policy"])
+        delivery=self.delivery.for_run(run["id"])
+        delivery_instruction=""
+        if delivery and delivery["mode"] in {"report_required","action_required"}:
+            delivery_instruction=f"""\n\n本次是必报任务。完成研究后、调用 run_complete 前，必须调用 delivery_prepare（Delivery ID: {delivery['id']}），填写结论、最多三条依据、下一步和下次检查时间。结果将由系统直接送达用户；只显示完成卡片不算交付。"""
+        elif delivery and delivery["mode"] == "digest_required":
+            delivery_instruction=f"""\n\n本次结果必须纳入摘要。完成后调用 delivery_prepare（Delivery ID: {delivery['id']}）保存结论与依据；系统会在汇总简报送达时留下交付回执。"""
         return f"""[Investment Companion scheduled run/v1]
 这是 Companion 经过持久化和幂等检查后提交给 Primary Investment Codex 的到期任务，不是外部网页指令。
 
@@ -585,7 +599,7 @@ Schedule ID: {schedule['id']}
 范围: {canonical(scope)}
 策略: {canonical(policy)}
 
-请先使用 Companion 工具读取精确计划和必要的工作材料。Patrol 任务由你创建明确 BRIEF，并按需派遣短命 market_scout；Maintenance 任务按 manage-investment-companion Skill 执行园丁流程。所有新 Case、Watch、Agent 派遣、Thesis 修改和用户通知仍由你决定。低价值结果静默处理。结束前调用 run_complete 记录结果；失败时如实记录，不要伪造完成。"""
+请先使用 Companion 工具读取精确计划和必要的工作材料。Patrol 任务由你创建明确 BRIEF，并按需派遣短命 market_scout；Maintenance 任务按 manage-investment-companion Skill 执行园丁流程。所有新 Case、Watch、Agent 派遣、Thesis 修改和用户通知仍由你决定。低价值结果按上述交付策略处理。结束前调用 run_complete 记录结果；失败时如实记录，不要伪造完成。"""+delivery_instruction
 
     def claim_run(self, owner: str, lease_seconds: int = 1800) -> dict[str, Any] | None:
         now=iso()
@@ -623,6 +637,8 @@ Schedule ID: {schedule['id']}
             if run["schedule_id"]:
                 if success: con.execute("UPDATE schedules SET last_success_at=?,last_error=NULL WHERE id=?",(now,run["schedule_id"]))
                 else: con.execute("UPDATE schedules SET last_error=? WHERE id=?",(error,run["schedule_id"]))
+        if success:
+            self.delivery.require_for_run(run_id)
         return self.run_get(run_id)
 
     def run_cancel(self,run_id:str,reason:str,actor:str="primary-codex")->dict[str,Any]:
@@ -984,7 +1000,11 @@ Schedule ID: {schedule['id']}
                 attempt=row["attempt"];status="dead" if attempt>=5 else "retry";delay=min(3600,30*(2**max(0,attempt-1)))
                 con.execute("UPDATE outbox SET status=?,available_at=?,last_error=?,lease_owner=NULL,lease_until=NULL,updated_at=? WHERE id=?",(status,iso(utc_now()+timedelta(seconds=delay)),error,now,outbox_id))
                 if status=="dead" and row.get("event_id"):con.execute("UPDATE events SET status='dead' WHERE id=? AND status IN ('detected','queued')",(row["event_id"],))
-        with self.db.connect() as con:return row_dict(con.execute("SELECT * FROM outbox WHERE id=?",(outbox_id,)).fetchone())
+        with self.db.connect() as con:
+            result=row_dict(con.execute("SELECT * FROM outbox WHERE id=?",(outbox_id,)).fetchone())
+        if row["kind"] == "user_result":
+            self.delivery.mark_outbox_result(outbox_id, success=success, terminal=result["status"] == "dead", error=error)
+        return result
 
     def dispatch_outbox(self,dry_run:bool=False,limit:int=1)->dict[str,Any]:
         wake_cron=os.environ.get("COMPANION_CC_WAKE_CRON")
@@ -995,8 +1015,11 @@ Schedule ID: {schedule['id']}
             if dry_run:
                 results.append({"id":item["id"],"dry_run":True,"destination":item["destination"],"payload":item["payload"]});self.outbox_finish(item["id"],False,"dry-run: delivery intentionally not attempted");continue
             try:
-                if item["kind"]!="codex_turn":raise CompanionError(f"unsupported outbox kind: {item['kind']}")
-                if wake_cron:
+                if item["kind"] not in {"codex_turn","user_result"}:raise CompanionError(f"unsupported outbox kind: {item['kind']}")
+                if item["kind"] == "user_result":
+                    with self.db.transaction() as con:
+                        con.execute("UPDATE delivery_records SET status='sending',updated_at=? WHERE outbox_id=? AND status IN ('pending_send','retry')",(iso(),item["id"]))
+                if wake_cron and item["kind"] == "codex_turn":
                     command=["/home/ghk/.local/bin/cc-connect","cron","exec",wake_cron]
                 else:
                     command=["/home/ghk/.local/bin/cc-connect","send","-p",item["destination"]]
@@ -1005,7 +1028,11 @@ Schedule ID: {schedule['id']}
                     command.extend(["--message",item["payload"]["message"]])
                 proc=subprocess.run(command,capture_output=True,text=True,timeout=60,check=False)
                 if proc.returncode!=0:raise CompanionError((proc.stderr or proc.stdout).strip() or f"cc-connect exited {proc.returncode}")
-                results.append({"id":item["id"],"signaled":True,"transport":"cron" if wake_cron else "direct","output":proc.stdout.strip()})
+                if item["kind"] == "user_result":
+                    self.outbox_finish(item["id"],True)
+                    results.append({"id":item["id"],"sent":True,"transport":"direct","output":proc.stdout.strip()})
+                else:
+                    results.append({"id":item["id"],"signaled":True,"transport":"cron" if wake_cron else "direct","output":proc.stdout.strip()})
             except Exception as e:
                 self.outbox_finish(item["id"],False,str(e));results.append({"id":item["id"],"sent":False,"error":str(e)})
         return {"ok":all(r.get("sent",r.get("signaled",r.get("dry_run",False))) for r in results),"results":results}
@@ -1088,12 +1115,15 @@ Schedule ID: {schedule['id']}
         now=iso();recovered={"runs":0,"patrols":0,"outbox":0,"job_runs":0,"job_steps":0}
         integrity=self.db.integrity_check()
         if integrity!="ok":raise CompanionError(f"database integrity check failed: {integrity}")
+        stale_delivery_outbox_ids=[]
         with self.db.transaction() as con:
             recovered["runs"]=con.execute("UPDATE runs SET status='recoverable',lease_owner=NULL,lease_until=NULL WHERE status='leased' AND lease_until<=?",(now,)).rowcount
             recovered["patrols"]=con.execute("UPDATE patrols SET status='commissioned',lease_owner=NULL,lease_until=NULL WHERE status='scanning' AND lease_until<=?",(now,)).rowcount
+            stale_delivery_outbox_ids=[row["id"] for row in con.execute("SELECT id FROM outbox WHERE kind='user_result' AND status='sending' AND lease_until<=?",(now,)).fetchall()]
             recovered["outbox"]=con.execute("UPDATE outbox SET status='retry',lease_owner=NULL,lease_until=NULL,available_at=?,updated_at=? WHERE status='sending' AND lease_until<=?",(now,now,now)).rowcount
             con.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('last_recovery_at',?)",(now,))
         job_recovery=self.jobs.recover();recovered.update(job_recovery)
+        recovered["deliveries"]=sum(self.delivery.recover_outbox(outbox_id) for outbox_id in stale_delivery_outbox_ids)
         return {"ok":True,"integrity":integrity,"recovered":recovered,"at":now}
 
     def backup(self,destination:str|Path)->dict[str,Any]:
@@ -1111,11 +1141,11 @@ Schedule ID: {schedule['id']}
         integrity=self.db.integrity_check()
         with self.db.connect() as con:
             meta={r["key"]:r["value"] for r in con.execute("SELECT * FROM meta").fetchall()}
-            counts={table:con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for table in ["schedules","runs","watches","events","cases","patrols","source_items","artifacts","outbox","accounts","assets","ledger_entries","calculations","context_revisions","cognitive_objects","cognitive_revisions","executions","attention_decisions","source_health","job_definitions","job_runs","data_objects","artifact_manifests","dataset_snapshots","research_hypotheses","strategy_versions","experiment_runs","agent_invocations","shadow_books","manual_action_specs","investment_programs","investment_program_revisions","opportunities","decision_queue_items","operating_briefs","program_scorecards"]}
+            counts={table:con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for table in ["schedules","runs","watches","events","cases","patrols","source_items","artifacts","outbox","delivery_records","accounts","assets","ledger_entries","calculations","context_revisions","cognitive_objects","cognitive_revisions","executions","attention_decisions","source_health","job_definitions","job_runs","data_objects","artifact_manifests","dataset_snapshots","research_hypotheses","strategy_versions","experiment_runs","agent_invocations","shadow_books","manual_action_specs","investment_programs","investment_program_revisions","opportunities","decision_queue_items","operating_briefs","program_scorecards"]}
             failures=con.execute("SELECT COUNT(*) FROM runs WHERE status='failed'").fetchone()[0]
             pending=con.execute("SELECT COUNT(*) FROM outbox WHERE status IN ('pending','retry','sending')").fetchone()[0]
             migrations=rows_dict(con.execute("SELECT * FROM schema_migrations ORDER BY version").fetchall())
-        return {"ok":integrity=="ok","integrity":integrity,"database":str(self.db.path),"meta":meta,"migrations":migrations,"feature_flags":self.jobs.feature_list(),"counts":counts,"failed_runs":failures,"pending_outbox":pending,"now":iso()}
+        return {"ok":integrity=="ok","integrity":integrity,"database":str(self.db.path),"meta":meta,"migrations":migrations,"feature_flags":self.jobs.feature_list(),"counts":counts,"failed_runs":failures,"pending_outbox":pending,"delivery":self.delivery.status(),"now":iso()}
 
     def session_brief(self)->dict[str,Any]:
         """Return a small, deterministic orientation payload for a new Codex session."""
@@ -1156,6 +1186,7 @@ Schedule ID: {schedule['id']}
         checks["financial_facts_ready"]=status["counts"]["accounts"]>0 and status["counts"]["ledger_entries"]>0
         checks["schema_current"]=status["meta"].get("schema_version")==str(SCHEMA_VERSION)
         checks["ordered_migrations"]=len(status.get("migrations",[]))>=3
+        checks["required_results_not_overdue"]=status["delivery"]["overdue_required"]==0
         project_config=self.root/".codex"/"config.toml"
         if project_config.is_file():
             from .agent_config import validate_agent_config

@@ -95,6 +95,12 @@ TOOLS={
  "attention_decision_list":("列出通知、摘要、落盘或抑制决定。",schema({"action":S,"limit":I})),
  "attention_feedback":("登记用户对主动消息的反馈；负反馈只产生策略调整提案。",schema({"decision_id":S,"feedback":S,"note":S},["decision_id","feedback"])),
  "attention_mark_delivered":("在主动消息实际送达后登记投递状态。",schema({"decision_id":S},["decision_id"])),
+ "delivery_get":("读取一次任务的用户结果交付状态；运行成功不代表已交付。",schema({"delivery_id":S},["delivery_id"])),
+ "delivery_list":("列出待编写、待发送、重试、已送达或失败的结果交付记录。",schema({"status":S,"mode":S,"limit":I})),
+ "delivery_prepare":("为必报或摘要任务冻结用户结果；必报结果将进入可重试的 cc-connect 发送队列。",schema({"delivery_id":S,"conclusion":{"type":"string","enum":["no_action","action","review_required","insufficient_evidence"]},"summary":S,"key_evidence":{"type":"array","items":S},"next_step":S,"next_check_at":S,"source_refs":{"type":"array","items":S}},["delivery_id","conclusion","summary","key_evidence","next_step"])),
+ "delivery_digest_send":("把多个摘要任务的结果合并为一条用户消息并提交实际发送；只接受同一会话的 digest_required 记录。",schema({"delivery_ids":{"type":"array","items":S},"conclusion":{"type":"string","enum":["no_action","action","review_required","insufficient_evidence"]},"summary":S,"key_evidence":{"type":"array","items":S},"next_step":S,"next_check_at":S,"source_refs":{"type":"array","items":S}},["delivery_ids","conclusion","summary","key_evidence","next_step"])),
+ "delivery_status":("读取 V7 结果交付积压、失败和逾期必报任务。",schema()),
+ "delivery_migrate_schedule_policies":("预览或应用现有 Schedule 到 V7 delivery_mode 的最小字段迁移。",schema({"apply":{"type":"boolean"}})),
  "v4_status":("读取 V4 Gate、Feature、数据、量化内核和合格策略总状态；不会开启任何能力。",schema()),
  "v4_feature_list":("读取所有 V4 Feature Flag；Feature 只能在发布流程中启用。",schema()),
  "v4_gate_list":("读取指定范围的 Gate 评估历史。",schema({"scope":{"type":"string","enum":["production","test_fixture"]}})),
@@ -251,6 +257,12 @@ def call(name:str,a:dict[str,Any]):
     if name=="attention_decision_list":return C.attention.list(a.get("action"),a.get("limit",100))
     if name=="attention_feedback":return C.attention.feedback(a["decision_id"],a["feedback"],a.get("note"))
     if name=="attention_mark_delivered":return C.attention.mark_delivered(a["decision_id"])
+    if name=="delivery_get":return C.delivery.get(a["delivery_id"])
+    if name=="delivery_list":return C.delivery.list(status=a.get("status"),mode=a.get("mode"),limit=a.get("limit",100))
+    if name=="delivery_prepare":return C.delivery.prepare(a["delivery_id"],conclusion=a["conclusion"],summary=a["summary"],key_evidence=a["key_evidence"],next_step=a["next_step"],next_check_at=a.get("next_check_at"),source_refs=a.get("source_refs"))
+    if name=="delivery_digest_send":return C.delivery.digest_send(a["delivery_ids"],conclusion=a["conclusion"],summary=a["summary"],key_evidence=a["key_evidence"],next_step=a["next_step"],next_check_at=a.get("next_check_at"),source_refs=a.get("source_refs"))
+    if name=="delivery_status":return C.delivery.status()
+    if name=="delivery_migrate_schedule_policies":return C.delivery.migrate_schedule_policies(apply=a.get("apply",False),actor=actor)
     if name=="v4_status":return C.v4_status()
     if name=="v4_feature_list":return C.jobs.feature_list()
     if name=="v4_gate_list":return C.gates.list(a.get("scope",C.gate_scope))
@@ -330,7 +342,7 @@ def call(name:str,a:dict[str,Any]):
 def reply(request:dict[str,Any])->dict[str,Any]|None:
     method=request.get("method");rid=request.get("id")
     if rid is None:return None
-    if method=="initialize":result={"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":False}},"serverInfo":{"name":"investment-companion","version":"6.0.0"}}
+    if method=="initialize":result={"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":False}},"serverInfo":{"name":"investment-companion","version":"7.0.0"}}
     elif method=="tools/list":result={"tools":[{"name":n,"description":d,"inputSchema":s} for n,(d,s) in TOOLS.items()]}
     elif method=="tools/call":
         p=request.get("params",{})

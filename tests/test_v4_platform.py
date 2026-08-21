@@ -308,7 +308,7 @@ def test_latest_schema_requires_explicit_migration_and_is_repeatable(tmp_path: P
     assert result["schema_version"]==str(SCHEMA_VERSION) and result["integrity"]=="ok"
     assert Path(result["from_backup"]).is_file()
     companion.initialize()
-    assert len(companion.system_status()["migrations"])==4
+    assert len(companion.system_status()["migrations"])==5
 
 
 def test_failed_migration_rolls_back_schema_changes(tmp_path: Path):
@@ -820,7 +820,7 @@ def test_mcp_advertises_safe_v4_v5_surface(tmp_path: Path):
     )
     responses=[json.loads(line) for line in proc.stdout.splitlines()]
     names={tool["name"] for tool in responses[1]["result"]["tools"]}
-    assert responses[0]["result"]["serverInfo"]["version"]=="6.0.0"
+    assert responses[0]["result"]["serverInfo"]["version"]=="7.0.0"
     assert {"v4_status","v4_experiment_submit","v4_shadow_rebalance","v4_manual_action_validate"}<=names
     assert {"v5_today","v5_program_create","v5_opportunity_transition","v5_action_card","v5_program_metrics_calculate","v5_scorecard_publish","wake_claim","wake_complete","v4_manifest_get","v5_quant_research_status","v5_quant_experiment_status","v5_quant_scan_get","v5_quant_review_get","v5_research_quality_status"}<=names
     assert "manifest_publish" not in names and "experiment_complete" not in names

@@ -18,7 +18,7 @@ def emit(value):
 def parser() -> argparse.ArgumentParser:
     p=argparse.ArgumentParser(prog="companion",description="Investment Companion operational CLI")
     p.add_argument("--root",default=os.environ.get("COMPANION_ROOT","/home/ghk/investment-home"));sub=p.add_subparsers(dest="command",required=True)
-    for name in ["init","status","doctor","recover","bootstrap","agent-check","session-brief","v5-status","today","v5-quant-status","v5-experiment-status","v6-predictive-status"]:sub.add_parser(name)
+    for name in ["init","status","doctor","recover","bootstrap","agent-check","session-brief","v5-status","today","v5-quant-status","v5-experiment-status","v6-predictive-status","delivery-status"]:sub.add_parser(name)
     tick=sub.add_parser("tick");tick.add_argument("--limit",type=int,default=20)
     quality=sub.add_parser("v5-research-quality");quality.add_argument("--days",type=int,default=30)
     migrate=sub.add_parser("migrate");migrate.add_argument("--backup-directory",required=True)
@@ -60,6 +60,11 @@ def parser() -> argparse.ArgumentParser:
     rd=sub.add_parser("run-complete");rd.add_argument("id");rd.add_argument("--failed",action="store_true");rd.add_argument("--error")
     il=sub.add_parser("inbox-list");il.add_argument("--status",default="new")
     ia=sub.add_parser("inbox-add");ia.add_argument("--source",required=True);ia.add_argument("--title",required=True);ia.add_argument("--url");ia.add_argument("--file")
+    dl=sub.add_parser("delivery-list");dl.add_argument("--status");dl.add_argument("--mode");dl.add_argument("--limit",type=int,default=100)
+    dg=sub.add_parser("delivery-get");dg.add_argument("id")
+    dp=sub.add_parser("delivery-prepare");dp.add_argument("id");dp.add_argument("--conclusion",required=True,choices=["no_action","action","review_required","insufficient_evidence"]);dp.add_argument("--summary",required=True);dp.add_argument("--key-evidence",required=True);dp.add_argument("--next-step",required=True);dp.add_argument("--next-check-at");dp.add_argument("--source-refs",default="[]")
+    ds=sub.add_parser("delivery-digest-send");ds.add_argument("--ids",required=True);ds.add_argument("--conclusion",required=True,choices=["no_action","action","review_required","insufficient_evidence"]);ds.add_argument("--summary",required=True);ds.add_argument("--key-evidence",required=True);ds.add_argument("--next-step",required=True);ds.add_argument("--next-check-at");ds.add_argument("--source-refs",default="[]")
+    dm=sub.add_parser("delivery-migrate-schedule-policies");dm.add_argument("--apply",action="store_true")
     return p
 
 
@@ -77,6 +82,7 @@ def main(argv=None) -> int:
             elif a.command=="v5-status":result=c.v5_status()
             elif a.command in {"v5-quant-status","v5-experiment-status"}:result=c.quant_research.status()
             elif a.command=="v6-predictive-status":result=c.v6_predictive.status()
+            elif a.command=="delivery-status":result=c.delivery.status()
             elif a.command=="v5-research-quality":result=c.research_quality_status(a.days)
             elif a.command=="today":result=c.operating.today()
             elif a.command=="v4-bootstrap-jobs":result=c.v4_bootstrap_jobs(activate=a.activate)
@@ -135,6 +141,11 @@ def main(argv=None) -> int:
             elif a.command=="run-complete":result=c.complete_run(a.id,not a.failed,a.error)
             elif a.command=="inbox-list":result=c.inbox_list(a.status)
             elif a.command=="inbox-add":result=c.inbox_add(source=a.source,title=a.title,url=a.url,content=Path(a.file).read_text(encoding="utf-8") if a.file else None)
+            elif a.command=="delivery-list":result=c.delivery.list(status=a.status,mode=a.mode,limit=a.limit)
+            elif a.command=="delivery-get":result=c.delivery.get(a.id)
+            elif a.command=="delivery-prepare":result=c.delivery.prepare(a.id,conclusion=a.conclusion,summary=a.summary,key_evidence=json.loads(a.key_evidence),next_step=a.next_step,next_check_at=a.next_check_at,source_refs=json.loads(a.source_refs))
+            elif a.command=="delivery-digest-send":result=c.delivery.digest_send(json.loads(a.ids),conclusion=a.conclusion,summary=a.summary,key_evidence=json.loads(a.key_evidence),next_step=a.next_step,next_check_at=a.next_check_at,source_refs=json.loads(a.source_refs))
+            elif a.command=="delivery-migrate-schedule-policies":result=c.delivery.migrate_schedule_policies(apply=a.apply,actor="cli")
             else:raise CompanionError("unsupported command")
         emit(result)
         return 2 if a.command=="agent-check" and not result["ok"] else 0
