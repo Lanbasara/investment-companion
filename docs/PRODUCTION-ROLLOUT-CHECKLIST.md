@@ -1,6 +1,6 @@
 # Investment Companion：生产灰度与验收清单
 
-状态：交互灰度部分通过；持仓新鲜度与研究流水线故障正在修复，后台切换暂停
+状态：生产后台切换完成；进入保留回滚材料的观察期
 日期：2026-08-23
 交互目标：当前绑定 `cli_aafb5131a4f8dd05` 的飞书 Bot
 原则：先自动验收，再切交互，最后切后台；任一硬失败立即回滚
@@ -15,11 +15,11 @@
 
 | 项目 | 切换前 | 候选/切换后 |
 |---|---|---|
-| Git commit | `5d283ee` | `f7df65a`（架构代码 `7759d11`） |
-| Runtime | `/home/ghk/.local/share/investment-companion/runtime-v7-5d283ee-wt` | `/home/ghk/.local/share/investment-companion/runtime-architecture-f7df65a-wt` |
-| Plugin | `0.1.0+codex.20260821121340` | `0.1.0+codex.20260823083416`（commit `e27e233`） |
+| Git commit | `5d283ee` | `7d71efb` |
+| Runtime | `/home/ghk/.local/share/investment-companion/runtime-v7-5d283ee-wt` | `/home/ghk/.local/share/investment-companion/runtime-portfolio-pipelines-7d71efb-wt` |
+| Plugin | `0.1.0+codex.20260821121340` | `0.1.0+codex.20260823095859`（commit `e6922f4`） |
 | MCP Profile | `all` 兼容面 | `investment`：22 个版本无关入口 |
-| 数据库备份 | 最近历史备份 | `/home/ghk/.local/share/investment-companion/backups/companion-20260823T083526Z.db` |
+| 数据库备份 | 最近历史备份 | `/home/ghk/.local/share/investment-companion/backups/companion-20260823T104957Z.db` |
 | 回滚点 | 当前 V7 Runtime + 当前 Plugin | 切换后继续保留 |
 
 ## 3. 自动验收——由 Codex 完成
@@ -71,3 +71,5 @@
 用户对话验收通过后，才将 Tick、Job Worker、Backup 和 Recover 服务逐一指向候选 Runtime。每切一个服务都检查进程退出码、下一运行、Run/Outbox/Delivery 幂等性和数据库完整性；不得一次改完所有 service 后再检查。
 
 完成后台切换后至少经历一次真实 Tick、一次白名单 Job 检查和一次结果交付检查。观察期间保留旧 Runtime、旧 Plugin 和新备份；没有单独批准，不删除任何回滚材料。
+
+切换结果（2026-08-23 10:58 UTC）：用户已明确批准生产后台切换。Tick、Job Worker、Backup、Recover 四个 systemd 单元均已指向 `7d71efb` Runtime；真实 Tick、Backup、Recover 的退出状态均为 success。ETF 有界回填达到 20/20 个交易日并生成 20 个候选、20 个临时信号；股票链生成 10 个候选、10 个临时信号，未再出现 `MemoryError`。统一研究上下文可读取基金与股票产物，全部保持 `research_only`、`eligible_for_decision=false`；没有创建交易或用户行动。最终审计：数据库 integrity=ok、Schema 7、确认账本 23 条、决策队列 0、运行中 Run/Job 0、待发送 Outbox 0、切换后新增失败 0。旧 Runtime、旧 Plugin 和备份继续保留用于回滚。
