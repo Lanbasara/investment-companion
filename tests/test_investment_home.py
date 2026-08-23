@@ -108,6 +108,8 @@ def test_context_workbenches_compose_truth_owners_without_new_state(tmp_path):
     assert portfolio["account"]["id"] == account["id"]
     assert portfolio["portfolio"]["cash"] == {"CNY": "1000"}
     assert portfolio["truth"] == "confirmed_ledger_replay"
+    assert portfolio["truth_freshness"]["stale"] is True
+    assert portfolio["precision_boundary"]["precise_position_advice_allowed"] is False
     assert research["boundary"]["may_not_produce"] == [
         "ledger_entry",
         "execution",
@@ -117,6 +119,13 @@ def test_context_workbenches_compose_truth_owners_without_new_state(tmp_path):
     assert decision["execution_boundary"]["accepted_action_card_is_order"] is False
     assert evaluation["change_boundary"]["review_may_apply_strategy_change"] is False
     assert companion.financial.ledger_list() == ledger_before
+
+    companion.financial.reconcile(
+        account["id"], iso(), {"cash": {"CNY": "1000"}, "positions": {}}
+    )
+    reconciled = companion.investment.portfolio_context()
+    assert reconciled["truth_freshness"]["status"] == "recently_reconciled"
+    assert reconciled["precision_boundary"]["precise_position_advice_allowed"] is True
 
 
 def test_evaluation_context_reads_verified_performance_calculations(tmp_path):

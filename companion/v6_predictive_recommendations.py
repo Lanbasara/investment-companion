@@ -3,10 +3,10 @@ from __future__ import annotations
 from datetime import timedelta
 from decimal import Decimal, InvalidOperation
 import json
-from pathlib import Path
 from typing import Any
 
 from .foundation import CompanionError, canonical
+from .predictive_runtime import job_fund_data_bundle, publish_waiting_dependency, stock_adjusted_bars
 from .timeutil import iso, parse, utc_now
 
 
@@ -44,6 +44,8 @@ STOCK_SIGNALS_SCHEMA = "investment-companion.v6-stock-provisional-signals/v1"
 STOCK_SIGNAL_OUTCOMES_SCHEMA = "investment-companion.v6-stock-signal-outcomes/v1"
 FUND_SIGNAL_MODEL_ID = "v6-domestic-etf-trend-baseline-v1"
 STOCK_SIGNAL_MODEL_ID = "v6-mainboard-momentum-baseline-v1"
+ETF_LOOKBACK_SESSIONS = 20
+ETF_BOOTSTRAP_SESSIONS_PER_RUN = 5
 
 FUND_TASK_LINES = {
     "fund_domestic_etf",
@@ -407,8 +409,9 @@ class V6PredictiveRecommendations:
             raise CompanionError("V6 stock candidate top_k must be within 1..100")
         source = self.c.quant_research.scan_get(source_v5_scan_manifest_id)
         body = source["manifest"]["manifest"]
-        if body.get("program_id") != program_id:
-            raise CompanionError("V6 stock source scan belongs to another program")
+        source_program_id = body.get("program_id")
+        if not isinstance(source_program_id, str) or not source_program_id:
+            raise CompanionError("stock source scan lacks its owning research program")
         if body.get("status") != "ready" or not isinstance(body.get("as_of"), str):
             raise CompanionError("V6 stock source scan is not ready")
         candidates=[]
@@ -432,7 +435,7 @@ class V6PredictiveRecommendations:
             })
         selected=sorted(candidates,key=lambda item:(int(item["rank"]) if isinstance(item.get("rank"),int) else 10**9,item["asset_id"]))[:top_k]
         return self.c.data.manifest_publish(kind=STOCK_CANDIDATES_KIND,schema_version=STOCK_CANDIDATES_SCHEMA,manifest={
-            "program_id":program_id,"as_of":body["as_of"],"source_v5_scan_manifest_id":source_v5_scan_manifest_id,
+            "program_id":program_id,"source_program_id":source_program_id,"as_of":body["as_of"],"source_v5_scan_manifest_id":source_v5_scan_manifest_id,
             "source_v5_target_manifest_id":body.get("target_manifest_id"),"top_k":top_k,"candidates":selected,
             "status":"ready" if selected else "no_eligible_candidates","research_only":True,
             "not_a_forecast":True,"not_a_recommendation":True,"model_tokens":0,
@@ -712,12 +715,19 @@ class V6PredictiveRecommendations:
         config=self.require_program();parameters=context["inputs"].get("parameters",{})
         if set(parameters)!={"program_id","top_k"} or parameters["program_id"]!=config["program_id"]:
             raise CompanionError("V6 stock candidate scan has invalid program or parameters")
-        bars=self._stock_adjusted_bars(context["inputs"]["knowledge_cutoff"]);outcome_ids=[]
-        for signal_id in self._stock_signal_ids(config["program_id"],context["inputs"]["knowledge_cutoff"]):
+        signal_ids=self._stock_signal_ids(config["program_id"],context["inputs"]["knowledge_cutoff"])
+        signal_assets=set()
+        for signal_id in signal_ids:
+            body=self.stock_provisional_signals_get(signal_id)["manifest"]["manifest"]
+            signal_assets.update(str(item.get("asset_id")) for item in body.get("signals",[]) if item.get("asset_id"))
+        bars=stock_adjusted_bars(self,context["inputs"]["knowledge_cutoff"],asset_ids=signal_assets) if signal_assets else []
+        outcome_ids=[]
+        for signal_id in signal_ids:
             outcome=self.capture_stock_signal_outcomes(program_id=config["program_id"],signal_manifest_id=signal_id,adjusted_bars=bars,observed_at=context["inputs"]["knowledge_cutoff"])
             outcome_ids.append(outcome["id"])
-        scan_id=self._latest_v5_stock_scan_id(config["program_id"],context["inputs"]["knowledge_cutoff"])
-        if not scan_id:raise CompanionError("V6 stock candidate scan is waiting for a ready V5 source scan")
+        scan_id=self._latest_v5_stock_scan_id(context["inputs"]["knowledge_cutoff"])
+        if not scan_id:
+            return publish_waiting_dependency(self,kind=STOCK_CANDIDATES_KIND,schema_version=STOCK_CANDIDATES_SCHEMA,program_id=config["program_id"],as_of=context["inputs"]["knowledge_cutoff"],dependency="ready_stock_source_scan",event_summary="Stock candidate scan is waiting for its frozen source scan")
         existing=self._stock_candidate_for_v5_scan(config["program_id"],scan_id)
         report=existing or self.generate_stock_research_candidates(program_id=config["program_id"],source_v5_scan_manifest_id=scan_id,top_k=parameters["top_k"])
         body=report["manifest"]["manifest"]
@@ -728,7 +738,8 @@ class V6PredictiveRecommendations:
         if set(parameters)!={"program_id","horizon_sessions"} or parameters["program_id"]!=config["program_id"]:
             raise CompanionError("V6 stock provisional signal has invalid program or parameters")
         candidate_id=self._latest_stock_candidate_id(config["program_id"],context["inputs"]["knowledge_cutoff"])
-        if not candidate_id:raise CompanionError("V6 stock provisional signal is waiting for a stock candidate list")
+        if not candidate_id:
+            return publish_waiting_dependency(self,kind=STOCK_SIGNALS_KIND,schema_version=STOCK_SIGNALS_SCHEMA,program_id=config["program_id"],as_of=context["inputs"]["knowledge_cutoff"],dependency="stock_research_candidate_list",event_summary="Stock signal freeze is waiting for a candidate list")
         existing=self._stock_signal_for_candidate(config["program_id"],candidate_id)
         report=existing or self.generate_stock_provisional_signals(program_id=config["program_id"],candidate_manifest_id=candidate_id,horizon_sessions=parameters["horizon_sessions"])
         signals=report["manifest"]["manifest"]["signals"]
@@ -744,7 +755,8 @@ class V6PredictiveRecommendations:
         if set(parameters) not in allowed or parameters["program_id"] != config["program_id"]:
             raise CompanionError("V6 fund candidate scan has invalid program or parameters")
         feature_id=parameters.get("feature_snapshot_manifest_id") or self._latest_fund_feature_snapshot_id(config["program_id"],context["inputs"]["knowledge_cutoff"])
-        if not feature_id:raise CompanionError("V6 fund candidate scan is waiting for a frozen ETF feature snapshot")
+        if not feature_id:
+            return publish_waiting_dependency(self,kind=FUND_CANDIDATES_KIND,schema_version=FUND_CANDIDATES_SCHEMA,program_id=config["program_id"],as_of=context["inputs"]["knowledge_cutoff"],dependency="frozen_etf_feature_snapshot",event_summary="ETF candidate scan is waiting for its frozen feature history")
         report = self.generate_fund_research_candidates(
             program_id=config["program_id"],
             feature_snapshot_manifest_id=feature_id,
@@ -757,37 +769,14 @@ class V6PredictiveRecommendations:
         config=self.require_program();parameters=context["inputs"].get("parameters",{})
         if set(parameters)!={"program_id","horizon_sessions"} or parameters["program_id"]!=config["program_id"]:raise CompanionError("V6 fund provisional signal has invalid program or parameters")
         candidate_id=self._latest_fund_candidate_id(config["program_id"],context["inputs"]["knowledge_cutoff"])
-        if not candidate_id:raise CompanionError("V6 fund provisional signal is waiting for a research candidate list")
+        if not candidate_id:
+            return publish_waiting_dependency(self,kind=FUND_SIGNALS_KIND,schema_version=FUND_SIGNALS_SCHEMA,program_id=config["program_id"],as_of=context["inputs"]["knowledge_cutoff"],dependency="etf_research_candidate_list",event_summary="ETF signal freeze is waiting for a candidate list")
         report=self.generate_fund_provisional_signals(program_id=config["program_id"],candidate_manifest_id=candidate_id,horizon_sessions=parameters["horizon_sessions"])
         signals=report["manifest"]["manifest"]["signals"]
         return {"manifest_id":report["id"],"output_refs":[report["id"],candidate_id],"material":any(item["recommendation_state"]=="provisional_action" for item in signals),"model_tokens":0,"event_summary":"V6 ETF provisional recommendations frozen; forward validation pending"}
 
     def _job_fund_data_bundle(self, context: dict[str, Any]) -> dict[str, Any]:
-        from zoneinfo import ZoneInfo
-        from .tushare_adapter import TushareAdapter
-        config=self.require_program();parameters=context["inputs"].get("parameters",{})
-        if set(parameters)!={"program_id"} or parameters["program_id"]!=config["program_id"]:raise CompanionError("V6 ETF data bundle has invalid program parameters")
-        day=parse(context["inputs"]["knowledge_cutoff"]).astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d")
-        requests=[("etf_basic",{}),("fund_daily",{"trade_date":day}),("fund_share",{"trade_date":day})]
-        adapter=TushareAdapter(self.c,token_file=Path.home()/".config"/"tushare"/"token")
-        results=[];output_refs=[];rows={}
-        for index,(capability,params) in enumerate(requests):
-            batch=adapter.ingest_canary(capability,params=params,account_scope=f"v6-etf:{config['program_id']}",ingestion_key=f"job-run:{context['job_run_id']}:{index}")
-            results.append({"capability":capability,"batch_id":batch["id"],"status":batch["status"],"row_count":batch["row_count"],"raw_object_ids":batch["raw_object_ids"],"canonical_object_ids":batch["canonical_object_ids"],"error":batch.get("error")})
-            output_refs.extend(batch["raw_object_ids"]);output_refs.extend(batch["canonical_object_ids"])
-            if batch["status"]=="ready":rows[capability]=self._rows_from_canonical_batch(capability,batch)
-        ready=all(item["status"] in {"ready","empty_valid"} for item in results)
-        feature_id=universe_id=None;signal_outcome_ids=[]
-        historical={capability:self._historical_canonical_rows(capability,context["inputs"]["knowledge_cutoff"]) for capability in ("etf_basic","fund_daily","fund_share")}
-        historical_refs=[object_id for capability in ("etf_basic","fund_daily","fund_share") for object_id in self._historical_canonical_object_ids(capability,context["inputs"]["knowledge_cutoff"])]
-        if ready and all(historical.get(capability) for capability in ("etf_basic","fund_daily","fund_share")):
-            built=self.build_fund_universe_from_rows(program_id=config["program_id"],as_of=context["inputs"]["knowledge_cutoff"],etf_basic_rows=historical["etf_basic"],fund_daily_rows=historical["fund_daily"],fund_nav_rows=[],fund_share_rows=historical["fund_share"],source_refs=sorted(set([*output_refs,*historical_refs])),lookback_sessions=20)
-            universe_id=built["universe"]["id"];feature_id=built["features"]["id"];output_refs.extend([universe_id,feature_id])
-            for signal_id in self._fund_signal_ids(config["program_id"],context["inputs"]["knowledge_cutoff"]):
-                outcome=self.capture_fund_signal_outcomes(program_id=config["program_id"],signal_manifest_id=signal_id,fund_daily_rows=historical["fund_daily"],observed_at=context["inputs"]["knowledge_cutoff"])
-                signal_outcome_ids.append(outcome["id"]);output_refs.append(outcome["id"])
-        report=self.c.data.manifest_publish(kind="v6_fund_data_bundle",schema_version="investment-companion.v6-fund-data-bundle/v1",manifest={"program_id":config["program_id"],"knowledge_cutoff":context["inputs"]["knowledge_cutoff"],"status":"ready" if feature_id else "warming_up" if ready else "partial","requests":results,"universe_manifest_id":universe_id,"feature_snapshot_manifest_id":feature_id,"signal_outcome_manifest_ids":signal_outcome_ids,"research_only":True,"not_a_recommendation":True,"model_tokens":0})
-        return {"manifest_id":report["id"],"output_refs":[report["id"],*dict.fromkeys(output_refs)],"material":not bool(feature_id),"model_tokens":0,"event_summary":f"V6 ETF data bundle is {'ready' if feature_id else 'warming_up' if ready else 'partial'}; not a forecast or Decision"}
+        return job_fund_data_bundle(self, context, lookback_sessions=ETF_LOOKBACK_SESSIONS, bootstrap_per_run=ETF_BOOTSTRAP_SESSIONS_PER_RUN)
 
     def _job_forecast(self, context: dict[str, Any], *, allowed_task_lines: set[str]) -> dict[str, Any]:
         config = self.require_program()
@@ -842,7 +831,8 @@ class V6PredictiveRecommendations:
         with self.db.connect() as con:rows=con.execute("SELECT id,created_at,manifest_json FROM artifact_manifests WHERE kind=? ORDER BY created_at DESC,id DESC",(FUND_CANDIDATES_KIND,)).fetchall()
         for row in rows:
             if parse(row["created_at"])>cutoff:continue
-            if json.loads(row["manifest_json"]).get("manifest",{}).get("program_id")==program_id:return row["id"]
+            body=json.loads(row["manifest_json"]).get("manifest",{})
+            if body.get("program_id")==program_id and body.get("status")!="waiting_upstream":return row["id"]
         return None
 
     def _latest_stock_candidate_id(self, program_id: str, before: str) -> str | None:
@@ -869,23 +859,25 @@ class V6PredictiveRecommendations:
         with self.db.connect() as con:rows=con.execute("SELECT id,created_at,manifest_json FROM artifact_manifests WHERE kind=? ORDER BY created_at DESC,id DESC",(kind,)).fetchall()
         for row in rows:
             if parse(row["created_at"])>cutoff:continue
-            if json.loads(row["manifest_json"]).get("manifest",{}).get("program_id")==program_id:return row["id"]
+            body=json.loads(row["manifest_json"]).get("manifest",{})
+            if body.get("program_id")==program_id and body.get("status")!="waiting_upstream":return row["id"]
         return None
 
-    def _latest_v5_stock_scan_id(self, program_id: str, before: str) -> str | None:
+    def _latest_v5_stock_scan_id(self, before: str) -> str | None:
         cutoff=parse(before)
         with self.db.connect() as con:rows=con.execute("SELECT id,created_at,manifest_json FROM artifact_manifests WHERE kind='v5_canary_quant_scan' ORDER BY created_at DESC,id DESC").fetchall()
         for row in rows:
             if parse(row["created_at"])>cutoff:continue
             body=json.loads(row["manifest_json"]).get("manifest",{})
-            if body.get("program_id")==program_id and body.get("status")=="ready":return row["id"]
+            if isinstance(body.get("program_id"),str) and body.get("status")=="ready":return row["id"]
         return None
 
     def _fund_signal_ids(self, program_id: str, before: str) -> list[str]:
         cutoff=parse(before);result=[]
         with self.db.connect() as con:rows=con.execute("SELECT id,created_at,manifest_json FROM artifact_manifests WHERE kind=? ORDER BY created_at,id",(FUND_SIGNALS_KIND,)).fetchall()
         for row in rows:
-            if parse(row["created_at"])<=cutoff and json.loads(row["manifest_json"]).get("manifest",{}).get("program_id")==program_id:result.append(row["id"])
+            body=json.loads(row["manifest_json"]).get("manifest",{})
+            if parse(row["created_at"])<=cutoff and body.get("program_id")==program_id and body.get("status")!="waiting_upstream":result.append(row["id"])
         return result
 
     def _signal_outcome_ids(self, program_id: str, before: str) -> list[str]:
@@ -907,7 +899,8 @@ class V6PredictiveRecommendations:
         cutoff=parse(before);result=[]
         with self.db.connect() as con:rows=con.execute("SELECT id,created_at,manifest_json FROM artifact_manifests WHERE kind=? ORDER BY created_at,id",(STOCK_SIGNALS_KIND,)).fetchall()
         for row in rows:
-            if parse(row["created_at"])<=cutoff and json.loads(row["manifest_json"]).get("manifest",{}).get("program_id")==program_id:result.append(row["id"])
+            body=json.loads(row["manifest_json"]).get("manifest",{})
+            if parse(row["created_at"])<=cutoff and body.get("program_id")==program_id and body.get("status")!="waiting_upstream":result.append(row["id"])
         return result
 
     def _settled_stock_signal_assets(self, signal_manifest_id: str) -> set[str]:
@@ -917,15 +910,6 @@ class V6PredictiveRecommendations:
             body=json.loads(row["manifest_json"]).get("manifest",{})
             if body.get("signal_manifest_id")==signal_manifest_id:result.update(str(item.get("asset_id")) for item in body.get("outcomes",[]) if item.get("asset_id"))
         return result
-
-    def _stock_adjusted_bars(self, cutoff: str) -> list[dict[str, Any]]:
-        """Read only the already-frozen V5 canary rows; this handler never fetches data."""
-        source=self.c.quant_research;instant=parse(cutoff)
-        daily=source._dated_payloads("daily",instant);adjustments=source._dated_payloads("adj_factor",instant)
-        dates=sorted(set(daily)&set(adjustments))[-21:]
-        if len(dates)<2:return []
-        bars,_,_,_=source._build_adjusted_bars(dates,daily,adjustments)
-        return bars
 
     def _rows_from_canonical_batch(self, capability: str, batch: dict[str, Any]) -> list[dict[str, Any]]:
         object_ids=batch.get("canonical_object_ids",[])
@@ -1241,6 +1225,13 @@ class V6PredictiveRecommendations:
         result = V6PredictiveRecommendations._decimal(value, field)
         if result < 0:
             raise CompanionError(f"{field} must be non-negative")
+        return result
+
+    @staticmethod
+    def _positive_decimal(value: Any, field: str) -> Decimal:
+        result = V6PredictiveRecommendations._decimal(value, field)
+        if result <= 0:
+            raise CompanionError(f"{field} must be positive")
         return result
 
     @staticmethod

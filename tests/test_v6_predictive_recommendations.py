@@ -7,8 +7,9 @@ import pytest
 
 from companion.core import Companion, CompanionError
 from companion.governance import GATE_CHECKLISTS
+from companion.predictive_runtime import etf_bootstrap_days
 from companion.timeutil import iso, utc_now
-from companion.v6_predictive_recommendations import FUND_CANDIDATE_HANDLER, FUND_HANDLER, FUND_SIGNAL_HANDLER, STOCK_HANDLER, STOCK_SIGNAL_OUTCOMES_KIND, STOCK_SIGNAL_OUTCOMES_SCHEMA, V6_MODE
+from companion.v6_predictive_recommendations import FUND_CANDIDATE_HANDLER, FUND_HANDLER, FUND_SIGNAL_HANDLER, STOCK_CANDIDATE_HANDLER, STOCK_HANDLER, STOCK_SIGNAL_HANDLER, STOCK_SIGNAL_OUTCOMES_KIND, STOCK_SIGNAL_OUTCOMES_SCHEMA, V6_MODE
 
 
 def pass_g0(companion: Companion) -> None:
@@ -131,13 +132,25 @@ def test_v6_bootstrap_creates_separate_task_lines_and_15_day_feedback_review(tmp
     assert result["boundaries"]["automatic_decision_or_execution"] is False
 
 
+def test_etf_history_bootstrap_is_bounded_and_skips_existing_sessions():
+    calendar = [
+        {"exchange": "SSE", "date": f"2026-08-{day:02d}", "is_open": "1"}
+        for day in range(1, 22)
+    ]
+    result = etf_bootstrap_days(
+        calendar, {"20260801", "20260802"}, "20260821",
+        lookback_sessions=20, per_run=5,
+    )
+    assert result == ["20260803", "20260804", "20260805", "20260806", "20260807"]
+
+
 def test_v6_stock_line_creates_separate_candidates_signals_and_outcomes(tmp_path: Path):
     companion = setup_v6(tmp_path)
     source = companion.data.manifest_publish(
         kind="v5_canary_quant_scan",
         schema_version="investment-companion.v5-continuous-quant-scan/v1",
         manifest={
-            "program_id": "pytest-v6", "status": "ready", "as_of": "2026-07-01",
+            "program_id": "pytest-source-program", "status": "ready", "as_of": "2026-07-01",
             "target_manifest_id": "fixture-target",
             "candidates": [{"asset_id": "tushare:600000.SH", "rank": 1, "momentum_20d": "0.08", "volatility_20d": "0.03", "mean_amount_provider_units": "1000000"}],
         },
@@ -147,6 +160,7 @@ def test_v6_stock_line_creates_separate_candidates_signals_and_outcomes(tmp_path
     )
     candidate_body = candidates["manifest"]["manifest"]
     assert candidate_body["source_v5_scan_manifest_id"] == source["id"]
+    assert candidate_body["source_program_id"] == "pytest-source-program"
     assert candidate_body["candidates"][0]["asset_id"] == "tushare:600000.SH"
     signals = companion.v6_predictive.generate_stock_provisional_signals(
         program_id="pytest-v6", candidate_manifest_id=candidates["id"], horizon_sessions=20
@@ -160,6 +174,52 @@ def test_v6_stock_line_creates_separate_candidates_signals_and_outcomes(tmp_path
     )
     outcome = outcomes["manifest"]["manifest"]["outcomes"][0]
     assert outcome["task_line"] == "stock" and outcome["asset_id"] == "tushare:600000.SH"
+
+
+def test_stock_candidate_scan_does_not_expand_market_data_without_signals(tmp_path: Path, monkeypatch):
+    companion = setup_v6(tmp_path)
+    source = companion.data.manifest_publish(
+        kind="v5_canary_quant_scan",
+        schema_version="investment-companion.v5-continuous-quant-scan/v1",
+        manifest={
+            "program_id": "pytest-v6", "status": "ready", "as_of": "2026-08-21",
+            "target_manifest_id": "fixture-target",
+            "candidates": [{"asset_id": "tushare:600000.SH", "rank": 1, "momentum_20d": "0.08", "volatility_20d": "0.03", "mean_amount_provider_units": "1000000"}],
+        },
+    )
+    monkeypatch.setattr(
+        "companion.v6_predictive_recommendations.stock_adjusted_bars",
+        lambda *_args, **_kwargs: pytest.fail("full-market bars must not be loaded without signals"),
+    )
+    result = companion.v6_predictive._job_stock_candidate_scan({
+        "inputs": {"knowledge_cutoff": iso(), "parameters": {"program_id": "pytest-v6", "top_k": 10}}
+    })
+    body = companion.data.manifest_get(result["manifest_id"])["manifest"]["manifest"]
+    assert body["source_v5_scan_manifest_id"] == source["id"]
+
+
+@pytest.mark.parametrize(
+    ("handler", "parameters", "expected_dependency"),
+    [
+        (STOCK_CANDIDATE_HANDLER, {"program_id": "pytest-v6", "top_k": 10}, "ready_stock_source_scan"),
+        (STOCK_SIGNAL_HANDLER, {"program_id": "pytest-v6", "horizon_sessions": 20}, "stock_research_candidate_list"),
+        (FUND_CANDIDATE_HANDLER, {"program_id": "pytest-v6", "top_k": 20}, "frozen_etf_feature_snapshot"),
+        (FUND_SIGNAL_HANDLER, {"program_id": "pytest-v6", "horizon_sessions": 20}, "etf_research_candidate_list"),
+    ],
+)
+def test_missing_research_dependencies_are_waiting_not_failed(tmp_path: Path, handler: str, parameters: dict, expected_dependency: str):
+    companion = setup_v6(tmp_path)
+    definition = companion.jobs.definition_for_handler(handler)
+    job = companion.jobs.enqueue_new_parent(
+        definition_id=definition["id"],
+        inputs={"refs": [], "parameters": parameters, "knowledge_cutoff": iso()},
+        idempotency_key=f"pytest-waiting-{handler}",
+    )
+    completed = companion.jobs.run_once("pytest-v6-waiting", lease_seconds=30)
+    assert completed["id"] == job["id"] and completed["status"] == "succeeded"
+    body = companion.data.manifest_get(completed["output_manifest_id"])["manifest"]["manifest"]
+    assert body["status"] == "waiting_upstream"
+    assert body["dependency"] == expected_dependency
 
 
 def test_v6_forecast_keeps_unvalidated_status_without_suppressing_recommendation(tmp_path: Path):

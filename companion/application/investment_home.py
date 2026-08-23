@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..foundation import CompanionError
-from ..timeutil import iso
+from ..timeutil import iso, parse
 
 
 class InvestmentHomeService:
@@ -146,6 +146,7 @@ class InvestmentHomeService:
         )
         investor = self.c.cognition.context_current("investor")
         mandate = self.c.cognition.context_current("mandate")
+        truth_freshness = self._portfolio_truth_freshness(account_id, effective_at)
         return {
             "schema": "investment-companion.portfolio-context/v1",
             "as_of": effective_at,
@@ -159,6 +160,46 @@ class InvestmentHomeService:
             "mandate": mandate,
             "policy": self._policy_summary(),
             "truth": "confirmed_ledger_replay",
+            "truth_freshness": truth_freshness,
+            "precision_boundary": {
+                "current_broker_position_proven": not truth_freshness["stale"],
+                "precise_position_advice_allowed": not truth_freshness["stale"],
+                "required_when_stale": "obtain a current broker statement or confirmed transaction reconciliation",
+            },
+        }
+
+    def _portfolio_truth_freshness(self, account_id: str, effective_at: str) -> dict[str, Any]:
+        cutoff = parse(effective_at)
+        with self.c.db.connect() as con:
+            reconciliation = con.execute(
+                "SELECT as_of,id FROM reconciliations WHERE account_id=? AND as_of<=? "
+                "ORDER BY as_of DESC,id DESC LIMIT 1",
+                (account_id, effective_at),
+            ).fetchone()
+            ledger = con.execute(
+                "SELECT occurred_at,id FROM ledger_entries WHERE account_id=? "
+                "AND status IN ('confirmed','reversed') AND occurred_at<=? "
+                "ORDER BY occurred_at DESC,id DESC LIMIT 1",
+                (account_id, effective_at),
+            ).fetchone()
+        verified_at = reconciliation["as_of"] if reconciliation else None
+        latest_ledger_at = ledger["occurred_at"] if ledger else None
+        age_seconds = max(0, int((cutoff - parse(verified_at)).total_seconds())) if verified_at else None
+        stale_after_seconds = 3 * 24 * 60 * 60
+        stale = verified_at is None or age_seconds is None or age_seconds > stale_after_seconds
+        return {
+            "verified_at": verified_at,
+            "reconciliation_id": reconciliation["id"] if reconciliation else None,
+            "latest_confirmed_ledger_at": latest_ledger_at,
+            "age_seconds": age_seconds,
+            "stale_after_seconds": stale_after_seconds,
+            "status": "stale" if stale else "recently_reconciled",
+            "stale": stale,
+            "warning": (
+                "confirmed ledger is not proof of the current broker position; reconcile a current statement"
+                if stale
+                else None
+            ),
         }
 
     def research_context(
