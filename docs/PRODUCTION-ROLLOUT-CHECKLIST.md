@@ -1,6 +1,6 @@
 # Investment Companion：生产灰度与验收清单
 
-状态：待固定候选 Runtime 后执行
+状态：自动预检通过，待飞书交互灰度
 日期：2026-08-23
 交互目标：当前绑定 `cli_aafb5131a4f8dd05` 的飞书 Bot
 原则：先自动验收，再切交互，最后切后台；任一硬失败立即回滚
@@ -15,11 +15,11 @@
 
 | 项目 | 切换前 | 候选/切换后 |
 |---|---|---|
-| Git commit | 待记录 | 待记录 |
-| Runtime | `/home/ghk/.local/share/investment-companion/runtime-v7-5d283ee-wt` | 待固定 |
-| Plugin | `0.1.0+codex.20260821121340` | 待 cachebuster |
+| Git commit | `5d283ee` | `f7df65a`（架构代码 `7759d11`） |
+| Runtime | `/home/ghk/.local/share/investment-companion/runtime-v7-5d283ee-wt` | `/home/ghk/.local/share/investment-companion/runtime-architecture-f7df65a-wt` |
+| Plugin | `0.1.0+codex.20260821121340` | `0.1.0+codex.20260823083416`（commit `e27e233`） |
 | MCP Profile | `all` 兼容面 | `investment`：22 个版本无关入口 |
-| 数据库备份 | 最近历史备份 | 待创建并验证的新备份 |
+| 数据库备份 | 最近历史备份 | `/home/ghk/.local/share/investment-companion/backups/companion-20260823T083526Z.db` |
 | 回滚点 | 当前 V7 Runtime + 当前 Plugin | 切换后继续保留 |
 
 ## 3. 自动验收——由 Codex 完成
@@ -31,6 +31,8 @@
 3. `investment` Profile 精确暴露 22 个版本无关工具，不含 `v4_`、`v5_`、`v6_` 前缀；核心闭环覆盖账户/资产、Context、计划、证据、研究、机会、Decision、Risk、行动、Execution、Ledger、Performance、Review、Brief、Calendar、Wake 与 Delivery。
 4. 候选 Runtime 和旧 Runtime 对生产数据库执行只读 Home/Portfolio/Workflow 对照；不得出现无法解释的持仓、现金、待确认流水、Schedule、Run 或 Delivery 差异。
 5. 新备份完成 SQLite 完整性验证；旧 Runtime、旧 Plugin 版本和 systemd 原配置均可恢复。
+
+预检结果（2026-08-23 08:35 UTC）：156 项测试与 8 个子测试通过；新旧 Runtime 的 Schema 7、integrity、账户、资产、Ledger、Schedule、Run、Outbox 和 Delivery 对照一致；没有 leased Run、sending Outbox 或 running Job；备份 integrity=ok 且核心数量一致。
 
 ## 4. 飞书 Bot 对话验收——由用户完成
 
