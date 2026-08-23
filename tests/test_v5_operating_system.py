@@ -58,6 +58,49 @@ def confirmed_context(companion: Companion, context_type: str, content: dict) ->
     return companion.cognition.context_confirm(draft["id"])
 
 
+def ashare_reality() -> dict:
+    return {
+        "version": "a-share-reality/v1",
+        "currency": "CNY",
+        "lot_size": 100,
+        "t_plus_one": True,
+        "signal_delay": "next_session",
+        "commission_rate": "0.0003",
+        "minimum_commission": "5",
+        "sell_stamp_duty_rate": "0.0005",
+        "cash_dividend_tax_rate": "0",
+        "slippage_bps": "0",
+        "money_quantum": "0.01",
+        "price_tick": "0.01",
+    }
+
+
+def research_validation_spec() -> dict:
+    return {
+        "falsifiers": ["cash conversion deteriorates below the registered threshold"],
+        "counterevidence": {
+            "searched": ["issuer disclosures", "independent exchange evidence"],
+            "findings": [
+                {
+                    "claim": "industry cycle remains uncertain",
+                    "disposition": "position size remains bounded",
+                }
+            ],
+        },
+        "applicability": {
+            "horizon": "one month",
+            "conditions": ["normal A-share liquidity"],
+            "excluded_conditions": ["trading suspension"],
+        },
+        "cost_assumptions": {
+            "commission": "RealitySpec commission",
+            "tax": "A-share sell stamp duty",
+            "slippage": "frozen execution price range",
+        },
+        "max_evidence_age_days": 30,
+    }
+
+
 def setup_operating_system(tmp_path: Path) -> tuple[Companion, dict]:
     companion = Companion(tmp_path, gate_scope="test_fixture")
     companion.initialize()
@@ -123,20 +166,46 @@ def setup_operating_system(tmp_path: Path) -> tuple[Companion, dict]:
 
 
 def build_actionable_opportunity(companion: Companion, fixture: dict) -> dict:
+    cutoff = iso()
     asset = companion.financial.asset_upsert(
         asset_type="stock",
         name="Fixture Co",
         currency="CNY",
         identifiers={"ts_code": "000001.SZ"},
     )
-    source_a = companion.inbox_add(source="official_filing", title="Annual report", content="fixture A")
-    source_b = companion.inbox_add(source="exchange", title="Exchange notice", content="fixture B")
-    thesis = companion.cognition.object_create("thesis", {"asset_id": asset["id"]})
-    thesis_revision = companion.cognition.publish(
-        thesis["id"],
-        "# Fixture thesis\n\nA bounded, falsifiable fixture thesis.",
-        knowledge_cutoff=iso(),
+    source_a = companion.data.manifest_publish(
+        kind="v5_research_evidence",
+        schema_version="research-evidence/v1",
+        manifest={
+            "asset_id": asset["id"],
+            "source": "official filing",
+            "source_group": "issuer",
+            "first_known_at": cutoff,
+            "observed_at": cutoff,
+        },
     )
+    source_b = companion.data.manifest_publish(
+        kind="v5_research_evidence",
+        schema_version="research-evidence/v1",
+        manifest={
+            "asset_id": asset["id"],
+            "source": "exchange notice",
+            "source_group": "exchange",
+            "first_known_at": cutoff,
+            "observed_at": cutoff,
+        },
+    )
+    evidence_ids = [source_a["id"], source_b["id"]]
+    research = companion.investment_commands.research_publish(
+        subject={"asset_id": asset["id"]},
+        content="# Fixture thesis\n\nA bounded, falsifiable fixture thesis.",
+        evidence_manifest_ids=evidence_ids,
+        knowledge_cutoff=cutoff,
+        validation_spec=research_validation_spec(),
+    )
+    thesis = research["thesis"]
+    thesis_revision = research["revision"]
+    validation_id = research["validation"]["calculation_id"]
     opportunity = companion.operating.opportunity_create(
         subject={"asset_id": asset["id"], "intent": "research candidate"},
         evidence_refs=[source_a["id"]],
@@ -161,12 +230,8 @@ def build_actionable_opportunity(companion: Companion, fixture: dict) -> dict:
     )
     assert replay["version"] == 2
     qualified = {
-        "evidence_state": "corroborated",
-        "independent_source_count": 2,
-        "data_freshness": "current",
-        "falsifiers": ["cash conversion deteriorates below the registered threshold"],
+        "validation_calculation_id": validation_id,
         "major_unknowns": ["decision price and portfolio fit are not frozen"],
-        "counterevidence": ["industry cycle remains uncertain"],
         "decision_basis": "Two primary sources support continued evaluation, not action.",
     }
     opportunity = companion.operating.opportunity_transition(
@@ -174,37 +239,46 @@ def build_actionable_opportunity(companion: Companion, fixture: dict) -> dict:
         expected_version=2,
         to_stage="qualified",
         to_status="active",
-        evidence_refs=[source_a["id"], source_b["id"]],
+        evidence_refs=[*evidence_ids, validation_id],
         qualification=qualified,
         reason="Evidence passed the research qualification contract",
     )
-    state = companion.financial.portfolio_state(iso(), fixture["account"]["id"])
-    decision = companion.cognition.object_create("decision", {"asset_id": asset["id"]})
-    decision_revision = companion.cognition.publish(
-        decision["id"],
-        "# Fixture Decision\n\nReview the candidate within the frozen personal constraints.",
-        knowledge_cutoff=iso(),
-        context_refs={
-            "investor_revision_id": fixture["contexts"]["investor_revision_id"],
-            "mandate_revision_id": fixture["contexts"]["mandate_revision_id"],
-            "portfolio_calculation_id": state["calculation_id"],
-            "thesis_revision_ids": [thesis_revision["id"]],
-        },
-        calculation_ids=[state["calculation_id"]],
-        metadata={
-            "valid_until": iso(utc_now() + timedelta(hours=6)),
-            "invalidators": ["portfolio or mandate changes", "new filing contradicts thesis"],
-            "no_action": {"choice": "continue observing", "cost": "possible opportunity cost"},
-            "source_refs": [source_a["id"], source_b["id"]],
-        },
+    valid_until = iso(utc_now() + timedelta(hours=6))
+    market = companion.financial.market_add(
+        asset["id"], "close", "10", cutoff, "fixture-market", "healthy", "CNY"
     )
+    risk = companion.investment_commands.risk_assess(
+        as_of=cutoff,
+        account_id=fixture["account"]["id"],
+        asset_id=asset["id"],
+        quantity="100",
+        price="10",
+        reality_spec=ashare_reality(),
+        market_snapshot_id=market["id"],
+        max_market_age_seconds=3600,
+        valid_until=valid_until,
+        price_range={"min": "9.8", "max": "10.2"},
+    )
+    decision = companion.investment_commands.decision_publish(
+        subject={"asset_id": asset["id"]},
+        content="# Fixture Decision\n\nBuy a bounded position only while all gates remain current.",
+        decision_kind="action",
+        account_id=fixture["account"]["id"],
+        as_of=cutoff,
+        knowledge_cutoff=cutoff,
+        valid_until=valid_until,
+        thesis_revision_ids=[thesis_revision["id"]],
+        evidence_manifest_ids=evidence_ids,
+        invalidators=["portfolio or mandate changes", "new filing contradicts thesis"],
+        no_action={"choice": "continue observing", "cost": "possible opportunity cost"},
+        alternatives=[{"choice": "hold cash"}, {"choice": "buy fewer shares"}],
+        risk_calculation_id=risk["calculation_id"],
+        research_validation_calculation_id=validation_id,
+    )
+    decision_revision = decision["revision"]
     actionable = {
-        "evidence_state": "decision_grade",
-        "independent_source_count": 2,
-        "data_freshness": "current",
-        "falsifiers": ["Decision invalidator becomes true"],
+        "validation_calculation_id": validation_id,
         "major_unknowns": [],
-        "counterevidence": ["no deterministic alpha claim exists"],
         "decision_basis": "The issued Decision freezes personal facts, evidence and validity.",
     }
     opportunity = companion.operating.opportunity_transition(
@@ -212,7 +286,12 @@ def build_actionable_opportunity(companion: Companion, fixture: dict) -> dict:
         expected_version=3,
         to_stage="actionable",
         to_status="active",
-        evidence_refs=[source_a["id"], source_b["id"], decision_revision["id"]],
+        evidence_refs=[
+            *evidence_ids,
+            validation_id,
+            risk["calculation_id"],
+            decision_revision["id"],
+        ],
         qualification=actionable,
         decision_revision_id=decision_revision["id"],
         reason="Current issued Decision closed the remaining major unknowns",
@@ -222,9 +301,129 @@ def build_actionable_opportunity(companion: Companion, fixture: dict) -> dict:
         "sources": [source_a, source_b],
         "thesis_revision": thesis_revision,
         "decision_revision": decision_revision,
-        "portfolio_state": state,
+        "portfolio_state": companion.financial.calculation_get(
+            decision["portfolio_calculation_id"]
+        )["outputs"],
+        "research": research,
+        "risk": risk,
+        "market": market,
         "opportunity": opportunity,
     }
+
+
+def accept_action_card(companion: Companion, built: dict) -> dict:
+    queue = companion.operating.queue_enqueue(
+        built["opportunity"]["id"],
+        decision_revision_id=built["decision_revision"]["id"],
+    )
+    attention = companion.attention.decide(
+        topic=f"accepted-action-{queue['id']}",
+        materiality="high",
+        confidence="decision_grade",
+        reason="Fixture presents one current Action Card",
+        evidence=[queue["id"]],
+    )
+    companion.attention.mark_delivered(attention["id"])
+    companion.operating.queue_respond(
+        queue["id"], state="presented", attention_decision_id=attention["id"]
+    )
+    return companion.operating.queue_respond(queue["id"], state="accepted")
+
+
+def test_version_neutral_profile_covers_program_opportunity_action_and_workflow(tmp_path: Path):
+    companion, fixture = setup_operating_system(tmp_path)
+    program = fixture["program"]
+    revised_content = {**fixture["content"], "objective": "验证版本无关投资经营入口"}
+    revised = companion.investment_commands.program_update(
+        operation="revise",
+        program_id=program["id"],
+        expected_version=program["version"],
+        content=revised_content,
+        context_refs=fixture["contexts"],
+        reason="Profile integration fixture",
+    )
+    assert revised["revisions"][0]["status"] == "draft"
+    assert companion.investment.program_context(program_id=program["id"])["selected"]["id"] == program["id"]
+
+    evidence = companion.investment_commands.evidence_update(
+        operation="publish_source",
+        subject={"asset_id": "fixture:profile"},
+        source="fixture filing",
+        source_group="issuer",
+        first_known_at=iso(),
+        observed_at=iso(),
+        claims=["A bounded research question exists"],
+    )
+    opportunity = companion.investment_commands.opportunity_update(
+        operation="create",
+        subject={"asset_id": "fixture:profile"},
+        evidence_refs=[evidence["id"]],
+        reason="Version-neutral opportunity fixture",
+    )
+    researching = companion.investment_commands.opportunity_update(
+        operation="transition",
+        opportunity_id=opportunity["id"],
+        expected_version=opportunity["version"],
+        to_stage="researching",
+        to_status="active",
+        evidence_refs=[evidence["id"]],
+        reason="Accept bounded research question",
+    )
+    assert researching["stage"] == "researching"
+
+    built = build_actionable_opportunity(companion, fixture)
+    queue = companion.investment_commands.action_update(
+        operation="enqueue",
+        opportunity_id=built["opportunity"]["id"],
+        decision_revision_id=built["decision_revision"]["id"],
+    )
+    attention = companion.investment_commands.delivery_update(
+        operation="attention_decide",
+        topic=f"profile-action-{queue['id']}",
+        materiality="high",
+        confidence="decision_grade",
+        reason="Present one current action",
+        evidence=[queue["id"]],
+    )
+    companion.investment_commands.delivery_update(
+        operation="attention_delivered", attention_decision_id=attention["id"]
+    )
+    presented = companion.investment_commands.action_update(
+        operation="respond",
+        queue_id=queue["id"],
+        state="presented",
+        attention_decision_id=attention["id"],
+    )
+    assert presented["state"] == "presented"
+
+    brief = companion.investment_commands.brief_update(
+        operation="publish",
+        brief_type="daily",
+        period_key=utc_now().date().isoformat(),
+        as_of=iso(),
+        conclusion="action",
+        payload={
+            "summary": "One validated action awaits the user.",
+            "what_changed": ["A decision passed research and risk gates."],
+            "decision": "Review the bounded action.",
+            "risks": ["The action expires."],
+            "next_check_at": iso(utc_now() + timedelta(hours=1)),
+            "queue_item_ids": [queue["id"]],
+        },
+        source_refs=[evidence["id"], queue["id"]],
+    )
+    assert brief["conclusion"] == "action"
+
+    schedule = companion.investment_commands.workflow_update(
+        operation="schedule_create",
+        name="Profile integration review",
+        kind="review",
+        mission="Verify the version-neutral workflow facade",
+        cadence={"type": "interval", "seconds": 86400},
+    )
+    schedules = companion.investment.workflow_context(view="schedules", status="active")
+    assert schedule["id"] in {item["id"] for item in schedules}
+    assert companion.investment.home()["workflow"]["active_schedule_count"] >= 1
 
 
 def test_v5_program_opportunity_queue_and_user_briefs(tmp_path: Path):
@@ -232,12 +431,18 @@ def test_v5_program_opportunity_queue_and_user_briefs(tmp_path: Path):
     built = build_actionable_opportunity(companion, fixture)
     opportunity = built["opportunity"]
     assert opportunity["stage"] == "actionable"
-    assert opportunity["evidence_band"] == "decision_grade"
+    assert opportunity["evidence_band"] == "eligible_for_decision"
+    assert opportunity["research_validation"]["eligible_for_decision"] is True
     queue = companion.operating.queue_enqueue(
         opportunity["id"],
         decision_revision_id=built["decision_revision"]["id"],
     )
     card = companion.operating.queue_card(queue["id"])
+    assert card["action"]["side"] == "buy"
+    assert card["action"]["quantity"] == "100"
+    assert card["executable_now"] is True
+    assert card["research_validation"]["eligible_for_decision"] is True
+    assert card["risk_gate"]["status"] == "pass"
     assert card["human_execution_only"] is True
     assert card["execution_created"] is False
     assert card["guarantees"] == {"profit": False, "high_win_rate": False}
@@ -466,6 +671,457 @@ def test_v5_superseded_decision_invalidates_existing_queue(tmp_path: Path):
     assert "Decision invalidated" in expired["response_reason"]
 
 
+def test_v5_confirmed_ledger_change_invalidates_existing_action_card(tmp_path: Path):
+    companion, fixture = setup_operating_system(tmp_path)
+    built = build_actionable_opportunity(companion, fixture)
+    queue = companion.operating.queue_enqueue(
+        built["opportunity"]["id"],
+        decision_revision_id=built["decision_revision"]["id"],
+    )
+    deposit = companion.financial.ledger_add(
+        account_id=fixture["account"]["id"],
+        entry_type="cash_deposit",
+        occurred_at=iso(),
+        amount="1000",
+        currency="CNY",
+        source="ledger-drift-fixture",
+    )
+    companion.financial.ledger_confirm(deposit["id"])
+
+    today = companion.operating.today()
+
+    assert today["mode"] == "review_required"
+    assert today["invalidated_queue"][0]["queue_id"] == queue["id"]
+    expired = companion.operating.queue_get(queue["id"])
+    assert expired["state"] == "expired"
+    assert "confirmed Ledger has changed" in expired["response_reason"]
+
+
+def test_v5_latest_market_price_rechecks_risk_before_presenting_action(tmp_path: Path, monkeypatch):
+    companion, fixture = setup_operating_system(tmp_path)
+    built = build_actionable_opportunity(companion, fixture)
+    queue = companion.operating.queue_enqueue(
+        built["opportunity"]["id"],
+        decision_revision_id=built["decision_revision"]["id"],
+    )
+    later = utc_now() + timedelta(seconds=2)
+    companion.financial.market_add(
+        built["asset"]["id"],
+        "close",
+        "11",
+        iso(later),
+        "newer-market-fixture",
+        "healthy",
+        "CNY",
+    )
+    monkeypatch.setattr("companion.actionability.utc_now", lambda: later + timedelta(seconds=1))
+
+    today = companion.operating.today()
+
+    assert today["mode"] == "review_required"
+    assert today["invalidated_queue"][0]["queue_id"] == queue["id"]
+    expired = companion.operating.queue_get(queue["id"])
+    assert expired["state"] == "expired"
+    assert "price_out_of_range" in expired["response_reason"]
+
+
+def test_execution_lifecycle_separates_acceptance_order_report_and_confirmed_fill(tmp_path: Path):
+    companion, fixture = setup_operating_system(tmp_path)
+    built = build_actionable_opportunity(companion, fixture)
+    queue = accept_action_card(companion, built)
+    before = companion.financial.portfolio_state(iso(), fixture["account"]["id"])
+
+    execution = companion.investment_commands.execution_update(
+        operation="prepare",
+        queue_id=queue["id"],
+        idempotency_key="execution-lifecycle-fixture",
+    )
+    assert execution["status"] == "proposed"
+    assert companion.system_status()["counts"]["executions"] == 1
+    assert companion.financial.portfolio_state(iso(), fixture["account"]["id"])[
+        "positions"
+    ] == before["positions"]
+
+    execution = companion.investment_commands.execution_update(
+        operation="order",
+        execution_id=execution["id"],
+        broker_order_ref="broker-order-fixture-1",
+        ordered_at=iso(),
+    )
+    assert execution["status"] == "ordered"
+    reported = companion.investment_commands.execution_update(
+        operation="report_fill",
+        execution_id=execution["id"],
+        occurred_at=iso(),
+        quantity="100",
+        price="10",
+        fee="5",
+        source="user-confirmed-broker-report",
+        external_id="broker-fill-fixture-1",
+        final=True,
+    )
+    pending = reported["pending_ledger_entry"]
+    assert reported["portfolio_changed"] is False
+    assert pending["status"] == "needs_confirmation"
+    assert companion.financial.portfolio_state(iso(), fixture["account"]["id"])[
+        "positions"
+    ] == before["positions"]
+
+    confirmed = companion.investment_commands.execution_update(
+        operation="confirm_fill",
+        execution_id=execution["id"], entry_id=pending["id"], final=True
+    )
+
+    assert confirmed["execution"]["status"] == "filled"
+    assert confirmed["confirmed_ledger_entry"]["status"] == "confirmed"
+    assert confirmed["portfolio_changed"] is True
+    assert confirmed["portfolio"]["positions"][0]["quantity"] == "100"
+    assert companion.operating.queue_get(queue["id"])["state"] == "closed"
+    decision_context = companion.investment.decision_context()
+    assert decision_context["executions"][0]["id"] == execution["id"]
+    assert decision_context["execution_boundary"][
+        "reported_fill_changes_portfolio"
+    ] is False
+
+
+def test_execution_lifecycle_records_real_fill_but_marks_price_deviation(tmp_path: Path):
+    companion, fixture = setup_operating_system(tmp_path)
+    built = build_actionable_opportunity(companion, fixture)
+    queue = accept_action_card(companion, built)
+    execution = companion.execution.prepare_from_queue(
+        queue_id=queue["id"], idempotency_key="execution-deviation-fixture"
+    )
+    execution = companion.execution.mark_ordered(
+        execution_id=execution["id"],
+        broker_order_ref="broker-order-deviation",
+        ordered_at=iso(),
+    )
+    reported = companion.execution.report_fill(
+        execution_id=execution["id"],
+        occurred_at=iso(),
+        quantity="100",
+        price="10.5",
+        fee="5",
+        source="user-confirmed-broker-report",
+        external_id="broker-fill-deviation",
+        final=True,
+    )
+
+    result = companion.execution.confirm_fill(
+        execution_id=execution["id"],
+        entry_id=reported["pending_ledger_entry"]["id"],
+        final=True,
+    )
+
+    assert result["execution"]["status"] == "deviated"
+    assert "fill_price_outside_action_range" in result["execution"]["status_reason"]
+    assert result["confirmed_ledger_entry"]["status"] == "confirmed"
+    assert result["portfolio"]["positions"][0]["quantity"] == "100"
+
+
+def test_execution_lifecycle_reconciles_multiple_partial_fills(tmp_path: Path):
+    companion, fixture = setup_operating_system(tmp_path)
+    built = build_actionable_opportunity(companion, fixture)
+    queue = accept_action_card(companion, built)
+    execution = companion.execution.prepare_from_queue(
+        queue_id=queue["id"], idempotency_key="execution-partial-fill-fixture"
+    )
+    execution = companion.execution.mark_ordered(
+        execution_id=execution["id"],
+        broker_order_ref="broker-order-partial",
+        ordered_at=iso(),
+    )
+    first = companion.execution.report_fill(
+        execution_id=execution["id"],
+        occurred_at=iso(),
+        quantity="40",
+        price="10",
+        fee="2",
+        source="broker-report",
+        external_id="partial-fill-1",
+    )
+    first_result = companion.execution.confirm_fill(
+        execution_id=execution["id"],
+        entry_id=first["pending_ledger_entry"]["id"],
+        final=False,
+    )
+    assert first_result["execution"]["status"] == "partially_filled"
+    assert first_result["portfolio"]["positions"][0]["quantity"] == "40"
+    assert companion.operating.queue_get(queue["id"])["state"] == "accepted"
+
+    second = companion.execution.report_fill(
+        execution_id=execution["id"],
+        occurred_at=iso(),
+        quantity="60",
+        price="10",
+        fee="3",
+        source="broker-report",
+        external_id="partial-fill-2",
+        final=True,
+    )
+    completed = companion.execution.confirm_fill(
+        execution_id=execution["id"],
+        entry_id=second["pending_ledger_entry"]["id"],
+        final=True,
+    )
+    assert completed["execution"]["status"] == "filled"
+    assert completed["execution"]["ledger_entry_ids"] == [
+        first["pending_ledger_entry"]["id"],
+        second["pending_ledger_entry"]["id"],
+    ]
+    assert completed["portfolio"]["positions"][0]["quantity"] == "100"
+    assert companion.operating.queue_get(queue["id"])["state"] == "closed"
+
+
+def test_execution_truth_is_frozen_into_daily_weekly_briefs_and_investment_home(
+    tmp_path: Path,
+):
+    companion, fixture = setup_operating_system(tmp_path)
+    built = build_actionable_opportunity(companion, fixture)
+    queue = accept_action_card(companion, built)
+    execution = companion.execution.prepare_from_queue(
+        queue_id=queue["id"], idempotency_key="briefing-pending-execution"
+    )
+    companion.execution.mark_ordered(
+        execution_id=execution["id"],
+        broker_order_ref="briefing-order",
+        ordered_at=iso(),
+    )
+    reported = companion.execution.report_fill(
+        execution_id=execution["id"],
+        occurred_at=iso(),
+        quantity="100",
+        price="10",
+        fee="5",
+        source="broker-report",
+        external_id="briefing-fill",
+        final=True,
+    )
+    pending_id = reported["pending_ledger_entry"]["id"]
+
+    home = companion.investment.home()
+    assert home["state"] == "action"
+    assert home["execution"]["pending_fill_entry_ids"] == [pending_id]
+    assert "确认前不会改变真实组合" in home["message"]
+
+    base_payload = {
+        "summary": "The reported fill is still awaiting confirmation.",
+        "what_changed": ["The user reported a broker fill."],
+        "decision": "Confirm the fill against the broker statement.",
+        "risks": ["An unconfirmed report is not portfolio truth."],
+        "next_check_at": iso(utc_now() + timedelta(hours=6)),
+        "queue_item_ids": [queue["id"]],
+    }
+    with pytest.raises(CompanionError, match="unknown fields"):
+        companion.operating.brief_prepare(
+            brief_type="daily",
+            period_key="2026-08-23-spoofed",
+            as_of=iso(),
+            conclusion="action",
+            payload={**base_payload, "execution_snapshot": {"claimed": "filled"}},
+            source_refs=[built["decision_revision"]["id"]],
+        )
+    daily = companion.operating.brief_prepare(
+        brief_type="daily",
+        period_key="2026-08-23",
+        as_of=iso(),
+        conclusion="action",
+        payload=base_payload,
+        source_refs=[built["decision_revision"]["id"], queue["id"]],
+    )
+    snapshot = daily["payload"]["execution_snapshot"]
+    assert snapshot["pending_fill_entry_ids"] == [pending_id]
+    assert snapshot["portfolio_changed_by_confirmed_fills"] is False
+    assert snapshot["calculation_id"] in daily["source_refs"]
+    frozen = companion.financial.calculation_get(snapshot["calculation_id"])
+    assert frozen["kind"] == "execution_operating_snapshot"
+    assert frozen["outputs"]["pending_fill_entry_ids"] == [pending_id]
+
+    weekly = companion.operating.brief_prepare(
+        brief_type="weekly",
+        period_key="2026-W34",
+        as_of=iso(),
+        conclusion="action",
+        payload={
+            **base_payload,
+            "program_progress": {"state": "fill_confirmation_pending"},
+            "research_pipeline": {"state": "unchanged"},
+        },
+        source_refs=[built["decision_revision"]["id"], queue["id"]],
+    )
+    assert weekly["payload"]["execution_snapshot"]["status_counts"]["ordered"] == 1
+    assert weekly["payload"]["execution_snapshot"]["pending_fill_entry_ids"] == [
+        pending_id
+    ]
+
+
+def test_today_requires_execution_review_then_allows_an_acknowledged_no_action(
+    tmp_path: Path,
+):
+    companion, fixture = setup_operating_system(tmp_path)
+    built = build_actionable_opportunity(companion, fixture)
+    queue = accept_action_card(companion, built)
+    execution = companion.execution.prepare_from_queue(
+        queue_id=queue["id"], idempotency_key="briefing-deviated-execution"
+    )
+    companion.execution.mark_ordered(
+        execution_id=execution["id"],
+        broker_order_ref="briefing-deviated-order",
+        ordered_at=iso(),
+    )
+    reported = companion.execution.report_fill(
+        execution_id=execution["id"],
+        occurred_at=iso(),
+        quantity="100",
+        price="10.5",
+        fee="5",
+        source="broker-report",
+        external_id="briefing-deviated-fill",
+        final=True,
+    )
+    confirmed = companion.execution.confirm_fill(
+        execution_id=execution["id"],
+        entry_id=reported["pending_ledger_entry"]["id"],
+        final=True,
+    )
+    assert confirmed["execution"]["status"] == "deviated"
+
+    before_brief = companion.operating.today()
+    assert before_brief["mode"] == "review_required"
+    assert before_brief["execution_summary"]["deviated_execution_ids"] == [
+        execution["id"]
+    ]
+    assert "执行结果" in before_brief["message"]
+
+    companion.operating.brief_prepare(
+        brief_type="daily",
+        period_key="2026-08-23-deviation-reviewed",
+        as_of=iso(),
+        conclusion="no_action",
+        payload={
+            "summary": "The real fill was recorded with its price deviation.",
+            "what_changed": ["The confirmed fill closed the Action Card."],
+            "decision": "No additional trade; retain the deviation for review.",
+            "risks": ["The original execution range was exceeded."],
+            "next_check_at": iso(utc_now() + timedelta(hours=6)),
+            "queue_item_ids": [],
+        },
+        source_refs=[built["decision_revision"]["id"]],
+    )
+    acknowledged = companion.investment.home()
+    assert acknowledged["state"] == "no_action"
+    assert acknowledged["execution"]["deviated_execution_ids"] == [execution["id"]]
+
+    mismatch = companion.financial.reconcile(
+        fixture["account"]["id"],
+        iso(),
+        {"cash": {"CNY": "999999"}, "positions": {}},
+        "broker-statement-with-difference",
+    )
+    assert mismatch["status"] == "needs_review"
+    reconciliation_today = companion.operating.today()
+    assert reconciliation_today["mode"] == "review_required"
+    assert reconciliation_today["execution_summary"]["reconciliation"][
+        "needs_review_ids"
+    ] == [mismatch["id"]]
+    assert "账户对账结果存在差异" in reconciliation_today["message"]
+
+
+def test_v5_unvalidated_predictive_evidence_cannot_qualify_opportunity(tmp_path: Path):
+    companion, _fixture = setup_operating_system(tmp_path)
+    cutoff = iso()
+    signal = companion.data.manifest_publish(
+        kind="v5_unvalidated_signal",
+        schema_version="research-evidence/v1",
+        manifest={
+            "source": "candidate scan",
+            "source_group": "quant-signal",
+            "first_known_at": cutoff,
+            "observed_at": cutoff,
+            "signals": [{"validation_status": "unvalidated"}],
+        },
+    )
+    filing = companion.data.manifest_publish(
+        kind="v5_issuer_evidence",
+        schema_version="research-evidence/v1",
+        manifest={
+            "source": "issuer filing",
+            "source_group": "issuer",
+            "first_known_at": cutoff,
+            "observed_at": cutoff,
+        },
+    )
+    research = companion.investment_commands.research_publish(
+        subject={"asset_id": "fixture:unvalidated"},
+        content="# Thesis\nThe candidate is still provisional.",
+        evidence_manifest_ids=[signal["id"], filing["id"]],
+        knowledge_cutoff=cutoff,
+        validation_spec=research_validation_spec(),
+    )
+    opportunity = companion.operating.opportunity_create(
+        subject={"asset_id": "fixture:unvalidated"},
+        evidence_refs=[signal["id"]],
+        reason="Provisional signal requires research",
+        thesis_id=research["thesis"]["id"],
+    )
+    opportunity = companion.operating.opportunity_transition(
+        opportunity["id"],
+        expected_version=1,
+        to_stage="researching",
+        to_status="active",
+        evidence_refs=[signal["id"], filing["id"]],
+        reason="Research completed but formal validation still fails",
+    )
+
+    with pytest.raises(CompanionError, match="cannot enter qualified.*research_only"):
+        companion.operating.opportunity_transition(
+            opportunity["id"],
+            expected_version=2,
+            to_stage="qualified",
+            to_status="active",
+            evidence_refs=[
+                signal["id"],
+                filing["id"],
+                research["validation"]["calculation_id"],
+            ],
+            qualification={
+                "validation_calculation_id": research["validation"]["calculation_id"],
+                "major_unknowns": ["predictive evidence remains unvalidated"],
+                "decision_basis": "No action until formal validation passes.",
+            },
+            reason="Must fail closed",
+        )
+
+
+def test_v5_raw_decision_cannot_bypass_professional_action_gates(tmp_path: Path):
+    companion, fixture = setup_operating_system(tmp_path)
+    state = companion.financial.portfolio_state(iso(), fixture["account"]["id"])
+    thesis = companion.cognition.object_create("thesis", {"asset_id": "fixture:raw"})
+    thesis_revision = companion.cognition.publish(
+        thesis["id"], "# Raw thesis\nA fixture thesis without formal validation."
+    )
+    decision = companion.cognition.object_create("decision", {"asset_id": "fixture:raw"})
+    revision = companion.cognition.publish(
+        decision["id"],
+        "# Raw decision\nThis revision did not pass Research Validation or Risk Gate.",
+        context_refs={
+            "investor_revision_id": fixture["contexts"]["investor_revision_id"],
+            "mandate_revision_id": fixture["contexts"]["mandate_revision_id"],
+            "portfolio_calculation_id": state["calculation_id"],
+            "thesis_revision_ids": [thesis_revision["id"]],
+        },
+        calculation_ids=[state["calculation_id"]],
+        metadata={
+            "valid_until": iso(utc_now() + timedelta(hours=1)),
+            "invalidators": ["facts change"],
+            "no_action": {"choice": "hold cash"},
+        },
+    )
+
+    with pytest.raises(CompanionError, match="supported professional contract"):
+        companion.actionability.validate_decision(revision["id"])
+
+
 def test_v5_scorecard_values_can_only_come_from_calculations(tmp_path: Path):
     companion, fixture = setup_operating_system(tmp_path)
     state = companion.financial.portfolio_state(iso(), fixture["account"]["id"])
@@ -532,6 +1188,43 @@ def test_v5_scorecard_values_can_only_come_from_calculations(tmp_path: Path):
         )
 
 
+def test_program_metrics_uses_exact_account_performance_instead_of_claiming_missing_returns(tmp_path: Path):
+    companion, fixture = setup_operating_system(tmp_path)
+    period_start = iso(utc_now() - timedelta(days=1))
+    period_end = iso()
+    performance = companion.performance.calculate_period(
+        account_id=fixture["account"]["id"],
+        period_start=period_start,
+        period_end=period_end,
+        start_prices={},
+        end_prices={},
+        benchmark_start_value="100",
+        benchmark_end_value="101",
+        source_refs=["fixture-benchmark"],
+    )
+
+    metrics = companion.operating.program_metrics_calculate(
+        period_start=period_start,
+        period_end=period_end,
+    )
+    portfolio_context = companion.investment.portfolio_context()
+
+    assert metrics["coverage"]["portfolio_return"] == {
+        "status": "ready",
+        "calculation_id": performance["calculation_id"],
+        "output_path": "outputs.modified_dietz_return",
+        "value": "0",
+    }
+    assert metrics["coverage"]["benchmark_return"]["status"] == "ready"
+    assert metrics["coverage"]["transaction_cost"]["value"] == "0"
+    calculation = companion.financial.calculation_get(metrics["calculation_id"])
+    assert calculation["inputs"]["performance_calculation_ids"] == [
+        performance["calculation_id"]
+    ]
+    assert portfolio_context["account"]["id"] == fixture["account"]["id"]
+    assert portfolio_context["policy"]["program_id"] == fixture["program"]["id"]
+
+
 def test_wake_envelope_claims_exact_work_and_requires_run_completion(tmp_path: Path, monkeypatch):
     companion = Companion(tmp_path, gate_scope="test_fixture")
     companion.initialize()
@@ -544,7 +1237,7 @@ def test_wake_envelope_claims_exact_work_and_requires_run_completion(tmp_path: P
     run = companion.schedule_run_now(schedule["id"])
     monkeypatch.setenv("COMPANION_CC_WAKE_CRON", "fixture-cron")
     monkeypatch.setattr(
-        "companion.core.subprocess.run",
+        "companion.platform.outbox.subprocess.run",
         lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="triggered", stderr=""),
     )
     dispatch = companion.dispatch_outbox(limit=1)

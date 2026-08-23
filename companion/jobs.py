@@ -9,7 +9,7 @@ import time
 from datetime import timedelta
 from typing import Any, Callable
 
-from .core import CompanionError, canonical, digest, new_id
+from .foundation import CompanionError, canonical, digest, new_id
 from .db import row_dict, rows_dict
 from .timeutil import iso, parse, utc_now
 
@@ -172,7 +172,7 @@ class JobEngine:
                 "UPDATE feature_flags SET enabled=?,config_json=?,updated_at=? WHERE key=?",
                 (1 if enabled else 0, canonical(config if config is not None else before["config"]), now, key),
             )
-            self.c._audit(
+            self.c.audit.record(
                 con,
                 actor,
                 "feature_enable" if enabled else "feature_disable",
@@ -240,7 +240,7 @@ class JobEngine:
                     now,
                 ),
             )
-            self.c._audit(con, actor, "create", "job_definition", did, after={"name": name, "handler": handler, "status": status})
+            self.c.audit.record(con, actor, "create", "job_definition", did, after={"name": name, "handler": handler, "status": status})
         return self.definition_get(did)
 
     def definition_get(self, definition_id: str) -> dict[str, Any]:
@@ -286,7 +286,7 @@ class JobEngine:
                 "UPDATE job_definitions SET status=?,updated_at=? WHERE id=?",
                 (status, iso(), definition_id),
             )
-            self.c._audit(con, actor, status, "job_definition", definition_id, before, {**before, "status": status}, reason)
+            self.c.audit.record(con, actor, status, "job_definition", definition_id, before, {**before, "status": status}, reason)
         return self.definition_get(definition_id)
 
     def enqueue(

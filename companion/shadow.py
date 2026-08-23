@@ -6,7 +6,7 @@ from decimal import Decimal
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from .core import CompanionError, canonical, digest, new_id
+from .foundation import CompanionError, canonical, digest, new_id
 from .db import row_dict, rows_dict
 from .financial import dec, dtext
 from .timeutil import iso, parse, utc_now

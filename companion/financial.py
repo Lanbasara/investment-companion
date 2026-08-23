@@ -7,7 +7,7 @@ from decimal import Decimal, InvalidOperation, ROUND_DOWN, ROUND_HALF_EVEN, ROUN
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from .core import CompanionError, canonical, digest, new_id
+from .foundation import CompanionError, canonical, digest, new_id
 from .db import row_dict, rows_dict
 from .timeutil import iso, parse
 
@@ -391,6 +391,26 @@ class FinancialKernel:
         expected=digest(item["engine_version"],item["kind"],item["as_of"],item["inputs"],item["assumptions"],item["formulas"],item["outputs"],item["warnings"])
         if expected!=item["reproducibility_hash"]:raise CompanionError(f"calculation reproducibility hash mismatch: {calculation_id}")
         return item
+
+    def calculation_list(self, kind: str | None = None, limit: int = 50) -> list[dict]:
+        """List verified deterministic calculations without exposing SQL callers."""
+        if limit <= 0 or limit > 500:
+            raise CompanionError("calculation limit must be within 1..500")
+        query, params = "SELECT id FROM calculations", []
+        if kind:
+            query += " WHERE kind=?"
+            params.append(kind)
+        query += " ORDER BY created_at DESC,id DESC LIMIT ?"
+        params.append(limit)
+        with self.db.connect() as con:
+            calculation_ids = [row["id"] for row in con.execute(query, params).fetchall()]
+        return [self.calculation_get(item) for item in calculation_ids]
+
+    def calculation_record(
+        self, kind, purpose, as_of, inputs, assumptions, formulas, outputs, warnings
+    ) -> dict:
+        """Public deterministic Calculation registry boundary."""
+        return self._record(kind, purpose, as_of, inputs, assumptions, formulas, outputs, warnings)
 
     def _record(self, kind,purpose,as_of,inputs,assumptions,formulas,outputs,warnings):
         rh=digest(ENGINE_VERSION,kind,as_of,inputs,assumptions,formulas,outputs,warnings);cid=new_id("calc");now=iso()

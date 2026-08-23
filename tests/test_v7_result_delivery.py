@@ -49,7 +49,7 @@ def test_v7_report_required_is_not_delivered_until_actual_cc_connect_send(tmp_pa
     calls = []
     monkeypatch.delenv("COMPANION_CC_WAKE_CRON", raising=False)
     monkeypatch.setattr(
-        "companion.core.subprocess.run",
+        "companion.platform.outbox.subprocess.run",
         lambda command, **kwargs: calls.append(command) or SimpleNamespace(returncode=0, stdout="sent", stderr=""),
     )
     result = companion.dispatch_outbox(limit=1)
@@ -79,7 +79,7 @@ def test_v7_digest_is_one_send_with_receipts_for_all_component_runs(tmp_path, mo
     assert all(item["status"] == "pending_send" for item in queued)
 
     monkeypatch.delenv("COMPANION_CC_WAKE_CRON", raising=False)
-    monkeypatch.setattr("companion.core.subprocess.run", lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="sent", stderr=""))
+    monkeypatch.setattr("companion.platform.outbox.subprocess.run", lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="sent", stderr=""))
     result = companion.dispatch_outbox(limit=1)
     assert result["results"][0]["sent"] is True
     assert all(companion.delivery.get(item["id"])["status"] == "delivered" for item in records)
@@ -91,7 +91,7 @@ def test_v7_failed_result_send_remains_retryable(tmp_path, monkeypatch):
     run = complete(companion, schedule(companion, name="Retry report", mode="report_required")["id"])
     record = prepare(companion, companion.delivery.for_run(run["id"])["id"])
     monkeypatch.delenv("COMPANION_CC_WAKE_CRON", raising=False)
-    monkeypatch.setattr("companion.core.subprocess.run", lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout="", stderr="bridge unavailable"))
+    monkeypatch.setattr("companion.platform.outbox.subprocess.run", lambda *args, **kwargs: SimpleNamespace(returncode=1, stdout="", stderr="bridge unavailable"))
     result = companion.dispatch_outbox(limit=1)
     assert result["results"][0]["sent"] is False
     assert companion.delivery.get(record["id"])["status"] == "retry"

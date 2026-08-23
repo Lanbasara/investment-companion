@@ -1,0 +1,73 @@
+{
+  "schema": "investment-companion.architecture-golden-workflows/v1",
+  "scenarios": [
+    {
+      "id": "confirmed-ledger-is-the-only-portfolio-truth",
+      "purpose": "未确认事实不能改变现金或持仓，确认和冲销均保留不可变历史。",
+      "required_test_refs": [
+        "tests/test_v3.py::V3Test::test_unconfirmed_entry_does_not_change_portfolio_and_replay_is_exact",
+        "tests/test_v3.py::V3Test::test_reversal_restores_state_without_editing_original_facts"
+      ],
+      "invariants": [
+        "only confirmed ledger entries change the authoritative portfolio",
+        "corrections append reversal facts instead of editing history"
+      ]
+    },
+    {
+      "id": "research-output-cannot-become-a-trade",
+      "purpose": "扫描、预测和前向观察只能产生研究材料。",
+      "required_test_refs": [
+        "tests/test_v5_quant_experiment.py::test_real_data_shape_scan_records_forward_outcome_without_decision_or_ledger",
+        "tests/test_v6_predictive_recommendations.py::test_v6_fund_job_publishes_only_a_forecast_artifact",
+        "tests/test_research_validation.py::test_unvalidated_predictive_signal_cannot_become_decision_eligible"
+      ],
+      "invariants": [
+        "research pipelines do not create decisions, executions, or ledger entries",
+        "candidate lists and forecasts remain immutable evidence",
+        "unvalidated predictive evidence cannot authorize an action decision"
+      ]
+    },
+    {
+      "id": "decision-risk-and-human-execution-remain-distinct",
+      "purpose": "正式判断、约束重验、用户接受、手工成交和账本确认是不同事实。",
+      "required_test_refs": [
+        "tests/test_golden_investment_loop.py::test_golden_research_to_real_performance_to_inert_change_proposal",
+        "tests/test_v4_platform.py::test_manual_action_revalidates_and_fill_matches_frozen_base_ledger",
+        "tests/test_v5_operating_system.py::test_v5_program_opportunity_queue_and_user_briefs",
+        "tests/test_v5_operating_system.py::test_execution_lifecycle_separates_acceptance_order_report_and_confirmed_fill",
+        "tests/test_v5_operating_system.py::test_execution_lifecycle_records_real_fill_but_marks_price_deviation"
+      ],
+      "invariants": [
+        "an accepted action card does not create a fill",
+        "stale mandate, ledger, price, or decision invalidates the action",
+        "a reported fill remains pending until the user confirms its Ledger entry",
+        "a real fill outside the recommendation is recorded and classified as deviated"
+      ]
+    },
+    {
+      "id": "performance-is-measured-and-learning-is-versioned",
+      "purpose": "客观数值来自确定性计算，复盘只能提出新版本或停止。",
+      "required_test_refs": [
+        "tests/test_golden_investment_loop.py::test_golden_research_to_real_performance_to_inert_change_proposal",
+        "tests/test_v5_operating_system.py::test_v5_scorecard_values_can_only_come_from_calculations",
+        "tests/test_v6_predictive_recommendations.py::test_v6_feedback_review_reports_insufficient_evidence_and_never_mutates_strategy"
+      ],
+      "invariants": [
+        "language models cannot supply performance numbers",
+        "feedback review cannot mutate the active strategy"
+      ]
+    },
+    {
+      "id": "completed-work-is-not-delivered-result",
+      "purpose": "任务完成、结果冻结和用户实际收到是可审计的不同状态。",
+      "required_test_refs": [
+        "tests/test_v5_operating_system.py::test_wake_envelope_claims_exact_work_and_requires_run_completion",
+        "tests/test_v7_result_delivery.py::test_v7_report_required_is_not_delivered_until_actual_cc_connect_send"
+      ],
+      "invariants": [
+        "a successful run does not prove that the user received a result",
+        "required delivery completes only after a receipt"
+      ]
+    }
+  ]
+}

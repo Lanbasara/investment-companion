@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="description" content="Investment Companion V5 投资经营系统、专业研究内核与持续量化研究文档">
+  <meta name="description" content="Investment Companion 版本无关目标架构、投资闭环与生产运维文档">
   <title>Investment Companion · 文档中心</title>
   <link rel="stylesheet" href="site.css">
 </head>
@@ -11,7 +11,7 @@
   <header class="topbar">
     <a class="brand" href="#overview" aria-label="返回总览">
       <span class="brand-mark">IC</span>
-      <span><strong>Investment Companion</strong><small>V5 生产 · 人工执行</small></span>
+      <span><strong>Investment Companion</strong><small>Codex Native · 人工执行</small></span>
     </a>
     <button id="nav-toggle" class="nav-toggle" aria-label="展开目录">目录</button>
   </header>
@@ -22,7 +22,13 @@
         <p class="nav-label">开始</p>
         <a href="#overview" data-route="overview">系统总览</a>
         <a href="#doc=PROJECT-STATUS.md" data-doc="PROJECT-STATUS.md">项目状态与交棒</a>
+        <a href="#doc=ARCHITECTURE.md" data-doc="ARCHITECTURE.md">版本无关目标架构</a>
+        <a href="#doc=DOMAIN-GLOSSARY.md" data-doc="DOMAIN-GLOSSARY.md">统一领域词典</a>
+        <a href="#doc=REFACTOR-PLAN.md" data-doc="REFACTOR-PLAN.md">架构升级实施计划</a>
         <a href="#doc=V2-OPERATIONS.md" data-doc="V2-OPERATIONS.md">使用与运维手册</a>
+        <p class="nav-label">当前生产契约</p>
+        <a href="#doc=V7-RESULT-DELIVERY.md" data-doc="V7-RESULT-DELIVERY.md">结果交付闭环</a>
+        <a href="#doc=V6-PREDICTIVE-RECOMMENDATIONS.md" data-doc="V6-PREDICTIVE-RECOMMENDATIONS.md">股票与基金预测闭环</a>
         <p class="nav-label">架构与验收</p>
         <a href="#doc=V3-DESIGN.md" data-doc="V3-DESIGN.md">V3 完整架构设计</a>
         <a href="#doc=V3-ACCEPTANCE.md" data-doc="V3-ACCEPTANCE.md">V3 验收与边界</a>
@@ -47,7 +53,7 @@
         <a href="#doc=V2-ACCEPTANCE.md" data-doc="V2-ACCEPTANCE.md">V2 验收记录</a>
         <a href="#doc=EVENT-SYSTEM-PLAN.md" data-doc="EVENT-SYSTEM-PLAN.md">早期事件系统基线</a>
       </nav>
-      <div class="sidebar-note">当前生产：<code>V6 / Schema 6</code><br>V5：持续经营基线<br>股票与 ETF：独立预测＋月度复核<br>文档日期：2026-08-21</div>
+      <div class="sidebar-note">当前生产：<code>V7 / Schema 7</code><br>长期方向：版本无关模块化单体<br>通信：Codex + cc-connect + 飞书<br>文档日期：2026-08-23</div>
     </aside>
 
     <main id="main" class="main" tabindex="-1">
@@ -55,51 +61,47 @@
         <div class="hero">
           <p class="eyebrow">CODEX-NATIVE · AUDITABLE · HUMAN-IN-CONTROL</p>
           <h1>个人全生命周期<br>投资伴侣</h1>
-          <p class="lede">V5 在生产中保存投资事实与主动任务，以 V4 确定性研究内核支撑 InvestmentProgram、机会漏斗、行动卡、持续量化研究和真实结果复盘；Codex 负责判断，用户保留执行权。</p>
+          <p class="lede">系统围绕一条投资主链工作：研究和预测形成组合建议，确定性风控拦截不可执行行动，用户手工成交，真实盈亏再用于修订或淘汰方法。</p>
           <div class="hero-actions">
-            <a class="button primary" href="#doc=PROJECT-STATUS.md">从当前状态开始</a>
-            <a class="button" href="#doc=V5-USER-GUIDE.md">查看 V5 使用手册</a>
+            <a class="button primary" href="#doc=ARCHITECTURE.md">查看目标架构</a>
+            <a class="button" href="#doc=PROJECT-STATUS.md">查看当前状态</a>
           </div>
         </div>
 
         <section class="section">
-          <div class="section-heading"><span>01</span><div><h2>一张图理解系统</h2><p>Codex 是主体，Companion 是可靠的事实、事件与工具层。</p></div></div>
+          <div class="section-heading"><span>01</span><div><h2>一张图理解系统</h2><p>Codex 是主体；投资核心负责研究、决策、风控、执行和结果反馈。</p></div></div>
           <div class="architecture" role="img" aria-label="Investment Companion 分层架构图">
             <div class="arch-row human"><div class="node accent"><b>用户</b><small>飞书 · 自然语言 · 最终确认</small></div></div>
             <div class="connector">↕</div>
             <div class="arch-row"><div class="node wide primary-node"><b>Primary Investment Codex</b><small>唯一最终判断 · 专业调查组织 · 认知更新 · 用户沟通</small></div></div>
-            <div class="connector split">↙　↓　↘</div>
-            <div class="arch-grid three">
-              <div class="node"><b>Investment Skills</b><small>研究 · 决策 · 生命周期 · 主动系统</small></div>
-              <div class="node"><b>短命专业 Agents</b><small>研究员 · 财务分析 · 反证审查 · 哨骑</small></div>
-              <div class="node"><b>数据工具</b><small>Tushare MCP · Web · Tavily · 官方来源</small></div>
-            </div>
+            <div class="connector">↓</div>
+            <div class="arch-row"><div class="node wide"><b>Investment Home</b><small>今天做什么 · 当前组合 · 研究上下文 · 执行与对账 · 结果评价</small></div></div>
             <div class="connector">↕</div>
             <div class="arch-grid four">
-              <div class="node layer"><b>Financial Kernel</b><small>账本与确定性计算</small></div>
-              <div class="node layer"><b>Cognitive Ledger</b><small>Thesis · Decision · Review</small></div>
-              <div class="node layer"><b>Attention Engine</b><small>预算 · 冷却 · 通知治理</small></div>
-              <div class="node layer"><b>Event Runtime</b><small>Schedule · Watch · Run · Outbox</small></div>
+              <div class="node layer"><b>Policy & Ledger</b><small>目标约束 · 现金持仓真相</small></div>
+              <div class="node layer"><b>Research & Decision</b><small>证据验证 · 组合判断</small></div>
+              <div class="node layer"><b>Risk & Execution</b><small>确定性否决 · 人工成交</small></div>
+              <div class="node layer"><b>Performance & Review</b><small>真实盈亏 · 修订淘汰</small></div>
             </div>
             <div class="connector">↕</div>
             <div class="arch-grid two">
-              <div class="node muted"><b>SQLite Schema 3</b><small>精确事实 · 幂等 · 恢复 · 审计</small></div>
-              <div class="node muted"><b>Markdown 工作材料</b><small>可读认知 · 证据句柄 · 长期交棒</small></div>
+              <div class="node muted"><b>Data & Market Calendar</b><small>PIT · 血缘 · 质量 · 统一交易时间</small></div>
+              <div class="node muted"><b>Workflow & Governance</b><small>Schedule · Run · Delivery · 审计 · 版本</small></div>
             </div>
-            <div class="connector">↑</div>
-            <div class="arch-row"><div class="node infra"><b>systemd 30 分钟 Tick</b><small>仅检查到期任务；工作日巡视、周度与月度园丁由 Schedule 决定</small></div></div>
+            <div class="connector">↕</div>
+            <div class="arch-row"><div class="node infra"><b>SQLite · Content Addressed Store · Tushare · systemd</b><small>保留现有事实、数据和运行历史；通过窄适配器向上提供能力</small></div></div>
           </div>
         </section>
 
         <section class="section">
-          <div class="section-heading"><span>02</span><div><h2>一次主动工作的完整循环</h2><p>事件描述世界发生了什么，不预先规定 Codex 必须做什么。</p></div></div>
+          <div class="section-heading"><span>02</span><div><h2>一次投资工作的完整循环</h2><p>每个建议都必须回到真实组合，并在现实结果中接受检验。</p></div></div>
           <ol class="flow">
-            <li><b>感知</b><span>定时巡视、数据变化、文件或用户输入形成事件</span></li>
-            <li><b>恢复</b><span>按主题加载最少必要的事实、Thesis 与未决问题</span></li>
-            <li><b>调查</b><span>按需调用结构化数据、Web 和短命专业 Agent</span></li>
-            <li><b>判断</b><span>增量更新认知，并由确定性内核完成组合计算</span></li>
-            <li><b>治理</b><span>根据重要性、预算、冷却和偏好决定通知或静默</span></li>
-            <li><b>延续</b><span>保存结果、审计理由与下一观察条件</span></li>
+            <li><b>发现</b><span>市场数据、官方材料或用户问题形成有边界的 Research Case</span></li>
+            <li><b>验证</b><span>检查时点、反证、样本外结果、成本和适用范围</span></li>
+            <li><b>决策</b><span>结合真实组合比较行动、不行动和其他替代方案</span></li>
+            <li><b>风控</b><span>确定性检查现金、集中度、流动性、有效期和交易现实</span></li>
+            <li><b>执行</b><span>用户手工交易，报告真实成交并确认进入 Ledger；Brief 自动引用执行与对账快照</span></li>
+            <li><b>反馈</b><span>计算收益、成本、基准和归因，修订或淘汰无效方法</span></li>
           </ol>
         </section>
 
@@ -114,11 +116,11 @@
         </section>
 
         <section class="section boundary">
-          <div class="section-heading"><span>04</span><div><h2>当前能力边界</h2><p>V3 Core 已可开始真实使用，但长期托付仍需要真实数据和运行时间验证。</p></div></div>
+          <div class="section-heading"><span>04</span><div><h2>当前改造状态</h2><p>生产系统继续运行，架构按兼容优先方式逐批收敛。</p></div></div>
           <div class="status-grid">
-            <div><b>已经具备</b><p>可靠主动调度、事实账本、认知版本、注意力治理、崩溃恢复、专业 Agent 协作。</p></div>
-            <div><b>已经初始化</b><p>Investor、Mandate、账户、资产、首批 Ledger、Calculation、认知与 Execution 已进入真实使用。</p></div>
-            <div><b>V4 工程主链已完成</b><p>PIT 数据、typed Job、walk-forward、双快照 Shadow、个人联合约束、Agent 血缘与人工闭环已实现；生产仍为 V3，G1/G2/G6 仍为 No-Go。</p></div>
+            <div><b>可靠基础保留</b><p>cc-connect、飞书、确认账本、PIT 数据、不可变证据、调度、交付、审计和恢复不重写。</p></div>
+            <div><b>架构代码已收口</b><p>统一研究目录、决策与风控、执行与绩效闭环、市场日历、五个工作台和 22 个闭环完整的语义工具已通过开发验收。</p></div>
+            <div><b>尚未生产切换</b><p>旧 157 工具继续兼容；Plugin、固定 Runtime、Feature、Schedule、cc-connect 和飞书配置均未切换。</p></div>
           </div>
         </section>
       </section>

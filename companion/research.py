@@ -4,7 +4,7 @@ import json
 from decimal import Decimal
 from typing import Any
 
-from .core import CompanionError, canonical, digest, new_id
+from .foundation import CompanionError, canonical, digest, new_id
 from .db import row_dict, rows_dict
 from .timeutil import iso
 from .quant_runtime import RealitySpec, verify_artifact_hash
@@ -612,6 +612,10 @@ class ResearchRegistry:
         if not item:
             raise CompanionError(f"promotion decision not found: {promotion_id}")
         return item
+
+    def metric_failures(self, rules: Any, metrics: dict[str, Any]) -> list[str]:
+        """Public deterministic evaluator for preregistered Strategy thresholds."""
+        return self._metric_failures(rules, metrics)
 
     @staticmethod
     def _metric_failures(rules: Any, metrics: dict[str, Any]) -> list[str]:

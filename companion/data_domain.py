@@ -9,7 +9,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from .core import CompanionError, canonical, digest, new_id
+from .foundation import CompanionError, canonical, digest, new_id
 from .db import row_dict, rows_dict
 from .timeutil import iso, parse, utc_now
 from .v4_data import (
@@ -256,6 +256,31 @@ class DataDomain:
             if item["status"] not in {"ready","superseded"}:
                 raise CompanionError(f"artifact manifest is not consumable: {manifest_id} ({item['status']})")
         return item
+
+    def manifest_list(
+        self,
+        *,
+        kind: str | None = None,
+        status: str | None = "ready",
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """List immutable manifests through their verification boundary."""
+        if limit <= 0 or limit > 500:
+            raise CompanionError("artifact manifest limit must be within 1..500")
+        if status not in {None, "ready", "superseded"}:
+            raise CompanionError("artifact manifest status must be ready, superseded or None")
+        query, params = "SELECT id FROM artifact_manifests WHERE 1=1", []
+        if kind:
+            query += " AND kind=?"
+            params.append(kind)
+        if status:
+            query += " AND status=?"
+            params.append(status)
+        query += " ORDER BY created_at DESC,id DESC LIMIT ?"
+        params.append(limit)
+        with self.db.connect() as con:
+            manifest_ids = [row["id"] for row in con.execute(query, params).fetchall()]
+        return [self.manifest_get(item, verify=True) for item in manifest_ids]
 
     def snapshot_publish(
         self, manifest: DatasetSnapshotManifest | Mapping[str, Any]

@@ -18,13 +18,22 @@ Tushare 凭据放在本机的 `~/.config/tushare/token`（权限必须屏蔽 gro
 ## 架构
 
 ```text
-systemd timer → Companion Schedule/Run/Outbox → cc-connect
-              → Primary Codex → 短命 Scout/Gardener
-              → Markdown 文件句柄与 SQLite 精确状态
+用户 ↔ 飞书 / cc-connect ↔ Primary Investment Codex
+                         → Investment Home
+                         → 研究与验证 → 组合决策 → 风险闸门
+                         → 人工行动 → 确认账本 → 绩效与复盘
+
+横向平台：PIT 数据与证据、市场日历、Schedule/Run/Delivery、审计与版本
 ```
 
-从 [项目状态与交棒入口](docs/PROJECT-STATUS.md) 开始阅读。V4 是已冻结的专业研究内核基线；V5 把它组织为面向用户的个人投资经营系统；V6 增加独立预测复核；V7 增加[结果交付闭环](docs/V7-RESULT-DELIVERY.md)：完成卡片不能代替用户结果，required result 只有 cc-connect 实际发送成功后才算交付。其余设计见 [总体设计](docs/V5-DESIGN.md)、[架构决策](docs/V5-ARCHITECTURE-DECISIONS.md)、[验收契约](docs/V5-ACCEPTANCE.md)、[用户手册](docs/V5-USER-GUIDE.md)、[持续量化研究](docs/V5-CONTINUOUS-QUANT-RESEARCH.md) 与 [运维手册](docs/V5-OPERATIONS.md)。系统不自动交易或承诺盈利。
+从 [项目状态与交棒入口](docs/PROJECT-STATUS.md) 开始阅读。新的长期架构以[版本无关目标架构](docs/ARCHITECTURE.md)、[领域词典](docs/DOMAIN-GLOSSARY.md)、[架构升级实施计划](docs/REFACTOR-PLAN.md)和[生产灰度验收清单](docs/PRODUCTION-ROLLOUT-CHECKLIST.md)为准；V2–V7 文档继续保存历史决策、兼容契约与生产运行事实。系统不自动交易或承诺盈利。
 浏览器阅读入口为 [docs/index.html](docs/index.html)；它直接渲染上述权威 Markdown，不维护第二份易过期的文档副本。
+
+开发验收可用 `COMPANION_MCP_PROFILE=investment ./bin/companion-mcp` 启动 22 个版本无关语义接口；`admin` 只提供历史管理工具，`all` 保持迁移期兼容。固定生产 Runtime 当前仍使用 `all`，切换按[生产灰度验收清单](docs/PRODUCTION-ROLLOUT-CHECKLIST.md)执行。
+
+行动型 Decision 有两道独立硬门槛：研究必须先形成 `eligible_for_decision` 的不可变验证 Calculation，交易方案还必须通过当前 Mandate、确认账本和市场现实驱动的 Risk Gate。扫描榜单、`unvalidated` 预测和研究文字都不能直接授权行动。
+
+人工执行明确分为：接受 Action Card → 准备 Execution → 用户报告已下单 → 登记待确认成交 → 用户确认 Ledger → Execution 对账完成。前四步都不能改变真实持仓。飞书正式交互使用自然语言，Primary Codex 将用户意图映射到这些版本无关动作；不额外开发业务交互卡片。
 
 ## 验证
 

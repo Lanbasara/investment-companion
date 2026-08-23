@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from .core import CompanionError, canonical
+from .foundation import CompanionError, canonical
 from .timeutil import iso, parse, utc_now
 
 
@@ -595,7 +595,7 @@ class V6PredictiveRecommendations:
         signal_outcomes=[]
         for manifest_id in sorted(set(signal_outcome_manifest_ids or [])):
             item=self.c.data.manifest_get(manifest_id,verify=True)
-            if item["kind"]!=FUND_SIGNAL_OUTCOMES_KIND:raise CompanionError("V6 review signal input is not an outcome manifest")
+            if item["kind"] not in {FUND_SIGNAL_OUTCOMES_KIND,STOCK_SIGNAL_OUTCOMES_KIND}:raise CompanionError("V6 review signal input is not an outcome manifest")
             body=item["manifest"]["manifest"]
             if body.get("program_id")!=program_id:raise CompanionError("V6 signal outcome belongs to another program")
             signal_outcomes.extend(body.get("outcomes",[]))

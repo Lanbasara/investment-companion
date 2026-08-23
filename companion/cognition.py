@@ -7,7 +7,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
 
-from .core import CompanionError, canonical, digest, new_id
+from .foundation import CompanionError, canonical, digest, new_id
 from .db import row_dict, rows_dict
 from .financial import dec
 from .timeutil import iso, parse, utc_now
@@ -269,7 +269,9 @@ class CognitiveLedger:
             if decision_revision_id:
                 revision=self.revision_get(decision_revision_id)
                 if revision["object_id"]!=decision_id:raise CompanionError("execution decision revision belongs to another object")
+                if obj.get("current_revision_id")!=decision_revision_id:raise CompanionError("execution requires the current Decision revision")
                 if str(revision["metadata"].get("decision_contract_version"))=="4" and not manual_action_spec_hash:raise CompanionError("V4 execution requires ManualActionSpec hash")
+                if str(revision["metadata"].get("decision_contract_version"))=="1":self.c.actionability.validate_decision(decision_revision_id)
         if status not in {"proposed","presented"}:raise CompanionError("new execution must be proposed or presented")
         if manual_action_spec_hash and not decision_revision_id:raise CompanionError("ManualActionSpec hash requires exact decision_revision_id")
         if idempotency_key is not None and (not isinstance(idempotency_key,str) or not idempotency_key.strip()):raise CompanionError("Execution idempotency_key must be a non-empty string")
@@ -288,22 +290,29 @@ class CognitiveLedger:
         if not item:raise CompanionError(f"execution not found: {execution_id}")
         return item
 
-    def execution_set_status(self,execution_id:str,status:str,ledger_entry_ids:list[str]|None=None,reason:str|None=None)->dict:
+    def execution_set_status(self,execution_id:str,status:str,ledger_entry_ids:list[str]|None=None,reason:str|None=None,revalidate_action:bool=True)->dict:
         allowed={"presented","accepted","rejected","ordered","partially_filled","filled","cancelled","expired","superseded","deviated"}
         if status not in allowed:raise CompanionError("invalid execution status")
         if status in {"rejected","cancelled","expired","superseded","deviated"} and (not isinstance(reason,str) or not reason.strip()):raise CompanionError(f"Execution {status} requires a reason")
-        if status in {"presented","accepted","ordered"}:self.c.jobs.decision_support_require()
         item=self.execution_get(execution_id);ids=ledger_entry_ids or item["ledger_entry_ids"]
+        revision=self.revision_get(item["decision_revision_id"]) if item.get("decision_revision_id") else None
+        contract=str(revision["metadata"].get("decision_contract_version")) if revision else ""
+        if status in {"presented","accepted","ordered"}:
+            if contract=="1":
+                if revalidate_action:self.c.actionability.validate_decision(revision["id"])
+            else:self.c.jobs.decision_support_require()
         if item["status"]==status:
-            if ledger_entry_ids is not None and canonical(ledger_entry_ids)!=canonical(item["ledger_entry_ids"]):raise CompanionError("idempotent Execution transition supplied different ledger entries")
-            if reason is not None and reason!=item.get("status_reason"):raise CompanionError("idempotent Execution transition supplied a different reason")
-            return item
+            if status=="partially_filled" and ledger_entry_ids is not None and set(item["ledger_entry_ids"])<set(ledger_entry_ids):pass
+            else:
+                if ledger_entry_ids is not None and canonical(ledger_entry_ids)!=canonical(item["ledger_entry_ids"]):raise CompanionError("idempotent Execution transition supplied different ledger entries")
+                if reason is not None and reason!=item.get("status_reason"):raise CompanionError("idempotent Execution transition supplied a different reason")
+                return item
         transitions={
             "proposed":{"presented","accepted","cancelled","expired","superseded"},
             "presented":{"accepted","rejected","cancelled","expired","superseded"},
             "accepted":{"ordered","rejected","cancelled","expired","superseded"},
             "ordered":{"partially_filled","filled","cancelled","expired","deviated"},
-            "partially_filled":{"filled","cancelled","expired","deviated"},
+            "partially_filled":{"partially_filled","filled","cancelled","expired","deviated"},
         }
         if status not in transitions.get(item["status"],set()):raise CompanionError(f"invalid execution transition: {item['status']} -> {status}")
         action=self._manual_action_by_hash(item["manual_action_spec_hash"]) if item.get("manual_action_spec_hash") else None
@@ -341,7 +350,7 @@ class CognitiveLedger:
                     expected_side=item["details"].get("side")
                     if ledger["entry_type"]!="trade":raise CompanionError("Execution fill requires a confirmed trade ledger entry")
                     if expected_asset and ledger.get("asset_id")!=expected_asset:raise CompanionError("Execution fill ledger asset mismatch")
-                    quantity=float(ledger.get("quantity_text") or 0)
+                    quantity=Decimal(str(ledger.get("quantity_text") or 0))
                     if (expected_side=="buy" and quantity<=0) or (expected_side in {"sell","reduce"} and quantity>=0):raise CompanionError("Execution fill ledger side mismatch")
             if action_quantity is not None:
                 if status=="filled" and matched_quantity!=action_quantity:raise CompanionError("filled Execution quantity differs from ManualActionSpec")
@@ -464,7 +473,20 @@ class CognitiveLedger:
             quantum=Decimal(str(reality["money_quantum"]));commission=max(Decimal(str(reality["minimum_commission"])),gross*Decimal(str(reality["commission_rate"])))
             tax=gross*Decimal(str(reality["sell_stamp_duty_rate"])) if signed<0 else Decimal("0")
             estimated_fee=(commission+tax).quantize(quantum,rounding=ROUND_HALF_UP)
-            impact=self.c.financial.trade_impact(iso(now),item["spec"]["account_id"],item["spec"]["asset_id"],str(signed),market["value_text"],str(estimated_fee),current_mandate["content"] if current_mandate else None)
+            impact=self.c.risk.assess_trade(
+                as_of=iso(now),
+                account_id=item["spec"]["account_id"],
+                asset_id=item["spec"]["asset_id"],
+                quantity=str(signed),
+                price=market["value_text"],
+                fee=str(estimated_fee),
+                mandate=current_mandate["content"] if current_mandate else None,
+                reality_spec=reality,
+                market_snapshot_id=market["id"],
+                max_market_age_seconds=int(item["spec"]["max_quote_age_seconds"]),
+                valid_until=item["valid_until"],
+                price_range=item["spec"]["price_range"],
+            )
             if impact["blocked"]:reasons.append("current_constraints_block_action")
             if portfolio.get("warnings"):reasons.append("portfolio_state_incomplete")
         if reasons and item["status"] not in {"rejected","cancelled","superseded"}:

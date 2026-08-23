@@ -8,7 +8,7 @@ import pytest
 from companion.core import Companion, CompanionError
 from companion.governance import GATE_CHECKLISTS
 from companion.timeutil import iso, utc_now
-from companion.v6_predictive_recommendations import FUND_CANDIDATE_HANDLER, FUND_HANDLER, FUND_SIGNAL_HANDLER, STOCK_HANDLER, V6_MODE
+from companion.v6_predictive_recommendations import FUND_CANDIDATE_HANDLER, FUND_HANDLER, FUND_SIGNAL_HANDLER, STOCK_HANDLER, STOCK_SIGNAL_OUTCOMES_KIND, STOCK_SIGNAL_OUTCOMES_SCHEMA, V6_MODE
 
 
 def pass_g0(companion: Companion) -> None:
@@ -370,3 +370,34 @@ def test_v6_feedback_review_reports_insufficient_evidence_and_never_mutates_stra
     assert body["assessment"]["status"] == "insufficient_evidence"
     assert body["assessment"]["automatic_strategy_change"] is False
     assert companion.jobs.definition_for_handler(STOCK_HANDLER)["status"] == "active"
+
+
+def test_v6_review_accepts_stock_provisional_signal_outcomes(tmp_path: Path):
+    companion = setup_v6(tmp_path)
+    outcome = companion.data.manifest_publish(
+        kind=STOCK_SIGNAL_OUTCOMES_KIND,
+        schema_version=STOCK_SIGNAL_OUTCOMES_SCHEMA,
+        manifest={
+            "program_id": "pytest-v6",
+            "signal_manifest_id": "fixture-stock-signal",
+            "observed_at": iso(),
+            "outcomes": [
+                {
+                    "task_line": "stock",
+                    "asset_id": "tushare:601000.SH",
+                    "direction_correct": True,
+                }
+            ],
+        },
+    )
+
+    review = companion.v6_predictive.review(
+        program_id="pytest-v6",
+        feedback_manifest_ids=[],
+        signal_outcome_manifest_ids=[outcome["id"]],
+        reviewed_at=iso(),
+    )
+
+    settled = review["manifest"]["manifest"]["provisional_signal_outcomes"]
+    assert settled["observations"] == 1
+    assert settled["task_lines"]["stock"]["direction_correct_count"] == 1

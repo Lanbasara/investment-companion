@@ -6,17 +6,15 @@ import sys
 from typing import Any, Callable
 
 from .core import Companion, CompanionError
+from .interfaces.mcp_profiles import INVESTMENT_TOOLS, active_tools, call_investment
 
 ROOT=os.environ.get("COMPANION_ROOT","/home/ghk/investment-home")
 C=Companion(ROOT)
 
-
 def schema(properties:dict[str,Any]|None=None,required:list[str]|None=None)->dict[str,Any]:
     return {"type":"object","properties":properties or {},"required":required or [],"additionalProperties":False}
 
-
 S={"type":"string"};I={"type":"integer"};O={"type":"object","additionalProperties":True}
-
 TOOLS={
  "schedule_create":("创建可管理的主动计划。确定性任务必须引用已激活的 JobDefinition。",schema({"name":S,"kind":{"type":"string","enum":["patrol","review","maintenance","one_shot"]},"mission":S,"cadence":O,"scope":O,"policy":O,"origin":O,"timezone":S,"dispatch_type":{"type":"string","enum":["codex_turn","deterministic_pipeline"]},"job_definition_id":S},["name","kind","mission","cadence"])),
  "schedule_list":("列出主动计划及其状态和下次运行时间。",schema({"status":S,"kind":S})),
@@ -159,7 +157,7 @@ TOOLS={
  "v5_opportunity_create":("把有不可变证据来源的想法登记为 observed 机会；不是选股结论。",schema({"subject":O,"evidence_refs":{"type":"array","items":S},"reason":S,"program_id":S,"thesis_id":S,"strategy_version_id":S},["subject","evidence_refs","reason"])),
  "v5_opportunity_get":("读取机会、证据成熟度和完整转换历史。",schema({"opportunity_id":S},["opportunity_id"])),
  "v5_opportunity_list":("读取机会漏斗；stage 是证据成熟度，不是模型置信概率。",schema({"program_id":S,"stage":S,"status":S,"limit":I})),
- "v5_opportunity_transition":("按严格顺序推进机会证据；actionable 必须绑定当前有效 Decision。",schema({"opportunity_id":S,"expected_version":I,"to_stage":S,"to_status":S,"evidence_refs":{"type":"array","items":S},"reason":S,"qualification":O,"decision_revision_id":S,"idempotency_key":S},["opportunity_id","expected_version","to_stage","to_status","evidence_refs","reason"])),
+ "v5_opportunity_transition":("按严格顺序推进机会证据；qualified 必须引用 Research Validation Calculation，actionable 还必须绑定当前有效 Decision 与 Risk Gate。",schema({"opportunity_id":S,"expected_version":I,"to_stage":S,"to_status":S,"evidence_refs":{"type":"array","items":S},"reason":S,"qualification":O,"decision_revision_id":S,"idempotency_key":S},["opportunity_id","expected_version","to_stage","to_status","evidence_refs","reason"])),
  "v5_decision_queue_enqueue":("把 actionable Opportunity 的当前 Decision 放入人工决策队列；不创建 Execution。",schema({"opportunity_id":S,"decision_revision_id":S,"manual_action_spec_id":S,"valid_until":S,"idempotency_key":S},["opportunity_id","decision_revision_id"])),
  "v5_decision_queue_get":("读取一个用户决策队列项。",schema({"queue_id":S},["queue_id"])),
  "v5_decision_queue_list":("列出用户决策队列；过期项会确定性失效。",schema({"program_id":S,"state":S,"limit":I})),
@@ -179,11 +177,12 @@ TOOLS={
 
 
 def call(name:str,a:dict[str,Any]):
-    definition=TOOLS.get(name)
+    definition=active_tools(TOOLS).get(name)
     if not definition:raise CompanionError(f"unknown tool: {name}")
     from .jobs import _validate_schema
     _validate_schema(a,definition[1],f"{name} arguments")
     actor="primary-codex"
+    if name in INVESTMENT_TOOLS:return call_investment(C,name,a,actor)
     if name=="schedule_create":return C.schedule_create(**a,actor=actor)
     if name=="schedule_list":return C.schedule_list(a.get("status"),a.get("kind"))
     if name=="schedule_get":return C.schedule_get(a["schedule_id"])
@@ -343,7 +342,7 @@ def reply(request:dict[str,Any])->dict[str,Any]|None:
     method=request.get("method");rid=request.get("id")
     if rid is None:return None
     if method=="initialize":result={"protocolVersion":"2025-06-18","capabilities":{"tools":{"listChanged":False}},"serverInfo":{"name":"investment-companion","version":"7.0.0"}}
-    elif method=="tools/list":result={"tools":[{"name":n,"description":d,"inputSchema":s} for n,(d,s) in TOOLS.items()]}
+    elif method=="tools/list":result={"tools":[{"name":n,"description":d,"inputSchema":s} for n,(d,s) in active_tools(TOOLS).items()]}
     elif method=="tools/call":
         p=request.get("params",{})
         try:

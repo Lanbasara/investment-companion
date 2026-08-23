@@ -12,7 +12,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable
 
-from .core import CompanionError, canonical, digest
+from .foundation import CompanionError, canonical, digest
 
 
 TUSHARE_URL = "https://api.tushare.pro"

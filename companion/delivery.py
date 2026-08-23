@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .core import CompanionError, canonical, digest, new_id
+from .foundation import CompanionError, canonical, digest, new_id
 from .db import row_dict, rows_dict
 from .timeutil import iso, parse, utc_now
 
@@ -197,7 +197,7 @@ class DeliveryEngine:
             ).rowcount
             if changed != 1:
                 raise CompanionError("delivery preparation lost to another writer")
-            self.c._audit(con, "primary-codex", "prepare", "delivery_record", item["id"], before={"status": item["status"]}, after={"status": status, "content_hash": content_hash})
+            self.c.audit.record(con, "primary-codex", "prepare", "delivery_record", item["id"], before={"status": item["status"]}, after={"status": status, "content_hash": content_hash})
         return self.get(delivery_id)
 
     def digest_send(self, delivery_ids: list[str], *, conclusion: str, summary: str, key_evidence: list[str], next_step: str, next_check_at: str | None = None, source_refs: list[str] | None = None) -> list[dict[str, Any]]:

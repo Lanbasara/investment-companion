@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from .core import CompanionError, canonical, digest
+from .foundation import CompanionError, canonical, digest
 from .db import row_dict, rows_dict
 from .timeutil import iso, parse, utc_now
 from .tushare_adapter import NORMALIZER_VERSION, TushareAdapter
@@ -282,12 +282,12 @@ class ContinuousQuantResearch:
                 "job_run_ids": [job["id"]],
                 "next": "run the deterministic worker, then call prepare_backfill again",
             }
-        open_dates = sorted(
-            {row["date"].replace("-", "") for row in calendar if row.get("is_open") is True and row["date"] <= through_iso}
-        )
-        selected = open_dates[-sessions:]
-        if len(selected) < sessions:
-            raise CompanionError(f"calendar has only {len(selected)} open sessions through {through_iso}")
+        selected = [
+            day.replace("-", "")
+            for day in self.c.market_calendar.sessions_through(
+                calendar, through=through_iso, count=sessions
+            )
+        ]
         jobs = []
         skipped = []
         for day in selected:
@@ -721,10 +721,8 @@ class ContinuousQuantResearch:
             )
         previous = self._latest_scan(config["program_id"], before_date=as_of)
         calendar = self._calendar_rows(cutoff)
-        future_open = sorted(
-            {row["date"] for row in calendar if row.get("is_open") is True and row["date"] > as_of}
-        )
-        if not future_open:
+        effective_on = self.c.market_calendar.next_open_session(calendar, after=as_of)
+        if effective_on is None:
             return self._publish_nonready_scan(
                 context,
                 config,
@@ -732,7 +730,6 @@ class ContinuousQuantResearch:
                 {"as_of": as_of},
                 input_ids,
             )
-        effective_on = future_open[0]
         forward_observation_eligible = self._generated_before_effective_open(
             context["inputs"]["knowledge_cutoff"], effective_on
         )
@@ -1542,12 +1539,8 @@ class ContinuousQuantResearch:
             exchange == "SZ" and code.startswith(("000", "001", "002", "003"))
         )
 
-    @staticmethod
-    def _generated_before_effective_open(knowledge_cutoff: str, effective_on: str) -> bool:
-        market_open = datetime.fromisoformat(f"{effective_on}T09:30:00").replace(
-            tzinfo=ZoneInfo("Asia/Shanghai")
-        )
-        return parse(knowledge_cutoff) < market_open
+    def _generated_before_effective_open(self, knowledge_cutoff: str, effective_on: str) -> bool:
+        return self.c.market_calendar.generated_before_open(knowledge_cutoff, effective_on)
 
     @staticmethod
     def _volatility(closes: list[Decimal]) -> Decimal:

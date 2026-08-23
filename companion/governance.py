@@ -4,7 +4,7 @@ import subprocess
 from datetime import timedelta
 from typing import Any
 
-from .core import CompanionError, canonical, new_id
+from .foundation import CompanionError, canonical, new_id
 from .db import SCHEMA_VERSION, row_dict, rows_dict
 from .timeutil import iso, parse, utc_now
 

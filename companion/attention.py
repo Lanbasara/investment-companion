@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from .core import CompanionError, canonical, digest, new_id
+from .foundation import CompanionError, canonical, digest, new_id
 from .db import row_dict, rows_dict
 from .timeutil import iso, utc_now
 

@@ -311,6 +311,21 @@ def test_latest_schema_requires_explicit_migration_and_is_repeatable(tmp_path: P
     assert len(companion.system_status()["migrations"])==5
 
 
+def test_doctor_survives_system_operations_extraction(tmp_path: Path):
+    root = tmp_path / "workspace"
+    companion = new_companion(root)
+
+    result = companion.doctor()
+
+    assert result["checks"]["database_integrity"] is True
+    assert result["checks"]["workspace_writable"] is True
+
+    (root / ".codex" / "agents").mkdir(parents=True)
+    (root / ".codex" / "config.toml").write_text("", encoding="utf-8")
+    configured_result = companion.doctor()
+    assert configured_result["checks"]["custom_agent_config"] is False
+
+
 def test_failed_migration_rolls_back_schema_changes(tmp_path: Path):
     root=tmp_path/"workspace";root.mkdir();db=root/".state"/"companion.db";db.parent.mkdir();v3_database(db)
     con=sqlite3.connect(db);con.execute("CREATE TABLE feature_flags(key TEXT PRIMARY KEY)");con.commit();con.close()
