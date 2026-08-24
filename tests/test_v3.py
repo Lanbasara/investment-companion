@@ -102,6 +102,33 @@ class V3Test(unittest.TestCase):
         self.assertTrue(matched["reconciliation"]["full_scope_matched"])
         self.assertEqual(matched["differences"],[])
 
+    def test_portfolio_and_reconciliation_compare_timestamp_instants_across_offsets(self):
+        opening=self.c.financial.ledger_add(account_id=self.account["id"],entry_type="opening_balance",occurred_at="2026-08-24T13:00:00+08:00",amount="1000",currency="CNY",source="statement");self.c.financial.ledger_confirm(opening["id"])
+        trade=self.c.financial.ledger_add(account_id=self.account["id"],entry_type="trade",asset_id=self.asset["id"],occurred_at="2026-08-24T13:10:00+08:00",quantity="100",price="1",amount="-100",currency="CNY",source="statement");self.c.financial.ledger_confirm(trade["id"])
+        market=self.c.financial.market_add(self.asset["id"],"close","2","2026-08-24T13:21:00+08:00","statement")
+        self.assertEqual(market["observed_at"],"2026-08-24T05:21:00Z")
+        with self.c.db.transaction() as con:
+            con.execute("UPDATE market_snapshots SET observed_at=? WHERE id=?",("2026-08-24T13:21:00+08:00",market["id"]))
+
+        state=self.c.financial.portfolio_state("2026-08-24T06:08:00Z",self.account["id"])
+        self.assertEqual(state["cash"],{"CNY":"900"})
+        self.assertEqual(state["positions"][0]["price"],"2")
+        self.assertEqual(state["total_by_currency"],{"CNY":"1100"})
+
+        matched=self.c.financial.reconcile(self.account["id"],"2026-08-24T13:21:00+08:00",{
+            "cash":{"CNY":"900"},
+            "positions":{self.asset["id"]:"100"},
+            "position_values":{self.asset["id"]:"200"},
+            "position_total_by_currency":{"CNY":"200"},
+            "total_by_currency":{"CNY":"1100"},
+        })
+        with self.c.db.transaction() as con:
+            con.execute("UPDATE reconciliations SET as_of=? WHERE id=?",("2026-08-24T13:21:00+08:00",matched["id"]))
+        context=self.c.investment.portfolio_context(account_id=self.account["id"],as_of="2026-08-24T06:08:00Z")
+        self.assertEqual(context["truth_freshness"]["reconciliation_id"],matched["id"])
+        self.assertEqual(context["truth_freshness"]["status"],"recently_reconciled")
+        self.assertTrue(context["truth_freshness"]["full_scope_matched"])
+
     def test_csv_import_stays_unconfirmed_and_source_health_is_explicit(self):
         content=f"account_id,entry_type,occurred_at,amount,currency,external_id\n{self.account['id']},cash_deposit,2026-01-01T00:00:00Z,500,CNY,x1\n"
         imported=self.c.financial.ledger_import_csv(content)

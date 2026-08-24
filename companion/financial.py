@@ -184,7 +184,7 @@ class FinancialKernel:
         return confirmed
 
     def market_add(self, asset_id: str, metric: str, value: Any, observed_at: str, source: str, quality: str = "healthy", currency: str | None = None, metadata: dict | None = None) -> dict:
-        self.asset_get(asset_id);value_d=dec(value);fp=digest(asset_id,metric,dtext(value_d),observed_at,source);mid=new_id("mkt");now=iso()
+        self.asset_get(asset_id);value_d=dec(value);observed_at=iso(parse(observed_at));fp=digest(asset_id,metric,dtext(value_d),observed_at,source);mid=new_id("mkt");now=iso()
         allowed={"healthy","stale","partial","conflicting","unauthorized","failed","unknown"}
         if quality not in allowed:raise CompanionError("invalid market quality")
         with self.db.transaction() as con:
@@ -192,7 +192,8 @@ class FinancialKernel:
         return row_dict(row)
 
     def portfolio_state(self, as_of: str, account_id: str | None = None, prices: dict[str,Any] | None = None) -> dict:
-        q="SELECT * FROM ledger_entries WHERE status IN ('confirmed','reversed') AND occurred_at<=?";p=[as_of]
+        as_of=iso(parse(as_of))
+        q="SELECT * FROM ledger_entries WHERE status IN ('confirmed','reversed') AND julianday(occurred_at)<=julianday(?)";p=[as_of]
         if account_id:q+=" AND account_id=?";p.append(account_id)
         with self.db.connect() as con:entries=rows_dict(con.execute(q,p).fetchall())
         cash:dict[str,Decimal]={};positions:dict[str,Decimal]={};warnings=[]
@@ -205,7 +206,7 @@ class FinancialKernel:
             asset=self.asset_get(aid);price=None;quality=None;observed=None
             if prices and aid in prices:price=dec(prices[aid]);quality="provided"
             else:
-                with self.db.connect() as con:r=con.execute("SELECT * FROM market_snapshots WHERE asset_id=? AND metric='close' AND observed_at<=? ORDER BY observed_at DESC LIMIT 1",(aid,as_of)).fetchone()
+                with self.db.connect() as con:r=con.execute("SELECT * FROM market_snapshots WHERE asset_id=? AND metric='close' AND julianday(observed_at)<=julianday(?) ORDER BY julianday(observed_at) DESC,rowid DESC LIMIT 1",(aid,as_of)).fetchone()
                 if r:price=dec(r["value_text"]);quality=r["quality"];observed=r["observed_at"]
             value=qty*price if price is not None else None
             if value is None:warnings.append(f"missing price for {aid}")
@@ -439,6 +440,7 @@ class FinancialKernel:
     def reconcile(self, account_id: str, as_of: str, statement: dict, source_ref: str | None = None) -> dict:
         if not isinstance(statement, dict):
             raise CompanionError("reconciliation statement must be an object")
+        as_of = iso(parse(as_of))
         computed = self.portfolio_state(as_of, account_id)
         differences: list[dict[str, Any]] = []
         scope_status: dict[str, dict[str, Any]] = {}

@@ -175,15 +175,17 @@ class InvestmentHomeService:
         with self.c.db.connect() as con:
             reconciliation = row_dict(
                 con.execute(
-                    "SELECT * FROM reconciliations WHERE account_id=? AND as_of<=? "
-                    "ORDER BY as_of DESC,rowid DESC LIMIT 1",
+                    "SELECT * FROM reconciliations WHERE account_id=? "
+                    "AND julianday(as_of)<=julianday(?) "
+                    "ORDER BY julianday(as_of) DESC,rowid DESC LIMIT 1",
                     (account_id, effective_at),
                 ).fetchone()
             )
             ledger = con.execute(
                 "SELECT occurred_at,id FROM ledger_entries WHERE account_id=? "
-                "AND status IN ('confirmed','reversed') AND occurred_at<=? "
-                "ORDER BY occurred_at DESC,id DESC LIMIT 1",
+                "AND status IN ('confirmed','reversed') "
+                "AND julianday(occurred_at)<=julianday(?) "
+                "ORDER BY julianday(occurred_at) DESC,rowid DESC LIMIT 1",
                 (account_id, effective_at),
             ).fetchone()
         full_scope_matched = reconciliation_is_full_match(reconciliation)

@@ -270,7 +270,7 @@ class InvestmentBriefingService:
         with self.c.db.connect() as con:
             rows = rows_dict(
                 con.execute(
-                    f"SELECT * FROM reconciliations WHERE account_id IN ({placeholders}) ORDER BY account_id,as_of DESC,rowid DESC",
+                    f"SELECT * FROM reconciliations WHERE account_id IN ({placeholders}) ORDER BY account_id,julianday(as_of) DESC,rowid DESC",
                     tuple(account_ids),
                 ).fetchall()
             )
@@ -292,11 +292,11 @@ class InvestmentBriefingService:
         query = (
             f"SELECT id,occurred_at,action,entity_id FROM audit_log "
             f"WHERE entity_type='execution' AND entity_id IN ({placeholders}) "
-            "AND occurred_at<=?"
+            "AND julianday(occurred_at)<=julianday(?)"
         )
         params: list[Any] = [*sorted(execution_ids), as_of]
         if since:
-            query += " AND occurred_at>?"
+            query += " AND julianday(occurred_at)>julianday(?)"
             params.append(since)
         query += " ORDER BY occurred_at,id"
         with self.c.db.connect() as con:
