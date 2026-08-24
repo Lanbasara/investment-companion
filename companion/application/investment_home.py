@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..db import row_dict
+from ..financial import reconciliation_is_full_match
 from ..foundation import CompanionError
 from ..timeutil import iso, parse
 
@@ -171,35 +173,49 @@ class InvestmentHomeService:
     def _portfolio_truth_freshness(self, account_id: str, effective_at: str) -> dict[str, Any]:
         cutoff = parse(effective_at)
         with self.c.db.connect() as con:
-            reconciliation = con.execute(
-                "SELECT as_of,id FROM reconciliations WHERE account_id=? AND as_of<=? "
-                "ORDER BY as_of DESC,id DESC LIMIT 1",
-                (account_id, effective_at),
-            ).fetchone()
+            reconciliation = row_dict(
+                con.execute(
+                    "SELECT * FROM reconciliations WHERE account_id=? AND as_of<=? "
+                    "ORDER BY as_of DESC,rowid DESC LIMIT 1",
+                    (account_id, effective_at),
+                ).fetchone()
+            )
             ledger = con.execute(
                 "SELECT occurred_at,id FROM ledger_entries WHERE account_id=? "
                 "AND status IN ('confirmed','reversed') AND occurred_at<=? "
                 "ORDER BY occurred_at DESC,id DESC LIMIT 1",
                 (account_id, effective_at),
             ).fetchone()
-        verified_at = reconciliation["as_of"] if reconciliation else None
+        full_scope_matched = reconciliation_is_full_match(reconciliation)
+        verified_at = reconciliation["as_of"] if full_scope_matched else None
         latest_ledger_at = ledger["occurred_at"] if ledger else None
         age_seconds = max(0, int((cutoff - parse(verified_at)).total_seconds())) if verified_at else None
         stale_after_seconds = 3 * 24 * 60 * 60
         stale = verified_at is None or age_seconds is None or age_seconds > stale_after_seconds
+        if reconciliation and not full_scope_matched:
+            status = "reconciliation_needs_review"
+            warning = (
+                "latest reconciliation did not match cash, positions, valuations, and total value"
+            )
+        elif stale:
+            status = "stale"
+            warning = (
+                "confirmed ledger is not proof of the current broker position; reconcile a current statement"
+            )
+        else:
+            status = "recently_reconciled"
+            warning = None
         return {
             "verified_at": verified_at,
             "reconciliation_id": reconciliation["id"] if reconciliation else None,
+            "latest_reconciliation_as_of": reconciliation["as_of"] if reconciliation else None,
+            "full_scope_matched": full_scope_matched,
             "latest_confirmed_ledger_at": latest_ledger_at,
             "age_seconds": age_seconds,
             "stale_after_seconds": stale_after_seconds,
-            "status": "stale" if stale else "recently_reconciled",
+            "status": status,
             "stale": stale,
-            "warning": (
-                "confirmed ledger is not proof of the current broker position; reconcile a current statement"
-                if stale
-                else None
-            ),
+            "warning": warning,
         }
 
     def research_context(

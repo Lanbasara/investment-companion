@@ -5,6 +5,7 @@ from datetime import timedelta
 from typing import Any
 
 from ..db import rows_dict
+from ..financial import reconciliation_is_full_match
 from ..foundation import CompanionError
 from ..timeutil import iso, parse, utc_now
 
@@ -115,7 +116,7 @@ class InvestmentBriefingService:
         if reconciliation["needs_review_ids"]:
             return {
                 "mode": "review_required",
-                "message": f"有 {len(reconciliation['needs_review_ids'])} 个账户对账结果存在差异，需要核验。",
+                "message": f"有 {len(reconciliation['needs_review_ids'])} 个账户对账结果存在差异或口径不完整，需要核验。",
             }
         material_events = [
             item
@@ -269,7 +270,7 @@ class InvestmentBriefingService:
         with self.c.db.connect() as con:
             rows = rows_dict(
                 con.execute(
-                    f"SELECT * FROM reconciliations WHERE account_id IN ({placeholders}) ORDER BY account_id,as_of DESC,created_at DESC",
+                    f"SELECT * FROM reconciliations WHERE account_id IN ({placeholders}) ORDER BY account_id,as_of DESC,rowid DESC",
                     tuple(account_ids),
                 ).fetchall()
             )
@@ -313,12 +314,15 @@ class InvestmentBriefingService:
                     "account_id": item["account_id"],
                     "as_of": item["as_of"],
                     "status": item["status"],
+                    "full_scope_matched": reconciliation_is_full_match(item),
                     "difference_count": len(item["differences"]),
                 }
                 for item in reconciliations
             ],
             "needs_review_ids": sorted(
-                item["id"] for item in reconciliations if item["status"] == "needs_review"
+                item["id"]
+                for item in reconciliations
+                if not reconciliation_is_full_match(item)
             ),
             "missing_account_ids": sorted(
                 account_id for account_id in account_ids if account_id not in by_account
@@ -368,6 +372,7 @@ class InvestmentBriefingService:
             "account_id": item["account_id"],
             "as_of": item["as_of"],
             "status": item["status"],
+            "full_scope_matched": reconciliation_is_full_match(item),
             "difference_count": len(item["differences"]),
             "source_ref": item.get("source_ref"),
             "created_at": item["created_at"],

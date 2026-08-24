@@ -13,6 +13,8 @@ from .timeutil import iso, parse
 
 getcontext().prec = 34
 ENGINE_VERSION = "financial-kernel-4.0.0"
+RECONCILIATION_SCHEMA = "investment-companion.account-reconciliation/v2"
+RECONCILIATION_SCOPES = ("cash", "positions", "valuations", "total_value")
 SUPPORTED_MANDATE_CONSTRAINTS={
     "minimum_cash","max_position_weight","max_single_position_weight",
     "prohibited_asset_ids","forbidden_asset_ids","allowed_asset_ids",
@@ -32,6 +34,22 @@ def dec(value: Any, field: str = "value") -> Decimal:
 
 def dtext(value: Decimal) -> str:
     return format(value.normalize(), "f") if value else "0"
+
+
+def reconciliation_is_full_match(reconciliation: dict[str, Any] | None) -> bool:
+    """Only a v2 reconciliation covering every account dimension proves a match."""
+    if not reconciliation or reconciliation.get("status") != "matched":
+        return False
+    computed = reconciliation.get("computed")
+    if not isinstance(computed, dict):
+        return False
+    scope = computed.get("reconciliation")
+    return bool(
+        isinstance(scope, dict)
+        and scope.get("schema") == RECONCILIATION_SCHEMA
+        and scope.get("required_scopes") == list(RECONCILIATION_SCOPES)
+        and scope.get("full_scope_matched") is True
+    )
 
 
 def mandate_constraints(mandate:dict[str,Any]|None)->dict[str,Any]:
@@ -419,15 +437,234 @@ class FinancialKernel:
         return row_dict(row)
 
     def reconcile(self, account_id: str, as_of: str, statement: dict, source_ref: str | None = None) -> dict:
-        computed=self.portfolio_state(as_of,account_id);differences=[]
-        for currency,expected in statement.get("cash",{}).items():
-            actual=dec(computed["cash"].get(currency,"0"));delta=actual-dec(expected)
-            if delta:differences.append({"kind":"cash","currency":currency,"statement":str(expected),"computed":dtext(actual),"difference":dtext(delta)})
-        expected_positions={k:dec(v) for k,v in statement.get("positions",{}).items()};actual_positions={p["asset_id"]:dec(p["quantity"]) for p in computed["positions"]}
-        for aid in sorted(set(expected_positions)|set(actual_positions)):
-            delta=actual_positions.get(aid,Decimal(0))-expected_positions.get(aid,Decimal(0))
-            if delta:difference={"kind":"position","asset_id":aid,"statement":dtext(expected_positions.get(aid,Decimal(0))),"computed":dtext(actual_positions.get(aid,Decimal(0))),"difference":dtext(delta)};differences.append(difference)
-        rid,now=new_id("recon"),iso();status="matched" if not differences else "needs_review"
+        if not isinstance(statement, dict):
+            raise CompanionError("reconciliation statement must be an object")
+        computed = self.portfolio_state(as_of, account_id)
+        differences: list[dict[str, Any]] = []
+        scope_status: dict[str, dict[str, Any]] = {}
+
+        def mapping(field: str) -> dict[str, Any] | None:
+            if field not in statement:
+                return None
+            value = statement[field]
+            if not isinstance(value, dict):
+                raise CompanionError(f"reconciliation statement {field} must be an object")
+            return value
+
+        def missing_scope(scope: str, fields: list[str]) -> None:
+            differences.append(
+                {"kind": "unverified_scope", "scope": scope, "missing_fields": fields}
+            )
+            scope_status[scope] = {
+                "status": "unverified",
+                "difference_count": 1,
+            }
+
+        def finish_scope(scope: str, start: int) -> None:
+            count = len(differences) - start
+            scope_status[scope] = {
+                "status": "matched" if count == 0 else "mismatched",
+                "difference_count": count,
+            }
+
+        cash = mapping("cash")
+        if cash is None:
+            missing_scope("cash", ["cash"])
+        else:
+            start = len(differences)
+            expected_cash = {
+                currency: dec(value, f"statement.cash.{currency}")
+                for currency, value in cash.items()
+            }
+            actual_cash = {
+                currency: dec(value, f"computed.cash.{currency}")
+                for currency, value in computed["cash"].items()
+            }
+            for currency in sorted(set(expected_cash) | set(actual_cash)):
+                expected = expected_cash.get(currency, Decimal(0))
+                actual = actual_cash.get(currency, Decimal(0))
+                delta = actual - expected
+                if delta:
+                    differences.append(
+                        {
+                            "kind": "cash",
+                            "scope": "cash",
+                            "currency": currency,
+                            "statement": dtext(expected),
+                            "computed": dtext(actual),
+                            "difference": dtext(delta),
+                        }
+                    )
+            finish_scope("cash", start)
+
+        positions = mapping("positions")
+        if positions is None:
+            missing_scope("positions", ["positions"])
+        else:
+            start = len(differences)
+            expected_positions = {
+                asset_id: dec(value, f"statement.positions.{asset_id}")
+                for asset_id, value in positions.items()
+            }
+            actual_positions = {
+                item["asset_id"]: dec(item["quantity"], f"computed.positions.{item['asset_id']}")
+                for item in computed["positions"]
+            }
+            for asset_id in sorted(set(expected_positions) | set(actual_positions)):
+                expected = expected_positions.get(asset_id, Decimal(0))
+                actual = actual_positions.get(asset_id, Decimal(0))
+                delta = actual - expected
+                if delta:
+                    differences.append(
+                        {
+                            "kind": "position",
+                            "scope": "positions",
+                            "asset_id": asset_id,
+                            "statement": dtext(expected),
+                            "computed": dtext(actual),
+                            "difference": dtext(delta),
+                        }
+                    )
+            finish_scope("positions", start)
+
+        position_values = mapping("position_values")
+        position_totals = mapping("position_total_by_currency")
+        valuation_missing = [
+            field
+            for field, value in (
+                ("position_values", position_values),
+                ("position_total_by_currency", position_totals),
+            )
+            if value is None
+        ]
+        if valuation_missing:
+            missing_scope("valuations", valuation_missing)
+        else:
+            start = len(differences)
+            expected_values = {
+                asset_id: dec(value, f"statement.position_values.{asset_id}")
+                for asset_id, value in position_values.items()
+            }
+            actual_values: dict[str, Decimal | None] = {}
+            actual_position_totals: dict[str, Decimal] = {}
+            for item in computed["positions"]:
+                asset_id = item["asset_id"]
+                if item["market_value"] is None:
+                    actual_values[asset_id] = None
+                    differences.append(
+                        {
+                            "kind": "valuation_unavailable",
+                            "scope": "valuations",
+                            "asset_id": asset_id,
+                        }
+                    )
+                    continue
+                value = dec(item["market_value"], f"computed.position_values.{asset_id}")
+                actual_values[asset_id] = value
+                currency = item["currency"]
+                actual_position_totals[currency] = (
+                    actual_position_totals.get(currency, Decimal(0)) + value
+                )
+            for asset_id in sorted(set(expected_values) | set(actual_values)):
+                expected = expected_values.get(asset_id, Decimal(0))
+                actual = actual_values.get(asset_id)
+                if actual is None:
+                    if asset_id not in actual_values:
+                        differences.append(
+                            {
+                                "kind": "position_value",
+                                "scope": "valuations",
+                                "asset_id": asset_id,
+                                "statement": dtext(expected),
+                                "computed": "0",
+                                "difference": dtext(-expected),
+                            }
+                        )
+                    continue
+                delta = actual - expected
+                if delta:
+                    differences.append(
+                        {
+                            "kind": "position_value",
+                            "scope": "valuations",
+                            "asset_id": asset_id,
+                            "statement": dtext(expected),
+                            "computed": dtext(actual),
+                            "difference": dtext(delta),
+                        }
+                    )
+            expected_position_totals = {
+                currency: dec(value, f"statement.position_total_by_currency.{currency}")
+                for currency, value in position_totals.items()
+            }
+            for currency in sorted(
+                set(expected_position_totals) | set(actual_position_totals)
+            ):
+                expected = expected_position_totals.get(currency, Decimal(0))
+                actual = actual_position_totals.get(currency, Decimal(0))
+                delta = actual - expected
+                if delta:
+                    differences.append(
+                        {
+                            "kind": "position_total",
+                            "scope": "valuations",
+                            "currency": currency,
+                            "statement": dtext(expected),
+                            "computed": dtext(actual),
+                            "difference": dtext(delta),
+                        }
+                    )
+            finish_scope("valuations", start)
+
+        totals = mapping("total_by_currency")
+        if totals is None:
+            missing_scope("total_value", ["total_by_currency"])
+        else:
+            start = len(differences)
+            expected_totals = {
+                currency: dec(value, f"statement.total_by_currency.{currency}")
+                for currency, value in totals.items()
+            }
+            actual_totals = {
+                currency: dec(value, f"computed.total_by_currency.{currency}")
+                for currency, value in computed["total_by_currency"].items()
+            }
+            for currency in sorted(set(expected_totals) | set(actual_totals)):
+                expected = expected_totals.get(currency, Decimal(0))
+                actual = actual_totals.get(currency, Decimal(0))
+                delta = actual - expected
+                if delta:
+                    differences.append(
+                        {
+                            "kind": "total_value",
+                            "scope": "total_value",
+                            "currency": currency,
+                            "statement": dtext(expected),
+                            "computed": dtext(actual),
+                            "difference": dtext(delta),
+                        }
+                    )
+            finish_scope("total_value", start)
+
+        full_scope_matched = all(
+            scope_status.get(scope, {}).get("status") == "matched"
+            for scope in RECONCILIATION_SCOPES
+        )
+        reconciliation_scope = {
+            "schema": RECONCILIATION_SCHEMA,
+            "required_scopes": list(RECONCILIATION_SCOPES),
+            "scope_status": scope_status,
+            "full_scope_matched": full_scope_matched,
+        }
+        persisted_computed = {**computed, "reconciliation": reconciliation_scope}
+        rid, now = new_id("recon"), iso()
+        status = "matched" if full_scope_matched else "needs_review"
         with self.db.transaction() as con:
-            con.execute("INSERT INTO reconciliations(id,account_id,as_of,statement_json,computed_json,differences_json,status,source_ref,created_at) VALUES(?,?,?,?,?,?,?,?,?)",(rid,account_id,as_of,canonical(statement),canonical(computed),canonical(differences),status,source_ref,now))
-        return {"id":rid,"status":status,"differences":differences,"computed":computed}
+            con.execute("INSERT INTO reconciliations(id,account_id,as_of,statement_json,computed_json,differences_json,status,source_ref,created_at) VALUES(?,?,?,?,?,?,?,?,?)",(rid,account_id,as_of,canonical(statement),canonical(persisted_computed),canonical(differences),status,source_ref,now))
+        return {
+            "id": rid,
+            "status": status,
+            "differences": differences,
+            "computed": persisted_computed,
+            "reconciliation": reconciliation_scope,
+        }

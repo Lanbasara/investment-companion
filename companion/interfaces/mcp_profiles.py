@@ -22,6 +22,26 @@ S = {"type": "string"}
 I = {"type": "integer"}
 O = {"type": "object", "additionalProperties": True}
 A = {"type": "array", "items": S}
+DECIMAL_MAP = {"type": "object", "additionalProperties": {}}
+RECONCILIATION_STATEMENT = {
+    "type": "object",
+    "properties": {
+        "cash": DECIMAL_MAP,
+        "positions": DECIMAL_MAP,
+        "position_values": DECIMAL_MAP,
+        "position_total_by_currency": DECIMAL_MAP,
+        "total_by_currency": DECIMAL_MAP,
+        "metadata": O,
+    },
+    "required": [
+        "cash",
+        "positions",
+        "position_values",
+        "position_total_by_currency",
+        "total_by_currency",
+    ],
+    "additionalProperties": False,
+}
 
 INVESTMENT_TOOLS = {
     "investment_home": ("读取今天的行动、异常、研究、绩效和交付总入口。", schema()),
@@ -129,7 +149,7 @@ INVESTMENT_TOOLS = {
         ),
     ),
     "investment_transaction_update": (
-        "登记账户和资产身份，或记录、确认、冲销、对账金融事实；只有 confirm 才改变真实组合。",
+        "登记账户和资产身份，或记录、确认、冲销、对账金融事实；只有 confirm 才改变真实组合。reconcile 的 statement 必须包含 cash、positions、position_values、position_total_by_currency、total_by_currency；全部验证才返回 matched。",
         schema(
             {
                 "operation": {
@@ -159,7 +179,7 @@ INVESTMENT_TOOLS = {
                 "external_id": S,
                 "metadata": O,
                 "as_of": S,
-                "statement": O,
+                "statement": RECONCILIATION_STATEMENT,
                 "source_ref": S,
             },
             ["operation"],

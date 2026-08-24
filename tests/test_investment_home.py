@@ -120,11 +120,30 @@ def test_context_workbenches_compose_truth_owners_without_new_state(tmp_path):
     assert evaluation["change_boundary"]["review_may_apply_strategy_change"] is False
     assert companion.financial.ledger_list() == ledger_before
 
-    companion.financial.reconcile(
+    partial = companion.financial.reconcile(
         account["id"], iso(), {"cash": {"CNY": "1000"}, "positions": {}}
     )
+    assert partial["status"] == "needs_review"
+    assert partial["reconciliation"]["scope_status"]["valuations"]["status"] == "unverified"
+    incomplete = companion.investment.portfolio_context()
+    assert incomplete["truth_freshness"]["status"] == "reconciliation_needs_review"
+    assert incomplete["precision_boundary"]["precise_position_advice_allowed"] is False
+
+    complete = companion.financial.reconcile(
+        account["id"],
+        iso(),
+        {
+            "cash": {"CNY": "1000"},
+            "positions": {},
+            "position_values": {},
+            "position_total_by_currency": {"CNY": "0"},
+            "total_by_currency": {"CNY": "1000"},
+        },
+    )
+    assert complete["status"] == "matched"
     reconciled = companion.investment.portfolio_context()
     assert reconciled["truth_freshness"]["status"] == "recently_reconciled"
+    assert reconciled["truth_freshness"]["full_scope_matched"] is True
     assert reconciled["precision_boundary"]["precise_position_advice_allowed"] is True
 
 
@@ -190,10 +209,17 @@ def test_narrow_commands_keep_confirmation_and_current_mandate_boundaries(tmp_pa
         operation="reconcile",
         account_id=account["id"],
         as_of=iso(),
-        statement={"cash": {"CNY": "1000"}, "positions": {}},
+        statement={
+            "cash": {"CNY": "1000"},
+            "positions": {},
+            "position_values": {},
+            "position_total_by_currency": {"CNY": "0"},
+            "total_by_currency": {"CNY": "1000"},
+        },
         source_ref="fixture-statement",
     )
     assert reconciliation["status"] == "matched"
+    assert reconciliation["reconciliation"]["full_scope_matched"] is True
     mandate = companion.investment_commands.context_update(
         operation="draft",
         context_type="mandate",

@@ -70,6 +70,38 @@ class V3Test(unittest.TestCase):
         self.assertEqual(result["status"],"needs_review")
         self.assertEqual(self.c.financial.portfolio_state("2026-01-02T00:00:00Z",self.account["id"])["cash"]["CNY"],"1000")
 
+    def test_reconciliation_matches_only_with_cash_positions_valuations_and_total(self):
+        opening=self.c.financial.ledger_add(account_id=self.account["id"],entry_type="opening_balance",occurred_at="2026-01-01T00:00:00Z",amount="1000",currency="CNY",source="statement");self.c.financial.ledger_confirm(opening["id"])
+        trade=self.c.financial.ledger_add(account_id=self.account["id"],entry_type="trade",asset_id=self.asset["id"],occurred_at="2026-01-01T01:00:00Z",quantity="100",price="1",amount="-100",currency="CNY",source="statement");self.c.financial.ledger_confirm(trade["id"])
+        self.c.financial.market_add(self.asset["id"],"close","2","2026-01-01T02:00:00Z","statement")
+
+        incomplete=self.c.financial.reconcile(self.account["id"],"2026-01-02T00:00:00Z",{"cash":{"CNY":"900"},"positions":{self.asset["id"]:"100"}})
+        self.assertEqual(incomplete["status"],"needs_review")
+        self.assertEqual(incomplete["reconciliation"]["scope_status"]["valuations"]["status"],"unverified")
+        self.assertEqual(incomplete["reconciliation"]["scope_status"]["total_value"]["status"],"unverified")
+
+        wrong_value=self.c.financial.reconcile(self.account["id"],"2026-01-02T00:00:00Z",{
+            "cash":{"CNY":"900"},
+            "positions":{self.asset["id"]:"100"},
+            "position_values":{self.asset["id"]:"199"},
+            "position_total_by_currency":{"CNY":"199"},
+            "total_by_currency":{"CNY":"1099"},
+        })
+        self.assertEqual(wrong_value["status"],"needs_review")
+        self.assertIn("position_value",{item["kind"] for item in wrong_value["differences"]})
+        self.assertIn("total_value",{item["kind"] for item in wrong_value["differences"]})
+
+        matched=self.c.financial.reconcile(self.account["id"],"2026-01-02T00:00:00Z",{
+            "cash":{"CNY":"900"},
+            "positions":{self.asset["id"]:"100"},
+            "position_values":{self.asset["id"]:"200"},
+            "position_total_by_currency":{"CNY":"200"},
+            "total_by_currency":{"CNY":"1100"},
+        })
+        self.assertEqual(matched["status"],"matched")
+        self.assertTrue(matched["reconciliation"]["full_scope_matched"])
+        self.assertEqual(matched["differences"],[])
+
     def test_csv_import_stays_unconfirmed_and_source_health_is_explicit(self):
         content=f"account_id,entry_type,occurred_at,amount,currency,external_id\n{self.account['id']},cash_deposit,2026-01-01T00:00:00Z,500,CNY,x1\n"
         imported=self.c.financial.ledger_import_csv(content)

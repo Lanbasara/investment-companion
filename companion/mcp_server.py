@@ -6,7 +6,7 @@ import sys
 from typing import Any, Callable
 
 from .core import Companion, CompanionError
-from .interfaces.mcp_profiles import INVESTMENT_TOOLS, active_tools, call_investment
+from .interfaces.mcp_profiles import INVESTMENT_TOOLS, RECONCILIATION_STATEMENT, active_tools, call_investment
 
 ROOT=os.environ.get("COMPANION_ROOT","/home/ghk/investment-home")
 C=Companion(ROOT)
@@ -76,7 +76,7 @@ TOOLS={
  "max_purchase_calculate":("在现金底线、费用和最小交易单位下精确计算最大买入量。",schema({"as_of":S,"account_id":S,"asset_id":S,"price":{},"minimum_cash":{},"fee":{},"lot_size":{}},["as_of","account_id","asset_id","price"])),
  "portfolio_exposure_calculate":("按指定基准币种计算组合权重；缺失汇率时明确警告而不猜测。",schema({"as_of":S,"account_id":S,"prices":O,"base_currency":S},["as_of","account_id","prices","base_currency"])),
  "calculation_get":("读取可重放的精确计算记录。",schema({"calculation_id":S},["calculation_id"])),
- "portfolio_reconcile":("将账本派生状态与券商账单对账，差异不自动补平。",schema({"account_id":S,"as_of":S,"statement":O,"source_ref":S},["account_id","as_of","statement"])),
+ "portfolio_reconcile":("将账本派生状态与券商账单对账；statement 必须包含 cash、positions、position_values、position_total_by_currency、total_by_currency，全部验证才返回 matched，差异不自动补平。",schema({"account_id":S,"as_of":S,"statement":RECONCILIATION_STATEMENT,"source_ref":S},["account_id","as_of","statement"])),
  "context_revision_create":("创建 Investor、Mandate 或 Attention Policy 草稿版本。",schema({"context_type":S,"content":O,"reason":S,"effective_from":S,"expires_at":S},["context_type","content"])),
  "context_revision_confirm":("经用户确认后启用 Context 版本；trial 必须有到期时间。",schema({"revision_id":S,"trial":{"type":"boolean"}},["revision_id"])),
  "context_current":("读取当前生效的个人事实、Mandate 或 Attention Policy。",schema({"context_type":S},["context_type"])),
