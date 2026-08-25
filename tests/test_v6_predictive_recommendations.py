@@ -7,8 +7,8 @@ import pytest
 
 from companion.core import Companion, CompanionError
 from companion.governance import GATE_CHECKLISTS
-from companion.predictive_runtime import etf_bootstrap_days
-from companion.timeutil import iso, utc_now
+from companion.predictive_runtime import dated_object_refs, etf_bootstrap_days
+from companion.timeutil import iso, parse, utc_now
 from companion.v6_predictive_recommendations import FUND_CANDIDATE_HANDLER, FUND_HANDLER, FUND_SIGNAL_HANDLER, STOCK_CANDIDATE_HANDLER, STOCK_HANDLER, STOCK_SIGNAL_HANDLER, STOCK_SIGNAL_OUTCOMES_KIND, STOCK_SIGNAL_OUTCOMES_SCHEMA, V6_MODE
 
 
@@ -144,6 +144,23 @@ def test_etf_history_bootstrap_is_bounded_and_skips_existing_sessions():
     assert result == ["20260803", "20260804", "20260805", "20260806", "20260807"]
 
 
+def test_ready_batch_does_not_expose_a_later_quarantined_object(tmp_path: Path):
+    companion = setup_v6(tmp_path)
+    stream = companion.data.stream_configure(
+        provider="tushare", capability="daily", schema_version="fixture/v1", config={}
+    )
+    obj = companion.data.object_put_json([], kind="tushare_daily_canonical")
+    batch = companion.data.batch_start(
+        stream["id"], "pytest-quarantined-ready-batch", {"trade_date": "20260825"}
+    )
+    companion.data.batch_finish(
+        batch["id"], status="ready", raw_object_ids=[], canonical_object_ids=[obj["id"]], row_count=0
+    )
+    with companion.db.transaction() as con:
+        con.execute("UPDATE data_objects SET status='quarantined' WHERE id=?", (obj["id"],))
+    assert dated_object_refs(companion.v6_predictive, "daily", parse(iso())) == {}
+
+
 def test_v6_stock_line_creates_separate_candidates_signals_and_outcomes(tmp_path: Path):
     companion = setup_v6(tmp_path)
     source = companion.data.manifest_publish(
@@ -182,7 +199,7 @@ def test_stock_candidate_scan_does_not_expand_market_data_without_signals(tmp_pa
         kind="v5_canary_quant_scan",
         schema_version="investment-companion.v5-continuous-quant-scan/v1",
         manifest={
-            "program_id": "pytest-v6", "status": "ready", "as_of": "2026-08-21",
+            "program_id": "pytest-v6", "status": "ready", "as_of": iso(),
             "target_manifest_id": "fixture-target",
             "candidates": [{"asset_id": "tushare:600000.SH", "rank": 1, "momentum_20d": "0.08", "volatility_20d": "0.03", "mean_amount_provider_units": "1000000"}],
         },
@@ -196,6 +213,28 @@ def test_stock_candidate_scan_does_not_expand_market_data_without_signals(tmp_pa
     })
     body = companion.data.manifest_get(result["manifest_id"])["manifest"]["manifest"]
     assert body["source_v5_scan_manifest_id"] == source["id"]
+
+
+def test_stock_signal_does_not_reuse_a_stale_candidate_after_current_scan_failure(tmp_path: Path):
+    companion = setup_v6(tmp_path)
+    source = companion.data.manifest_publish(
+        kind="v5_canary_quant_scan",
+        schema_version="investment-companion.v5-continuous-quant-scan/v1",
+        manifest={
+            "program_id": "pytest-v6", "status": "ready", "as_of": "2026-08-21",
+            "target_manifest_id": "fixture-target",
+            "candidates": [{"asset_id": "tushare:600000.SH", "rank": 1, "momentum_20d": "0.08", "volatility_20d": "0.03", "mean_amount_provider_units": "1000000"}],
+        },
+    )
+    companion.v6_predictive.generate_stock_research_candidates(
+        program_id="pytest-v6", source_v5_scan_manifest_id=source["id"], top_k=10
+    )
+    result = companion.v6_predictive._job_stock_provisional_signal({
+        "inputs": {"knowledge_cutoff": iso(), "parameters": {"program_id": "pytest-v6", "horizon_sessions": 20}}
+    })
+    body = companion.data.manifest_get(result["manifest_id"])["manifest"]["manifest"]
+    assert body["status"] == "waiting_upstream"
+    assert body["dependency"] == "stock_research_candidate_list"
 
 
 @pytest.mark.parametrize(

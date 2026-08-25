@@ -11,6 +11,29 @@ from .timeutil import parse
 from .tushare_adapter import TushareAdapter
 
 
+def canonical_object_ready(data, object_id: str) -> bool:
+    try:
+        data.object_get(object_id, verify=True)
+    except Exception:
+        return False
+    return True
+
+
+def manifest_matches_cutoff_day(service, manifest_id: str, cutoff: str) -> bool:
+    body = service.c.data.manifest_get(manifest_id)["manifest"]["manifest"]
+    as_of = body.get("as_of")
+    if not isinstance(as_of, str):
+        return False
+    try:
+        source_day = parse(as_of).astimezone(ZoneInfo("Asia/Shanghai")).date()
+    except (TypeError, ValueError):
+        try:
+            source_day = parse(f"{as_of[:10]}T00:00:00+08:00").date()
+        except (TypeError, ValueError):
+            return False
+    return source_day == parse(cutoff).astimezone(ZoneInfo("Asia/Shanghai")).date()
+
+
 def dated_object_refs(service, capability: str, cutoff) -> dict[str, str]:
     try:
         stream = service.c.data.stream_get("tushare", capability)
@@ -24,6 +47,11 @@ def dated_object_refs(service, capability: str, cutoff) -> dict[str, str]:
         raw_day = batch.get("request_range", {}).get("trade_date")
         object_ids = batch.get("canonical_object_ids", [])
         if isinstance(raw_day, str) and len(raw_day) == 8 and raw_day.isdigit() and len(object_ids) == 1:
+            if not canonical_object_ready(service.c.data, object_ids[0]):
+                # A batch can remain immutable/ready after its object is later
+                # quarantined by integrity verification.  Such an object is no
+                # longer a usable research input and must not poison the run.
+                continue
             result[f"{raw_day[:4]}-{raw_day[4:6]}-{raw_day[6:]}"] = object_ids[0]
     return result
 

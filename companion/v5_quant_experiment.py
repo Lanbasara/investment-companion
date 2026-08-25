@@ -14,6 +14,7 @@ from .foundation import CompanionError, canonical, digest
 from .db import row_dict, rows_dict
 from .timeutil import iso, parse, utc_now
 from .tushare_adapter import NORMALIZER_VERSION, TushareAdapter
+from .predictive_runtime import canonical_object_ready
 
 
 CONTINUOUS_MODE = "v5_continuous_quant_research"
@@ -1252,6 +1253,7 @@ class ContinuousQuantResearch:
             if len(object_ids) != 1:
                 continue
             object_id = object_ids[0]
+            if not canonical_object_ready(self.c.data, object_id):continue
             payload = json.loads(self.c.data.object_read(object_id).decode("utf-8"))
             result[self._iso_day(raw_day)] = {
                 "batch_id": batch["id"],
@@ -1271,6 +1273,7 @@ class ContinuousQuantResearch:
             if not batch.get("finished_at") or parse(batch["finished_at"]) > cutoff:
                 continue
             for object_id in batch.get("canonical_object_ids", []):
+                if not canonical_object_ready(self.c.data, object_id):continue
                 payload = json.loads(self.c.data.object_read(object_id).decode("utf-8"))
                 if not isinstance(payload, list):
                     continue

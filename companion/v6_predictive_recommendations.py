@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 from .foundation import CompanionError, canonical
-from .predictive_runtime import job_fund_data_bundle, publish_waiting_dependency, stock_adjusted_bars
+from .predictive_runtime import canonical_object_ready, job_fund_data_bundle, manifest_matches_cutoff_day, publish_waiting_dependency, stock_adjusted_bars
 from .timeutil import iso, parse, utc_now
 
 
@@ -726,7 +726,7 @@ class V6PredictiveRecommendations:
             outcome=self.capture_stock_signal_outcomes(program_id=config["program_id"],signal_manifest_id=signal_id,adjusted_bars=bars,observed_at=context["inputs"]["knowledge_cutoff"])
             outcome_ids.append(outcome["id"])
         scan_id=self._latest_v5_stock_scan_id(context["inputs"]["knowledge_cutoff"])
-        if not scan_id:
+        if not scan_id or not manifest_matches_cutoff_day(self,scan_id,context["inputs"]["knowledge_cutoff"]):
             return publish_waiting_dependency(self,kind=STOCK_CANDIDATES_KIND,schema_version=STOCK_CANDIDATES_SCHEMA,program_id=config["program_id"],as_of=context["inputs"]["knowledge_cutoff"],dependency="ready_stock_source_scan",event_summary="Stock candidate scan is waiting for its frozen source scan")
         existing=self._stock_candidate_for_v5_scan(config["program_id"],scan_id)
         report=existing or self.generate_stock_research_candidates(program_id=config["program_id"],source_v5_scan_manifest_id=scan_id,top_k=parameters["top_k"])
@@ -738,7 +738,7 @@ class V6PredictiveRecommendations:
         if set(parameters)!={"program_id","horizon_sessions"} or parameters["program_id"]!=config["program_id"]:
             raise CompanionError("V6 stock provisional signal has invalid program or parameters")
         candidate_id=self._latest_stock_candidate_id(config["program_id"],context["inputs"]["knowledge_cutoff"])
-        if not candidate_id:
+        if not candidate_id or not manifest_matches_cutoff_day(self,candidate_id,context["inputs"]["knowledge_cutoff"]):
             return publish_waiting_dependency(self,kind=STOCK_SIGNALS_KIND,schema_version=STOCK_SIGNALS_SCHEMA,program_id=config["program_id"],as_of=context["inputs"]["knowledge_cutoff"],dependency="stock_research_candidate_list",event_summary="Stock signal freeze is waiting for a candidate list")
         existing=self._stock_signal_for_candidate(config["program_id"],candidate_id)
         report=existing or self.generate_stock_provisional_signals(program_id=config["program_id"],candidate_manifest_id=candidate_id,horizon_sessions=parameters["horizon_sessions"])
@@ -914,6 +914,7 @@ class V6PredictiveRecommendations:
     def _rows_from_canonical_batch(self, capability: str, batch: dict[str, Any]) -> list[dict[str, Any]]:
         object_ids=batch.get("canonical_object_ids",[])
         if not object_ids:return []
+        if not canonical_object_ready(self.c.data,object_ids[0]):return []
         value=json.loads(self.c.data.object_read(object_ids[0]).decode("utf-8"))
         if capability=="fund_daily":
             result=[]
@@ -939,7 +940,10 @@ class V6PredictiveRecommendations:
         cutoff=parse(before);stream=self.c.data.stream_get("tushare",capability);result=[]
         for batch in self.c.data.batch_list(stream["id"],status="ready"):
             finished=batch.get("finished_at")
-            if finished and parse(finished)<=cutoff:result.extend(batch.get("canonical_object_ids",[]))
+            if not finished or parse(finished)>cutoff:continue
+            for object_id in batch.get("canonical_object_ids",[]):
+                if not canonical_object_ready(self.c.data,object_id):continue
+                result.append(object_id)
         return sorted(set(result))
 
     @staticmethod
