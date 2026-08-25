@@ -1500,5 +1500,8 @@ def test_expired_condition_order_still_accepts_pre_deadline_order_lifecycle(tmp_
     with companion.db.transaction() as con:con.execute("UPDATE broker_execution_plans SET valid_until=?,status='expired' WHERE id=?",(triggered_at,plan["id"]))
     updated=companion.execution_strategy.report_order(plan_id=plan["id"],broker_order_ref="pre-deadline",side="buy",quantity="100",status="cancelled",triggered_at=triggered_at,cancelled_quantity="100")
     assert updated["orders"][0]["status"]=="cancelled"
+    assert plan["id"] in companion.briefing.projection(program_id=fixture["program"]["id"])["broker_strategy_attention_ids"]
     with pytest.raises(CompanionError,match="after the condition-order deadline"):
         companion.execution_strategy.report_order(plan_id=plan["id"],broker_order_ref="post-deadline",side="buy",quantity="100",status="submitted",triggered_at=iso(utc_now()+timedelta(seconds=1)))
+    as_of=iso(utc_now()+timedelta(seconds=1));reconciliation=companion.financial.reconcile(action["account_id"],as_of,{"cash":{"CNY":"100000"},"positions":{},"position_values":{},"position_total_by_currency":{"CNY":"0"},"total_by_currency":{"CNY":"100000"}},"expired-strategy-statement")
+    assert companion.execution_strategy.reconcile(plan_id=plan["id"],occurred_at=as_of,reconciliation_id=reconciliation["id"])["status"]=="reconciled"

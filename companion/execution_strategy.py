@@ -193,7 +193,7 @@ class BrokerExecutionStrategyService:
 
     def reconcile(self, *, plan_id:str, occurred_at:str, reconciliation_id:str, actor:str="primary-codex") -> dict[str,Any]:
         plan=self.get(plan_id)
-        if plan["status"]!="terminated":raise CompanionError("only a terminated broker strategy can be reconciled")
+        if plan["status"] not in {"terminated","expired"}:raise CompanionError("only a terminated or expired broker strategy can be reconciled")
         live=[item for item in plan["orders"] if item["status"] in {"triggered","submitted","partially_filled","unknown"}]
         if live:raise CompanionError("terminated strategy still has live or unknown broker orders")
         if any(item["status"]!="rejected" and (item.get("execution_link_state")!="linked" or not item.get("execution_id")) for item in plan["orders"]):raise CompanionError("strategy has broker orders whose Execution linkage is incomplete")
@@ -201,7 +201,8 @@ class BrokerExecutionStrategyService:
         with self.c.db.connect() as con:reconciliation=row_dict(con.execute("SELECT * FROM reconciliations WHERE id=?",(reference,)).fetchone())
         if not reconciliation or reconciliation["account_id"]!=plan["account_id"] or not reconciliation_is_full_match(reconciliation):raise CompanionError("strategy reconciliation requires a full-scope matched reconciliation for the same account")
         if not reconciliation.get("confirmed_ledger_hash") or reconciliation["confirmed_ledger_hash"]!=self.c.financial.confirmed_ledger_hash():raise CompanionError("strategy reconciliation does not match the current confirmed Ledger")
-        latest=max([parse(plan["terminated_at"]),*(parse(item["updated_at"]) for item in plan["orders"])])
+        lifecycle_end=parse(plan["terminated_at"] or plan["valid_until"])
+        latest=max([lifecycle_end,*(parse(item["updated_at"]) for item in plan["orders"])])
         if parse(reconciliation["as_of"])<latest or parse(occurred)<parse(reconciliation["as_of"]):raise CompanionError("strategy reconciliation must cover termination and every broker order")
         latest_confirmation=None
         for order in plan["orders"]:

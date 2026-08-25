@@ -228,7 +228,7 @@ class InvestmentBriefingService:
             "accepted_without_execution_queue_ids": accepted_without_execution,
             "broker_strategy_ids": [item["id"] for item in strategies],
             "active_broker_strategy_ids": [item["id"] for item in strategies if item["status"] in {"configured","active","sleeping"}],
-            "broker_strategy_attention_ids": sorted({item["id"] for item in strategies if item["status"] in {"termination_pending","terminated","exception"}}|orphan_strategy_ids),
+            "broker_strategy_attention_ids": sorted({item["id"] for item in strategies if item["status"] in {"termination_pending","terminated","expired","exception"}}|orphan_strategy_ids),
             "reconciliation": reconciliation_summary,
             "events_since": events,
             "portfolio_changed_by_confirmed_fills": bool(confirmed_ledgers),
