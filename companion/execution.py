@@ -440,6 +440,8 @@ class ExecutionLifecycleService:
         return deviations, total
 
     def _close_queue(self, execution: dict[str, Any], outcome: str) -> None:
+        if execution.get("details", {}).get("broker_strategy_plan_id"):
+            return
         queue_id = execution.get("details", {}).get("queue_id")
         if not queue_id:
             return

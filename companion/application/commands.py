@@ -428,11 +428,21 @@ class InvestmentCommandService:
             "report_fill": self.c.execution.report_fill,
             "confirm_fill": self.c.execution.confirm_fill,
             "cancel": self.c.execution.cancel,
+            "strategy_create": self.c.execution_strategy.create_from_queue,
+            "strategy_configured": self.c.execution_strategy.mark_configured,
+            "strategy_activate": self.c.execution_strategy.activate,
+            "strategy_order_report": self.c.execution_strategy.report_order,
+            "strategy_terminate_request": self.c.execution_strategy.request_termination,
+            "strategy_terminated": self.c.execution_strategy.report_terminated,
+            "strategy_etf_dividend": self.c.execution_strategy.report_etf_dividend_termination,
+            "strategy_sleep": self.c.execution_strategy.set_sleeping,
+            "strategy_exception": self.c.execution_strategy.report_exception,
+            "strategy_reconcile": self.c.execution_strategy.reconcile,
         }
         handler = actions.get(operation)
         if not handler:
             raise CompanionError(
-                "execution operation must be prepare, order, report_fill, confirm_fill or cancel"
+                "unsupported execution lifecycle operation"
             )
         contracts = {
             "prepare": ({"queue_id", "idempotency_key"}, {"queue_id", "idempotency_key"}),
@@ -452,6 +462,16 @@ class InvestmentCommandService:
                 {"execution_id", "entry_id", "final"},
             ),
             "cancel": ({"execution_id", "reason"}, {"execution_id", "reason"}),
+            "strategy_create": ({"queue_id","plan_type","spec","valid_until","idempotency_key"},{"queue_id","plan_type","spec","valid_until","idempotency_key"}),
+            "strategy_configured": ({"plan_id","broker_condition_ref","configured_at"},{"plan_id","broker_condition_ref","configured_at"}),
+            "strategy_activate": ({"plan_id","occurred_at"},{"plan_id","occurred_at"}),
+            "strategy_order_report": ({"plan_id","broker_order_ref","side","quantity","status","triggered_at"},{"plan_id","broker_order_ref","side","quantity","status","triggered_at","trigger_price","reference_price_before","reference_price_after","rejection_reason","cancelled_quantity","condition_leg"}),
+            "strategy_terminate_request": ({"plan_id","occurred_at","reason"},{"plan_id","occurred_at","reason"}),
+            "strategy_terminated": ({"plan_id","occurred_at","reason"},{"plan_id","occurred_at","reason"}),
+            "strategy_etf_dividend": ({"plan_id","occurred_at","corporate_action_ref"},{"plan_id","occurred_at","corporate_action_ref"}),
+            "strategy_sleep": ({"plan_id","direction","sleeping","occurred_at","reason"},{"plan_id","direction","sleeping","occurred_at","reason"}),
+            "strategy_exception": ({"plan_id","occurred_at","reason"},{"plan_id","occurred_at","reason"}),
+            "strategy_reconcile": ({"plan_id","occurred_at","reconciliation_id"},{"plan_id","occurred_at","reconciliation_id"}),
         }
         required, allowed = contracts[operation]
         self._operation_payload(payload, required, allowed, f"execution {operation}")
@@ -535,6 +555,8 @@ class InvestmentCommandService:
         prices: dict[str, Any] | None = None,
         risk_calculation_id: str | None = None,
         research_validation_calculation_id: str | None = None,
+        execution_plan: dict[str, Any] | None = None,
+        execution_sell_risk_calculation_id: str | None = None,
     ) -> dict[str, Any]:
         if decision_kind not in {"action", "no_action", "watch"}:
             raise CompanionError("decision_kind must be action, no_action or watch")
@@ -614,6 +636,38 @@ class InvestmentCommandService:
             calculation_ids.append(risk["id"])
         if decision_kind == "action" and (not risk or risk["outputs"].get("blocked")):
             raise CompanionError("action decision requires a passing Risk Gate Calculation")
+        authorized_execution_plan=None
+        if execution_plan is not None:
+            if decision_kind!="action" or not isinstance(execution_plan,dict) or set(execution_plan)!={"plan_type","spec"}:
+                raise CompanionError("execution_plan requires an action Decision and exactly plan_type/spec")
+            plan_type=execution_plan["plan_type"]
+            normalized=self.c.execution_strategy._normalize_spec(plan_type,execution_plan["spec"])
+            if normalized["account_id"]!=account_id or normalized["asset_id"]!=subject.get("asset_id"):
+                raise CompanionError("execution_plan account or asset differs from Decision")
+            risk_quantity=abs(dec(risk["inputs"]["quantity"],"risk quantity"))
+            requested=normalized["position_range"]["max_net_buy"] if plan_type=="moving_grid" else self.c.execution_strategy.resolved_quantity(normalized)
+            if dec(requested,"execution plan quantity")>risk_quantity:
+                raise CompanionError("execution_plan exceeds the frozen Risk Gate quantity")
+            primary_signed=dec(risk["inputs"]["quantity"],"risk quantity")
+            if plan_type=="priced_buy" and primary_signed<=0:raise CompanionError("priced_buy requires a positive buy Risk Gate quantity")
+            if plan_type in {"priced_sell","bracket_exit"} and primary_signed>=0:raise CompanionError(f"{plan_type} requires a negative sell Risk Gate quantity")
+            required_low,required_high=self._execution_plan_price_bounds(plan_type,normalized)
+            risk_range=risk["assumptions"]["price_range"]
+            if dec(risk_range["min"],"Risk Gate minimum price")>required_low or dec(risk_range["max"],"Risk Gate maximum price")<required_high:raise CompanionError("execution_plan price domain exceeds the frozen Risk Gate price range")
+            sell_risk_id=None
+            if plan_type=="moving_grid":
+                if primary_signed<=0:raise CompanionError("moving_grid primary Risk Gate must cover net buying")
+                if not execution_sell_risk_calculation_id:raise CompanionError("moving_grid requires a separate sell Risk Gate")
+                sell_risk=self.c.financial.calculation_get(execution_sell_risk_calculation_id)
+                if sell_risk["kind"]!="risk_gate" or sell_risk["outputs"].get("blocked") or sell_risk["inputs"].get("account_id")!=account_id or sell_risk["inputs"].get("asset_id")!=subject.get("asset_id") or sell_risk["as_of"]!=as_of or sell_risk["outputs"].get("portfolio_calculation_id")!=portfolio["calculation_id"] or sell_risk["assumptions"].get("mandate")!=mandate["content"] or sell_risk["assumptions"].get("valid_until")!=valid_until:
+                    raise CompanionError("moving_grid sell Risk Gate does not match the Decision context")
+                sell_quantity=dec(sell_risk["inputs"]["quantity"],"grid sell risk quantity")
+                if sell_quantity>=0 or abs(sell_quantity)<dec(normalized["position_range"]["max_net_sell"],"max_net_sell"):raise CompanionError("moving_grid sell Risk Gate does not cover max_net_sell")
+                sell_range=sell_risk["assumptions"]["price_range"]
+                if dec(sell_range["min"])>required_low or dec(sell_range["max"])<required_high:raise CompanionError("moving_grid sell price domain exceeds the frozen sell Risk Gate range")
+                calculation_ids.append(sell_risk["id"]);sell_risk_id=sell_risk["id"]
+            elif execution_sell_risk_calculation_id is not None:raise CompanionError("separate sell Risk Gate is only supported for moving_grid")
+            authorized_execution_plan={"plan_type":plan_type,"spec":normalized,"buy_risk_calculation_id":risk["id"],"sell_risk_calculation_id":sell_risk_id}
         decision = self.c.cognition.object_create("decision", subject)
         context_refs = {
             "investor_revision_id": investor["id"],
@@ -645,6 +699,7 @@ class InvestmentCommandService:
                 "confirmed_ledger_hash": self.c.financial.confirmed_ledger_hash(),
                 "human_execution_only": True,
                 "automatic_trade": False,
+                "execution_plan": authorized_execution_plan,
                 "published_at": iso(),
             },
         )
@@ -657,6 +712,19 @@ class InvestmentCommandService:
                 research_validation["id"] if research_validation else None
             ),
         }
+
+    @staticmethod
+    def _execution_plan_price_bounds(plan_type:str,spec:dict[str,Any])->tuple[Decimal,Decimal]:
+        if plan_type=="moving_grid":return dec(spec["price_range"]["lower"]),dec(spec["price_range"]["upper"])
+        if plan_type in {"priced_buy","priced_sell"}:
+            prices=[dec(spec["trigger"]["monitor_price"])]
+            if spec["order"]["price_instruction"]=="custom":prices.append(dec(spec["order"]["custom_price"]))
+            return min(prices),max(prices)
+        base=dec(spec["base_price"])
+        take=dec(spec["take_profit"]["value"]);stop=dec(spec["stop_loss"]["value"])
+        take_price=take if spec["take_profit"]["mode"]=="price" else base*(Decimal("1")+take/Decimal("100"))
+        stop_price=stop if spec["stop_loss"]["mode"]=="price" else base*(Decimal("1")-stop/Decimal("100"))
+        return min(stop_price,take_price),max(stop_price,take_price)
 
     def risk_assess(self, **trade: Any) -> dict[str, Any]:
         mandate = self.c.cognition.context_current("mandate")

@@ -122,9 +122,15 @@ class InvestmentHomeService:
             return self.c.system_status()
         if view == "doctor":
             return self.c.doctor()
+        if view == "execution_strategies":
+            return self.c.execution_strategy.list(status=status, limit=limit)
+        if view == "execution_strategy":
+            if not run_id:
+                raise CompanionError("workflow execution_strategy view requires run_id as plan_id")
+            return self.c.execution_strategy.get(run_id)
         raise CompanionError(
             "workflow view must be schedules, schedule, schedule_history, runs, run, "
-            "deliveries, delivery, delivery_status, system_status or doctor"
+            "deliveries, delivery, delivery_status, system_status, doctor, execution_strategies or execution_strategy"
         )
 
     def portfolio_context(

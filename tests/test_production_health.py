@@ -31,7 +31,7 @@ def test_production_doctor_detects_runtime_drift_and_latest_pipeline_failure(tmp
     assert result["checks"]["runtime_commit_matches_g0"] is False
     assert result["checks"]["critical_pipelines_latest_run_succeeded"] is False
     assert {item["check"] for item in result["incidents"]} == {
-        "runtime_commit_matches_g0", "critical_pipelines_latest_run_succeeded"
+        "runtime_commit_matches_g0", "critical_pipeline_roles_complete", "critical_pipelines_latest_run_succeeded"
     }
 
 

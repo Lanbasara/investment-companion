@@ -8,7 +8,7 @@ from .timeutil import iso, parse, utc_now
 
 
 DELIVERY_MODES = {"silent_allowed", "digest_required", "report_required", "action_required"}
-RESULT_CONCLUSIONS = {"no_action", "action", "review_required", "insufficient_evidence"}
+RESULT_CONCLUSIONS = {"no_action", "action", "risk_action", "review_required", "insufficient_evidence", "system_degraded"}
 
 
 class DeliveryEngine:
@@ -116,8 +116,10 @@ class DeliveryEngine:
         labels = {
             "no_action": "不行动",
             "action": "行动",
+            "risk_action": "风险行动",
             "review_required": "需要复核",
             "insufficient_evidence": "资料不足",
+            "system_degraded": "系统异常",
         }
         return "\n".join(
             [

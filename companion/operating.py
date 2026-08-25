@@ -75,6 +75,9 @@ class InvestmentOperatingSystem(PortfolioDecisionService):
         period_key = self._text(period_key, "period_key")
         as_of_time = parse(as_of)
         payload = self._validate_brief_payload(brief_type, conclusion, payload)
+        production_health=self.c.production_health()
+        if conclusion=="no_action" and not production_health["ok"]:
+            raise CompanionError("system_degraded cannot be published as no_action")
         if parse(payload["next_check_at"]) <= as_of_time:
             raise CompanionError("operating brief next_check_at must be after as_of")
         if brief_type == "monthly":
@@ -692,7 +695,11 @@ class InvestmentOperatingSystem(PortfolioDecisionService):
         latest_daily = briefs["daily"]
         execution_summary = self.c.briefing.projection(program_id=current["id"], as_of=iso(), since=latest_daily["created_at"] if latest_daily else None)
         execution_signal = self.c.briefing.today_signal(execution_summary)
-        if queue:
+        production_health=self.c.production_health()
+        if not production_health["ok"]:
+            mode="system_degraded";message="关键运行或研究流水线异常，系统当前无法形成可信的行动/不行动判断。"
+            if execution_signal:message+=f" 同时存在独立的执行事项：{execution_signal['message']}"
+        elif queue:
             mode = "action"
             accepted_count = sum(item["state"] == "accepted" for item in queue)
             if execution_signal and execution_signal["mode"] == "action":
@@ -739,6 +746,8 @@ class InvestmentOperatingSystem(PortfolioDecisionService):
                 for item in snoozed
             ],
             "execution_summary": execution_summary,
+            "production_health": production_health,
+            "urgent_execution_review": execution_signal if not production_health["ok"] else None,
             "latest_briefs": briefs,
             "claims": {
                 "automatic_trading": False,

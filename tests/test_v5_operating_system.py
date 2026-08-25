@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import timedelta
+from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -165,10 +166,10 @@ def setup_operating_system(tmp_path: Path) -> tuple[Companion, dict]:
     }
 
 
-def build_actionable_opportunity(companion: Companion, fixture: dict) -> dict:
+def build_actionable_opportunity(companion: Companion, fixture: dict, execution_plan_builder=None,asset_type="stock") -> dict:
     cutoff = iso()
     asset = companion.financial.asset_upsert(
-        asset_type="stock",
+        asset_type=asset_type,
         name="Fixture Co",
         currency="CNY",
         identifiers={"ts_code": "000001.SZ"},
@@ -247,18 +248,30 @@ def build_actionable_opportunity(companion: Companion, fixture: dict) -> dict:
     market = companion.financial.market_add(
         asset["id"], "close", "10", cutoff, "fixture-market", "healthy", "CNY"
     )
+    requested_execution_plan=execution_plan_builder(fixture["account"]["id"],asset["id"]) if execution_plan_builder else None
+    if requested_execution_plan and requested_execution_plan["plan_type"] in {"priced_sell","bracket_exit","moving_grid"}:
+        holding=companion.financial.ledger_add(account_id=fixture["account"]["id"],entry_type="trade",asset_id=asset["id"],occurred_at=iso(utc_now()-timedelta(days=1)),quantity="1000",price="10",amount="-10000",currency="CNY",source="pytest-execution-plan-holding")
+        companion.financial.ledger_confirm(holding["id"])
+    primary_quantity="-100" if requested_execution_plan and requested_execution_plan["plan_type"] in {"priced_sell","bracket_exit"} else "100"
+    risk_price_range={"min":"9.8","max":"10.2"}
+    if requested_execution_plan:
+        low,high=companion.investment_commands._execution_plan_price_bounds(requested_execution_plan["plan_type"],requested_execution_plan["spec"])
+        risk_price_range={"min":str(min(low,Decimal("10"))),"max":str(max(high,Decimal("10")))}
     risk = companion.investment_commands.risk_assess(
         as_of=cutoff,
         account_id=fixture["account"]["id"],
         asset_id=asset["id"],
-        quantity="100",
+        quantity=primary_quantity,
         price="10",
         reality_spec=ashare_reality(),
         market_snapshot_id=market["id"],
         max_market_age_seconds=3600,
         valid_until=valid_until,
-        price_range={"min": "9.8", "max": "10.2"},
+        price_range=risk_price_range,
     )
+    sell_risk=None
+    if requested_execution_plan and requested_execution_plan["plan_type"]=="moving_grid":
+        sell_risk=companion.investment_commands.risk_assess(as_of=cutoff,account_id=fixture["account"]["id"],asset_id=asset["id"],quantity="-100",price="10",reality_spec=ashare_reality(),market_snapshot_id=market["id"],max_market_age_seconds=3600,valid_until=valid_until,price_range=risk_price_range)
     decision = companion.investment_commands.decision_publish(
         subject={"asset_id": asset["id"]},
         content="# Fixture Decision\n\nBuy a bounded position only while all gates remain current.",
@@ -274,6 +287,8 @@ def build_actionable_opportunity(companion: Companion, fixture: dict) -> dict:
         alternatives=[{"choice": "hold cash"}, {"choice": "buy fewer shares"}],
         risk_calculation_id=risk["calculation_id"],
         research_validation_calculation_id=validation_id,
+        execution_plan=requested_execution_plan,
+        execution_sell_risk_calculation_id=sell_risk["calculation_id"] if sell_risk else None,
     )
     decision_revision = decision["revision"]
     actionable = {
@@ -308,6 +323,7 @@ def build_actionable_opportunity(companion: Companion, fixture: dict) -> dict:
         "risk": risk,
         "market": market,
         "opportunity": opportunity,
+        "valid_until": valid_until,
     }
 
 
@@ -642,6 +658,17 @@ def test_v5_program_fails_closed_on_context_drift_and_no_action_expires(
     )
     assert companion.operating.status()["program_alignment"]["aligned"] is True
     assert restored["current_revision_id"] == draft["id"]
+
+
+def test_production_failure_is_system_degraded_and_cannot_be_hidden_as_no_action(tmp_path:Path,monkeypatch:pytest.MonkeyPatch):
+    companion,_=setup_operating_system(tmp_path)
+    monkeypatch.setattr(companion,"production_health",lambda:{"ok":False,"applicable":True,"incidents":[{"check":"critical_pipelines_latest_run_succeeded"}]})
+    today=companion.operating.today()
+    assert today["mode"]=="system_degraded"
+    assert today["production_health"]["ok"] is False
+    source=companion.inbox_add(source="production_doctor",title="Pipeline failure",content="fixture")
+    with pytest.raises(CompanionError,match="system_degraded cannot be published as no_action"):
+        companion.operating.brief_prepare(brief_type="daily",period_key="degraded",as_of=iso(),conclusion="no_action",payload={"summary":"No action","what_changed":[],"decision":"Wait","risks":["pipeline failed"],"next_check_at":iso(utc_now()+timedelta(hours=1)),"queue_item_ids":[]},source_refs=[source["id"]])
 
 
 def test_v5_superseded_decision_invalidates_existing_queue(tmp_path: Path):
@@ -1333,4 +1360,121 @@ def test_schema4_to_schema5_is_explicit_and_preserves_v3_schedules(tmp_path: Pat
     assert result["schema_version"] == str(SCHEMA_VERSION)
     assert companion.schedule_get("sch_legacy")["mission"] == "preserve me"
     assert companion.schedule_get("sch_legacy")["dispatch_type"] == "codex_turn"
-    assert len(companion.system_status()["migrations"]) == 5
+    assert len(companion.system_status()["migrations"]) == 6
+
+
+def _condition_order(price_instruction="instant"):
+    return {"price_type":"limit","price_instruction":price_instruction,"custom_price":None}
+
+
+def _grid_spec(account_id,asset_id):
+    return {"account_id":account_id,"asset_id":asset_id,"validity_sessions":20,"monitoring_window":None,"initial_reference_price":"10","spacing_type":"difference","rise_sell_spacing":"1","fall_buy_spacing":"1","sell_order":_condition_order(),"buy_order":_condition_order(),"sell_quantity":"100","buy_quantity":"100","price_range":{"lower":"8","upper":"12","out_of_range_behavior":"sleep"},"position_range":{"max_net_buy":"100","max_net_sell":"100"},"multiple_grid_order":True}
+
+
+def _plan_spec(kind,account_id,asset_id):
+    common={"account_id":account_id,"asset_id":asset_id,"validity_sessions":20,"monitoring_window":None}
+    if kind=="priced_buy":return {**common,"trigger":{"direction":"cross_down","monitor_price":"9"},"order":_condition_order(),"quantity":"100"}
+    if kind=="priced_sell":return {**common,"trigger":{"direction":"cross_up","monitor_price":"11"},"order":_condition_order(),"quantity":"100"}
+    if kind=="bracket_exit":return {**common,"base_price":"10","take_profit":{"mode":"percentage","value":"5"},"stop_loss":{"mode":"percentage","value":"3"},"order":_condition_order(),"quantity":"100"}
+    return _grid_spec(account_id,asset_id)
+
+
+def test_cicc_four_condition_order_specs_are_frozen_without_invented_trigger_direction(tmp_path: Path):
+    companion, fixture = setup_operating_system(tmp_path)
+    asset=companion.financial.asset_upsert(asset_type="etf",name="Fixture ETF",currency="CNY",identifiers={"ts_code":"510300.SH"})
+    account_id, asset_id = fixture["account"]["id"], asset["id"]
+    common={"account_id":account_id,"asset_id":asset_id,"validity_sessions":20,"monitoring_window":None}
+    specs={
+        "priced_buy":{**common,"trigger":{"direction":"cross_up","monitor_price":"10"},"order":_condition_order(),"quantity":"100","effective_trigger_band_pct":"2","delay_confirmation":{"mode":"consecutive","count":4}},
+        "priced_sell":{**common,"trigger":{"direction":"cross_down","monitor_price":"9"},"order":_condition_order(),"quantity":"100"},
+        "bracket_exit":{**common,"base_price":"10","take_profit":{"mode":"percentage","value":"5"},"stop_loss":{"mode":"percentage","value":"3"},"order":_condition_order(),"quantity":"100","delay_confirmation":{"mode":"cumulative","count":4,"separate_take_profit_stop_loss_counters":True}},
+        "moving_grid":_grid_spec(account_id,asset_id),
+    }
+    normalized={kind:companion.execution_strategy._normalize_spec(kind,spec) for kind,spec in specs.items()}
+    assert normalized["priced_buy"]["trigger"]["direction"]=="cross_up"
+    assert normalized["priced_sell"]["trigger"]["direction"]=="cross_down"
+    assert normalized["bracket_exit"]["delay_confirmation"]["separate_take_profit_stop_loss_counters"] is True
+    grid=normalized["moving_grid"]["broker_semantics"]
+    assert grid["reference_update"]=="trigger_driven"
+    assert grid["no_reference_update_rejections"]==["insufficient_cash","insufficient_holdings"]
+    assert grid["termination_keeps_triggered_unfilled_orders"] is True
+    assert grid["etf_dividend"]=="automatic_grid_termination"
+    assert grid["terminate_and_liquidate_failure"]=="broker_unspecified_manual_reconciliation_required"
+
+
+def test_grid_lifecycle_preserves_customer_service_reference_and_termination_rules(tmp_path: Path):
+    companion, fixture = setup_operating_system(tmp_path)
+    built=build_actionable_opportunity(companion,fixture,lambda account_id,asset_id:{"plan_type":"moving_grid","spec":_grid_spec(account_id,asset_id)},asset_type="etf");queue=accept_action_card(companion,built)
+    card=companion.operating.queue_card(queue["id"]);action=card["action"]
+    spec=_grid_spec(action["account_id"],action["asset_id"])
+    plan=companion.execution_strategy.create_from_queue(queue_id=queue["id"],plan_type="moving_grid",spec=spec,valid_until=built["valid_until"],idempotency_key="grid-plan")
+    companion.execution_strategy.mark_configured(plan_id=plan["id"],broker_condition_ref="cicc-grid-1",configured_at=iso())
+    companion.execution_strategy.activate(plan_id=plan["id"],occurred_at=iso())
+    unchanged=companion.execution_strategy.report_order(plan_id=plan["id"],broker_order_ref="order-rejected",side="buy",quantity="100",status="rejected",triggered_at=iso(),reference_price_before="10",rejection_reason="insufficient_cash")
+    assert unchanged["orders"][0]["reference_update_reason"]=="unchanged_insufficient_resources"
+    with pytest.raises(CompanionError,match="reference update"):
+        companion.execution_strategy.report_order(plan_id=plan["id"],broker_order_ref="order-other",side="sell",quantity="100",status="submitted",triggered_at=iso(),reference_price_before="10")
+    trigger_time=iso()
+    active=companion.execution_strategy.report_order(plan_id=plan["id"],broker_order_ref="order-live",side="sell",quantity="100",status="submitted",triggered_at=trigger_time,reference_price_before="10",reference_price_after="11")
+    assert active["net_quantities"]["net_sell"]=="100"
+    event_count=len(active["events"])
+    duplicate=companion.execution_strategy.report_order(plan_id=plan["id"],broker_order_ref="order-live",side="sell",quantity="100",status="submitted",triggered_at=trigger_time)
+    assert len(duplicate["events"])==event_count
+    partial=companion.execution_strategy.report_order(plan_id=plan["id"],broker_order_ref="order-live",side="sell",quantity="100",status="partially_filled",triggered_at=iso(),cancelled_quantity="40")
+    assert partial["net_quantities"]["net_sell"]=="60"
+    with pytest.raises(CompanionError,match="cannot regress"):
+        companion.execution_strategy.report_order(plan_id=plan["id"],broker_order_ref="order-live",side="sell",quantity="100",status="submitted",triggered_at=iso(),cancelled_quantity="40")
+    terminated=companion.execution_strategy.report_etf_dividend_termination(plan_id=plan["id"],occurred_at=iso(),corporate_action_ref="etf-dividend-2026")
+    assert terminated["status"]=="terminated"
+    event=next(item for item in terminated["events"] if item["event_type"]=="terminated")
+    assert event["payload"]["live_orders_remain"]==1
+    assert event["payload"]["broker_does_not_auto_cancel_triggered_unfilled_orders"] is True
+    assert plan["id"] in companion.briefing.projection(program_id=fixture["program"]["id"])["broker_strategy_attention_ids"]
+    with pytest.raises(CompanionError,match="live or unknown"):
+        companion.execution_strategy.reconcile(plan_id=plan["id"],occurred_at=iso(),reconciliation_id="statement-before-order-final")
+    cancelled=companion.execution_strategy.report_order(plan_id=plan["id"],broker_order_ref="order-live",side="sell",quantity="100",status="cancelled",triggered_at=iso(),cancelled_quantity="40")
+    execution_id=cancelled["reported_order_execution_id"]
+    fill=companion.execution.report_fill(execution_id=execution_id,occurred_at=iso(),quantity="60",price="11",fee="1",source="broker-statement",external_id="grid-fill-60",final=True)
+    companion.execution.confirm_fill(execution_id=execution_id,entry_id=fill["pending_ledger_entry"]["id"],final=True)
+    as_of=iso(utc_now()+timedelta(seconds=1));companion.financial.market_add(action["asset_id"],"close","11",iso(),"broker-statement")
+    state=companion.financial.portfolio_state(as_of,action["account_id"]);positions={item["asset_id"]:item["quantity"] for item in state["positions"]};values={item["asset_id"]:item["market_value"] for item in state["positions"]};total=sum(Decimal(value) for value in state["cash"].values())+sum(Decimal(value) for value in values.values())
+    reconciliation=companion.financial.reconcile(action["account_id"],as_of,{"cash":state["cash"],"positions":positions,"position_values":values,"position_total_by_currency":{"CNY":str(sum(Decimal(value) for value in values.values()))},"total_by_currency":{"CNY":str(total)}},"broker-statement-final")
+    reconciled=companion.execution_strategy.reconcile(plan_id=plan["id"],occurred_at=as_of,reconciliation_id=reconciliation["id"])
+    assert reconciled["status"]=="reconciled"
+
+
+def test_condition_order_direction_price_instruction_and_fraction_contracts_fail_closed(tmp_path: Path):
+    companion,fixture=setup_operating_system(tmp_path);asset=companion.financial.asset_upsert(asset_type="etf",name="ETF",currency="CNY",identifiers={"ts_code":"510300.SH"});common={"account_id":fixture["account"]["id"],"asset_id":asset["id"],"validity_sessions":20,"monitoring_window":None}
+    fraction={"mode":"holding_fraction","fraction":"1/2","holding_quantity_at_configuration":"1000","resolved_quantity":"500"}
+    sell=companion.execution_strategy._normalize_spec("priced_sell",{**common,"trigger":{"direction":"cross_up","monitor_price":"10"},"order":_condition_order(),"quantity":fraction})
+    assert str(companion.execution_strategy.resolved_quantity(sell))=="500"
+    with pytest.raises(CompanionError,match="unsupported broker price instruction"):
+        companion.execution_strategy._normalize_spec("priced_buy",{**common,"trigger":{"direction":"cross_down","monitor_price":"10"},"order":{"price_type":"market","price_instruction":"custom","custom_price":"10"},"quantity":"100"})
+    with pytest.raises(CompanionError,match="holding fraction"):
+        companion.execution_strategy._normalize_spec("priced_buy",{**common,"trigger":{"direction":"cross_down","monitor_price":"10"},"order":_condition_order(),"quantity":fraction})
+    with pytest.raises(CompanionError,match="take_profit price"):
+        companion.execution_strategy._normalize_spec("bracket_exit",{**common,"base_price":"10","take_profit":{"mode":"price","value":"9"},"stop_loss":{"mode":"price","value":"8"},"order":_condition_order(),"quantity":"100"})
+
+
+@pytest.mark.parametrize(("plan_type","allowed_side","forbidden_side"),[("priced_buy","buy","sell"),("priced_sell","sell","buy"),("bracket_exit","sell","buy"),("moving_grid","buy",None)])
+def test_each_broker_strategy_requires_exact_decision_authorization_and_side(tmp_path:Path,plan_type:str,allowed_side:str,forbidden_side:str|None):
+    companion,fixture=setup_operating_system(tmp_path)
+    builder=lambda account_id,asset_id:{"plan_type":plan_type,"spec":_plan_spec(plan_type,account_id,asset_id)}
+    built=build_actionable_opportunity(companion,fixture,builder,asset_type="etf" if plan_type=="moving_grid" else "stock");queue=accept_action_card(companion,built);action=companion.operating.queue_card(queue["id"])["action"]
+    spec=_plan_spec(plan_type,action["account_id"],action["asset_id"])
+    changed=dict(spec)
+    if plan_type in {"priced_buy","priced_sell"}:changed={**spec,"trigger":{**spec["trigger"],"monitor_price":"8"}}
+    else:changed={**spec,"validity_sessions":60}
+    with pytest.raises(CompanionError,match="does not authorize"):
+        companion.execution_strategy.create_from_queue(queue_id=queue["id"],plan_type=plan_type,spec=changed,valid_until=built["valid_until"],idempotency_key=f"wrong-{plan_type}")
+    plan=companion.execution_strategy.create_from_queue(queue_id=queue["id"],plan_type=plan_type,spec=spec,valid_until=built["valid_until"],idempotency_key=f"plan-{plan_type}")
+    companion.execution_strategy.mark_configured(plan_id=plan["id"],broker_condition_ref=f"broker-{plan_type}",configured_at=iso());companion.execution_strategy.activate(plan_id=plan["id"],occurred_at=iso())
+    if forbidden_side:
+        with pytest.raises(CompanionError,match="can report only"):
+            companion.execution_strategy.report_order(plan_id=plan["id"],broker_order_ref="wrong-side",side=forbidden_side,quantity="100",status="submitted",triggered_at=iso())
+    extra={"reference_price_before":"10","reference_price_after":"9"} if plan_type=="moving_grid" else {"condition_leg":"take_profit"} if plan_type=="bracket_exit" else {}
+    current=companion.execution_strategy.report_order(plan_id=plan["id"],broker_order_ref="right-side",side=allowed_side,quantity="100",status="submitted",triggered_at=iso(),**extra)
+    assert current["orders"][0]["status"]=="submitted"
+    if plan_type=="moving_grid":
+        sleeping=companion.execution_strategy.set_sleeping(plan_id=plan["id"],direction="buy",sleeping=True,occurred_at=iso(),reason="broker reported max net buy reached")
+        assert sleeping["buy_direction_state"]=="sleeping" and sleeping["sell_direction_state"]=="active"

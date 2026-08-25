@@ -14,6 +14,7 @@ from ..cognition import CognitiveLedger
 from ..data_domain import DataDomain
 from ..delivery import DeliveryEngine
 from ..execution import ExecutionLifecycleService
+from ..execution_strategy import BrokerExecutionStrategyService
 from ..financial import FinancialKernel
 from ..governance import GateRegistry
 from ..jobs import JobEngine
@@ -56,6 +57,7 @@ def compose_services(companion) -> None:
     companion.research_validation = ResearchValidationService(companion)
     companion.actionability = ActionabilityService(companion)
     companion.execution = ExecutionLifecycleService(companion)
+    companion.execution_strategy = BrokerExecutionStrategyService(companion)
     companion.program_evaluation = ProgramEvaluationCoverage(companion)
     companion.operating = InvestmentOperatingSystem(companion)
     companion.briefing = InvestmentBriefingService(companion)

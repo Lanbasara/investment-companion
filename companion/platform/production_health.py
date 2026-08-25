@@ -35,6 +35,7 @@ class ProductionHealthService:
         checks["services_use_runtime"] = all(item["runtime_match"] for item in services)
         checks["services_last_result_success"] = all(item["result"] == "success" and item["exec_status"] == "0" for item in services)
         pipelines = self._pipeline_health()
+        checks["critical_pipeline_roles_complete"] = {item["role"] for item in pipelines} == CRITICAL_RESEARCH_ROLES
         checks["critical_pipelines_have_runs"] = all(item["latest_run"] is not None for item in pipelines)
         checks["critical_pipelines_latest_run_succeeded"] = all(item["healthy"] for item in pipelines)
         incidents = [

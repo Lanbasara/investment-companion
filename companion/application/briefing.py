@@ -112,6 +112,9 @@ class InvestmentBriefingService:
                 "mode": "action",
                 "message": f"有 {len(accepted) + len(proposed)} 项已接受建议尚未完成券商订单反馈。",
             }
+        strategy_attention = snapshot["broker_strategy_attention_ids"]
+        if strategy_attention:
+            return {"mode":"review_required","message":f"有 {len(strategy_attention)} 个券商条件单处于终止待核对或异常状态，需要检查未成交委托和持仓。"}
         reconciliation = snapshot["reconciliation"]
         if reconciliation["needs_review_ids"]:
             return {
@@ -144,6 +147,7 @@ class InvestmentBriefingService:
         program = self.c.operating.program_get(program_id)
         revision = program.get("current_revision") or {}
         account_ids = list(revision.get("content", {}).get("account_ids", []))
+        self.c.execution_strategy.expire_due()
         with self.c.db.connect() as con:
             queues = rows_dict(
                 con.execute(
@@ -154,6 +158,7 @@ class InvestmentBriefingService:
             executions = rows_dict(
                 con.execute("SELECT * FROM executions ORDER BY created_at,id").fetchall()
             )
+            strategies = rows_dict(con.execute("SELECT * FROM broker_execution_plans WHERE program_id=? ORDER BY created_at,id",(program_id,)).fetchall())
         queue_by_id = {item["id"]: item for item in queues}
         decision_revisions = {item["decision_revision_id"] for item in queues}
         executions = [item for item in executions if self._belongs_to_program(item, queue_by_id, decision_revisions)]
@@ -168,10 +173,11 @@ class InvestmentBriefingService:
         execution_queue_ids = {
             item.get("details", {}).get("queue_id") for item in executions
         }
+        strategy_queue_ids={item["queue_id"] for item in strategies}
         accepted_without_execution = sorted(
             item["id"]
             for item in queues
-            if item["state"] == "accepted" and item["id"] not in execution_queue_ids
+            if item["state"] == "accepted" and item["id"] not in execution_queue_ids and item["id"] not in strategy_queue_ids
         )
         pending_ledgers = sorted(
             item["id"]
@@ -198,7 +204,7 @@ class InvestmentBriefingService:
             account_ids, reconciliations
         )
         warnings = []
-        current_rows = [*queues, *executions, *ledgers, *reconciliations]
+        current_rows = [*queues, *executions, *strategies, *ledgers, *reconciliations]
         if any(parse(item.get("updated_at") or item.get("confirmed_at") or item["created_at"]) > as_of_time for item in current_rows):
             warnings.append("current_projection_changed_after_as_of")
         snapshot = {
@@ -219,6 +225,9 @@ class InvestmentBriefingService:
             "confirmed_fill_entry_ids": confirmed_ledgers,
             "deviated_execution_ids": deviated,
             "accepted_without_execution_queue_ids": accepted_without_execution,
+            "broker_strategy_ids": [item["id"] for item in strategies],
+            "active_broker_strategy_ids": [item["id"] for item in strategies if item["status"] in {"configured","active","sleeping"}],
+            "broker_strategy_attention_ids": [item["id"] for item in strategies if item["status"] in {"termination_pending","terminated","exception"}],
             "reconciliation": reconciliation_summary,
             "events_since": events,
             "portfolio_changed_by_confirmed_fills": bool(confirmed_ledgers),
@@ -233,6 +242,7 @@ class InvestmentBriefingService:
                 self._reconciliation_source(item) for item in reconciliations
             ],
             "execution_events": events,
+            "broker_strategy_states": [{"id":item["id"],"plan_type":item["plan_type"],"status":item["status"],"queue_id":item["queue_id"],"updated_at":item["updated_at"]} for item in strategies],
         }
         return snapshot, sources
 
