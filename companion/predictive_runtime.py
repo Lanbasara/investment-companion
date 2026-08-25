@@ -121,8 +121,26 @@ def job_fund_data_bundle(service, context: dict[str, Any], *, lookback_sessions:
         results.append({"capability": capability, "batch_id": batch["id"], "status": batch["status"], "row_count": batch["row_count"], "raw_object_ids": batch["raw_object_ids"], "canonical_object_ids": batch["canonical_object_ids"], "error": batch.get("error")})
         output_refs.extend(batch["raw_object_ids"]); output_refs.extend(batch["canonical_object_ids"])
     ready = all(item["status"] in {"ready", "empty_valid"} for item in results)
-    historical = {capability: service._historical_canonical_rows(capability, cutoff) for capability in ("etf_basic", "fund_daily", "fund_share")}
-    refs = [object_id for capability in historical for object_id in service._historical_canonical_object_ids(capability, cutoff)]
+    current_run_ids = {
+        capability: [object_id for item in results if item["capability"] == capability for object_id in item["canonical_object_ids"]]
+        for capability in ("etf_basic", "fund_daily", "fund_share")
+    }
+    # Preserve the frozen knowledge cutoff while admitting only the exact
+    # immutable objects created by this job.  Using "now" here would also
+    # admit unrelated concurrent ingestion and make replay nondeterministic.
+    historical = {
+        capability: service._historical_canonical_rows(
+            capability, cutoff, include_object_ids=current_run_ids[capability]
+        )
+        for capability in current_run_ids
+    }
+    refs = [
+        object_id
+        for capability in historical
+        for object_id in service._historical_canonical_object_ids(
+            capability, cutoff, include_object_ids=current_run_ids[capability]
+        )
+    ]
     available = len({str(item.get("trade_date") or "") for item in historical["fund_daily"] if item.get("trade_date")})
     feature_id = universe_id = None; outcome_ids = []
     if ready and historical["etf_basic"] and historical["fund_daily"]:

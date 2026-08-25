@@ -927,20 +927,24 @@ class V6PredictiveRecommendations:
             return [item.get("value",{}) for item in value.get("facts",[]) if isinstance(item,dict) and isinstance(item.get("value"),dict)]
         return []
 
-    def _historical_canonical_rows(self, capability: str, before: str) -> list[dict[str, Any]]:
+    def _historical_canonical_rows(self, capability: str, before: str, *, include_object_ids: list[str] | None = None) -> list[dict[str, Any]]:
         cutoff=parse(before);stream=self.c.data.stream_get("tushare",capability);result=[]
+        included=set(include_object_ids or [])
         batches=self.c.data.batch_list(stream["id"],status="ready")
         for batch in sorted(batches,key=lambda item:(item.get("finished_at") or "",item["id"])):
             finished=batch.get("finished_at")
-            if not finished or parse(finished)>cutoff:continue
+            object_ids=set(batch.get("canonical_object_ids",[]))
+            if not finished or (parse(finished)>cutoff and not object_ids.intersection(included)):continue
             result.extend(self._rows_from_canonical_batch(capability,batch))
         return result
 
-    def _historical_canonical_object_ids(self, capability: str, before: str) -> list[str]:
+    def _historical_canonical_object_ids(self, capability: str, before: str, *, include_object_ids: list[str] | None = None) -> list[str]:
         cutoff=parse(before);stream=self.c.data.stream_get("tushare",capability);result=[]
+        included=set(include_object_ids or [])
         for batch in self.c.data.batch_list(stream["id"],status="ready"):
             finished=batch.get("finished_at")
-            if not finished or parse(finished)>cutoff:continue
+            object_ids=set(batch.get("canonical_object_ids",[]))
+            if not finished or (parse(finished)>cutoff and not object_ids.intersection(included)):continue
             for object_id in batch.get("canonical_object_ids",[]):
                 if not canonical_object_ready(self.c.data,object_id):continue
                 result.append(object_id)

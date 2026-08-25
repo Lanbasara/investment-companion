@@ -161,6 +161,33 @@ def test_ready_batch_does_not_expose_a_later_quarantined_object(tmp_path: Path):
     assert dated_object_refs(companion.v6_predictive, "daily", parse(iso())) == {}
 
 
+def test_etf_history_admits_only_explicit_current_run_objects_after_cutoff(tmp_path: Path):
+    companion = setup_v6(tmp_path)
+    stream = companion.data.stream_get("tushare", "fund_daily")
+    cutoff = "2026-08-25T00:00:00Z"
+    allowed = companion.data.object_put_json(
+        [{"asset_id": "tushare:510300.SH", "date": "2026-08-25", "close": "4", "amount": "1"}],
+        kind="tushare_fund_daily_canonical",
+    )
+    unrelated = companion.data.object_put_json(
+        [{"asset_id": "tushare:510500.SH", "date": "2026-08-25", "close": "5", "amount": "1"}],
+        kind="tushare_fund_daily_canonical",
+    )
+    for key, obj in (("allowed", allowed), ("unrelated", unrelated)):
+        batch = companion.data.batch_start(stream["id"], f"pytest-{key}", {"trade_date": "20260825"})
+        companion.data.batch_finish(batch["id"], status="ready", raw_object_ids=[], canonical_object_ids=[obj["id"]], row_count=1)
+
+    rows = companion.v6_predictive._historical_canonical_rows(
+        "fund_daily", cutoff, include_object_ids=[allowed["id"]]
+    )
+    refs = companion.v6_predictive._historical_canonical_object_ids(
+        "fund_daily", cutoff, include_object_ids=[allowed["id"]]
+    )
+
+    assert {row["ts_code"] for row in rows} == {"510300.SH"}
+    assert refs == [allowed["id"]]
+
+
 def test_v6_stock_line_creates_separate_candidates_signals_and_outcomes(tmp_path: Path):
     companion = setup_v6(tmp_path)
     source = companion.data.manifest_publish(
