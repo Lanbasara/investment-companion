@@ -20,6 +20,26 @@ def test_research_freshness_does_not_require_current_session_before_completion_w
     assert result["missing_stock_sessions"] == []
 
 
+def test_research_freshness_accepts_no_new_session_scan_as_semantically_current(tmp_path: Path, monkeypatch):
+    companion = Companion(tmp_path, gate_scope="test_fixture")
+    companion.initialize()
+    monkeypatch.setattr("companion.platform.production_health.utc_now", lambda: __import__("datetime").datetime(2026, 8, 25, 12, 0, tzinfo=__import__("datetime").timezone.utc))
+    monkeypatch.setattr(companion.quant_research, "_calendar_rows", lambda _now: [
+        {"exchange": "SSE", "date": "2026-08-25", "is_open": "1"},
+    ])
+    monkeypatch.setattr("companion.predictive_runtime.dated_object_refs", lambda _service, _capability, _now: {"2026-08-25": "object"})
+    companion.data.manifest_publish(
+        kind="v5_canary_quant_scan",
+        schema_version="investment-companion.v5-continuous-quant-scan/v1",
+        manifest={"status": "no_new_session", "details": {"as_of": "2026-08-25"}},
+    )
+
+    result = companion._research_freshness()
+
+    assert result["latest_stock_scan_date"] == "2026-08-25"
+    assert result["stock_scan_semantically_fresh"] is True
+
+
 def test_production_doctor_detects_runtime_drift_and_latest_pipeline_failure(tmp_path: Path, monkeypatch):
     companion = Companion(tmp_path, gate_scope="test_fixture")
     companion.initialize()

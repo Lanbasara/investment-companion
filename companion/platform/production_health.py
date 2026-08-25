@@ -127,7 +127,8 @@ class ProductionHealthService:
             ).fetchone()
             if row:
                 import json
-                latest_scan_as_of = json.loads(row["manifest_json"]).get("manifest", {}).get("as_of")
+                body = json.loads(row["manifest_json"]).get("manifest", {})
+                latest_scan_as_of = body.get("as_of") or body.get("details", {}).get("as_of")
             row = con.execute(
                 "SELECT manifest_json FROM artifact_manifests WHERE kind=? ORDER BY created_at DESC,id DESC LIMIT 1",
                 (FUND_FEATURES_KIND,),
