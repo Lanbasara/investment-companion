@@ -92,4 +92,6 @@ class SystemOperationsService:
         if project_config.is_file():
             from ..agent_config import validate_agent_config
             checks["custom_agent_config"]=validate_agent_config(self.root)["ok"]
-        return {"ok":all(v for k,v in checks.items() if k not in {"investor_confirmed","mandate_confirmed","financial_facts_ready"}),"checks":checks,"warnings":[k for k,v in checks.items() if not v],"status":status}
+        production=self.production_health()
+        checks["production_runtime_and_pipelines"]=production["ok"]
+        return {"ok":all(v for k,v in checks.items() if k not in {"investor_confirmed","mandate_confirmed","financial_facts_ready"}),"checks":checks,"warnings":[k for k,v in checks.items() if not v],"production":production,"status":status}

@@ -11,12 +11,13 @@ from .bootstrap import compose_services
 from .db import SCHEMA_VERSION, Database, row_dict, rows_dict
 from .foundation import CompanionError, canonical, digest, new_id
 from .platform.operations import SystemOperationsService
+from .platform.production_health import ProductionHealthService
 from .platform.outbox import OutboxService
 from .platform.workflow import WorkflowService
 from .timeutil import iso, parse, utc_now
 
 
-class Companion(WorkflowService, OutboxService, SystemOperationsService):
+class Companion(WorkflowService, OutboxService, ProductionHealthService, SystemOperationsService):
     def __init__(self, root: str | Path, db_path: str | Path | None = None, *, gate_scope: str | None = None):
         self.root = Path(root).expanduser().resolve()
         self.gate_scope = gate_scope or os.environ.get("COMPANION_GATE_SCOPE", "production")

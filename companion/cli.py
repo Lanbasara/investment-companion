@@ -18,7 +18,7 @@ def emit(value):
 def parser() -> argparse.ArgumentParser:
     p=argparse.ArgumentParser(prog="companion",description="Investment Companion operational CLI")
     p.add_argument("--root",default=os.environ.get("COMPANION_ROOT","/home/ghk/investment-home"));sub=p.add_subparsers(dest="command",required=True)
-    for name in ["init","status","doctor","recover","bootstrap","agent-check","session-brief","v5-status","today","v5-quant-status","v5-experiment-status","v6-predictive-status","delivery-status"]:sub.add_parser(name)
+    for name in ["init","status","doctor","production-doctor","recover","bootstrap","agent-check","session-brief","v5-status","today","v5-quant-status","v5-experiment-status","v6-predictive-status","delivery-status"]:sub.add_parser(name)
     tick=sub.add_parser("tick");tick.add_argument("--limit",type=int,default=20)
     quality=sub.add_parser("v5-research-quality");quality.add_argument("--days",type=int,default=30)
     migrate=sub.add_parser("migrate");migrate.add_argument("--backup-directory",required=True)
@@ -122,6 +122,7 @@ def main(argv=None) -> int:
             elif a.command=="snapshot-publish":result=c.data.snapshot_validate_and_publish(json.loads(Path(a.manifest_file).read_text(encoding="utf-8")))
             elif a.command=="session-brief":result=c.session_brief()
             elif a.command=="doctor":result=c.doctor()
+            elif a.command=="production-doctor":result=c.production_health()
             elif a.command=="tick":result=c.tick(limit=a.limit)
             elif a.command=="recover":result=c.recover()
             elif a.command=="bootstrap":result=c.bootstrap_defaults()
