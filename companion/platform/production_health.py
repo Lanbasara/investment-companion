@@ -103,11 +103,15 @@ class ProductionHealthService:
 
         now = utc_now()
         calendar = self.quant_research._calendar_rows(now)
-        local_day = now.astimezone(ZoneInfo("Asia/Shanghai")).date().isoformat()
+        local_now = now.astimezone(ZoneInfo("Asia/Shanghai"))
+        local_day = local_now.date().isoformat()
+        # The last research role is scheduled for 18:30 China time.  Before
+        # that daily completion window, today's session is not yet required.
+        require_today = (local_now.hour, local_now.minute) >= (18, 30)
         sessions = sorted({
             str(row.get("date")) for row in calendar
             if row.get("exchange") == "SSE" and row.get("is_open") in {True, 1, "1"}
-            and str(row.get("date")) <= local_day
+            and (str(row.get("date")) < local_day or (require_today and str(row.get("date")) == local_day))
         })[-21:]
         expected = sessions[-1] if sessions else None
         daily = dated_object_refs(self.quant_research, "daily", now)

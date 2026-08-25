@@ -4,6 +4,22 @@ from companion.core import Companion
 from companion.platform.production_health import ProductionHealthService, SYSTEMD_UNITS
 
 
+def test_research_freshness_does_not_require_current_session_before_completion_window(tmp_path: Path, monkeypatch):
+    companion = Companion(tmp_path, gate_scope="test_fixture")
+    companion.initialize()
+    monkeypatch.setattr("companion.platform.production_health.utc_now", lambda: __import__("datetime").datetime(2026, 8, 25, 23, 40, tzinfo=__import__("datetime").timezone.utc))
+    monkeypatch.setattr(companion.quant_research, "_calendar_rows", lambda _now: [
+        {"exchange": "SSE", "date": "2026-08-25", "is_open": "1"},
+        {"exchange": "SSE", "date": "2026-08-26", "is_open": "1"},
+    ])
+    monkeypatch.setattr("companion.predictive_runtime.dated_object_refs", lambda _service, _capability, _now: {"2026-08-25": "object"})
+
+    result = companion._research_freshness()
+
+    assert result["expected_latest_session"] == "2026-08-25"
+    assert result["missing_stock_sessions"] == []
+
+
 def test_production_doctor_detects_runtime_drift_and_latest_pipeline_failure(tmp_path: Path, monkeypatch):
     companion = Companion(tmp_path, gate_scope="test_fixture")
     companion.initialize()
