@@ -5,6 +5,7 @@ import hashlib
 
 MIGRATION_008_ID = "0008_broker_managed_execution_strategies"
 MIGRATION_008_SQL = r"""
+ALTER TABLE reconciliations ADD COLUMN confirmed_ledger_hash TEXT;
 CREATE TABLE broker_execution_plans (
   id TEXT PRIMARY KEY, program_id TEXT NOT NULL, queue_id TEXT NOT NULL,
   decision_revision_id TEXT NOT NULL, broker TEXT NOT NULL CHECK(broker IN ('cicc_wealth')),
@@ -27,6 +28,7 @@ CREATE INDEX idx_broker_execution_plans_status ON broker_execution_plans(status,
 CREATE TABLE broker_managed_orders (
   id TEXT PRIMARY KEY, plan_id TEXT NOT NULL, broker_order_ref TEXT NOT NULL,
   execution_id TEXT, condition_leg TEXT CHECK(condition_leg IS NULL OR condition_leg IN ('take_profit','stop_loss')),
+  execution_link_state TEXT NOT NULL CHECK(execution_link_state IN ('pending','linked','not_applicable')),
   side TEXT NOT NULL CHECK(side IN ('buy','sell')),
   status TEXT NOT NULL CHECK(status IN ('triggered','submitted','partially_filled','filled','cancelled','rejected','unknown')),
   quantity_text TEXT NOT NULL, submitted_quantity_text TEXT NOT NULL, cancelled_quantity_text TEXT NOT NULL DEFAULT '0', trigger_price_text TEXT, reference_price_before_text TEXT,

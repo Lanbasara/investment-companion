@@ -38,6 +38,8 @@ class ProductionHealthService:
         checks["critical_pipeline_roles_complete"] = {item["role"] for item in pipelines} == CRITICAL_RESEARCH_ROLES
         checks["critical_pipelines_have_runs"] = all(item["latest_run"] is not None for item in pipelines)
         checks["critical_pipelines_latest_run_succeeded"] = all(item["healthy"] for item in pipelines)
+        with self.db.connect() as con:orphan_count=con.execute("SELECT COUNT(*) FROM broker_managed_orders WHERE status<>'rejected' AND (execution_id IS NULL OR execution_link_state<>'linked')").fetchone()[0]
+        checks["broker_orders_linked_to_execution"] = orphan_count==0
         incidents = [
             {"severity": "critical", "check": key}
             for key, passed in checks.items() if not passed
@@ -46,6 +48,7 @@ class ProductionHealthService:
             "ok": not incidents, "applicable": True, "checked_at": iso(),
             "runtime": {"pointer": str(runtime) if runtime else None, "commit": runtime_head, "g0_commit": gate.get("code_version") if gate else None},
             "checks": checks, "services": services, "pipelines": pipelines,
+            "broker_execution_orphan_count": orphan_count,
             "incidents": incidents,
         }
 

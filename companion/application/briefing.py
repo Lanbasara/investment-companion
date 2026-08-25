@@ -159,6 +159,7 @@ class InvestmentBriefingService:
                 con.execute("SELECT * FROM executions ORDER BY created_at,id").fetchall()
             )
             strategies = rows_dict(con.execute("SELECT * FROM broker_execution_plans WHERE program_id=? ORDER BY created_at,id",(program_id,)).fetchall())
+            orphan_strategy_ids={row[0] for row in con.execute("SELECT DISTINCT o.plan_id FROM broker_managed_orders o JOIN broker_execution_plans p ON p.id=o.plan_id WHERE p.program_id=? AND o.status<>'rejected' AND (o.execution_id IS NULL OR o.execution_link_state<>'linked')",(program_id,)).fetchall()}
         queue_by_id = {item["id"]: item for item in queues}
         decision_revisions = {item["decision_revision_id"] for item in queues}
         executions = [item for item in executions if self._belongs_to_program(item, queue_by_id, decision_revisions)]
@@ -227,7 +228,7 @@ class InvestmentBriefingService:
             "accepted_without_execution_queue_ids": accepted_without_execution,
             "broker_strategy_ids": [item["id"] for item in strategies],
             "active_broker_strategy_ids": [item["id"] for item in strategies if item["status"] in {"configured","active","sleeping"}],
-            "broker_strategy_attention_ids": [item["id"] for item in strategies if item["status"] in {"termination_pending","terminated","exception"}],
+            "broker_strategy_attention_ids": sorted({item["id"] for item in strategies if item["status"] in {"termination_pending","terminated","exception"}}|orphan_strategy_ids),
             "reconciliation": reconciliation_summary,
             "events_since": events,
             "portfolio_changed_by_confirmed_fills": bool(confirmed_ledgers),

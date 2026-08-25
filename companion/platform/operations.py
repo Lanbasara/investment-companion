@@ -24,6 +24,7 @@ class SystemOperationsService:
             recovered["outbox"]=con.execute("UPDATE outbox SET status='retry',lease_owner=NULL,lease_until=NULL,available_at=?,updated_at=? WHERE status='sending' AND lease_until<=?",(now,now,now)).rowcount
             con.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('last_recovery_at',?)",(now,))
         job_recovery=self.jobs.recover();recovered.update(job_recovery)
+        recovered["broker_execution_links"]=len(self.execution_strategy.recover_execution_links())
         recovered["deliveries"]=sum(self.delivery.recover_outbox(outbox_id) for outbox_id in stale_delivery_outbox_ids)
         return {"ok":True,"integrity":integrity,"recovered":recovered,"at":now}
 

@@ -662,7 +662,7 @@ class FinancialKernel:
         rid, now = new_id("recon"), iso()
         status = "matched" if full_scope_matched else "needs_review"
         with self.db.transaction() as con:
-            con.execute("INSERT INTO reconciliations(id,account_id,as_of,statement_json,computed_json,differences_json,status,source_ref,created_at) VALUES(?,?,?,?,?,?,?,?,?)",(rid,account_id,as_of,canonical(statement),canonical(persisted_computed),canonical(differences),status,source_ref,now))
+            con.execute("INSERT INTO reconciliations(id,account_id,as_of,statement_json,computed_json,differences_json,status,source_ref,created_at,confirmed_ledger_hash) VALUES(?,?,?,?,?,?,?,?,?,?)",(rid,account_id,as_of,canonical(statement),canonical(persisted_computed),canonical(differences),status,source_ref,now,self.confirmed_ledger_hash()))
         return {
             "id": rid,
             "status": status,

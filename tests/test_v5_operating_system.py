@@ -249,6 +249,7 @@ def build_actionable_opportunity(companion: Companion, fixture: dict, execution_
         asset["id"], "close", "10", cutoff, "fixture-market", "healthy", "CNY"
     )
     requested_execution_plan=execution_plan_builder(fixture["account"]["id"],asset["id"]) if execution_plan_builder else None
+    if requested_execution_plan:valid_until=iso(utc_now()+timedelta(days=30))
     if requested_execution_plan and requested_execution_plan["plan_type"] in {"priced_sell","bracket_exit","moving_grid"}:
         holding=companion.financial.ledger_add(account_id=fixture["account"]["id"],entry_type="trade",asset_id=asset["id"],occurred_at=iso(utc_now()-timedelta(days=1)),quantity="1000",price="10",amount="-10000",currency="CNY",source="pytest-execution-plan-holding")
         companion.financial.ledger_confirm(holding["id"])
@@ -1417,6 +1418,11 @@ def test_grid_lifecycle_preserves_customer_service_reference_and_termination_rul
     trigger_time=iso()
     active=companion.execution_strategy.report_order(plan_id=plan["id"],broker_order_ref="order-live",side="sell",quantity="100",status="submitted",triggered_at=trigger_time,reference_price_before="10",reference_price_after="11")
     assert active["net_quantities"]["net_sell"]=="100"
+    linked_execution_id=active["reported_order_execution_id"]
+    with companion.db.transaction() as con:con.execute("UPDATE broker_managed_orders SET execution_id=NULL,execution_link_state='pending' WHERE broker_order_ref='order-live'")
+    live_order=next(item for item in active["orders"] if item["broker_order_ref"]=="order-live")
+    assert companion.execution_strategy.recover_execution_links()==[live_order["id"]]
+    assert next(item for item in companion.execution_strategy.get(plan["id"])["orders"] if item["broker_order_ref"]=="order-live")["execution_id"]==linked_execution_id
     event_count=len(active["events"])
     duplicate=companion.execution_strategy.report_order(plan_id=plan["id"],broker_order_ref="order-live",side="sell",quantity="100",status="submitted",triggered_at=trigger_time)
     assert len(duplicate["events"])==event_count
@@ -1434,8 +1440,13 @@ def test_grid_lifecycle_preserves_customer_service_reference_and_termination_rul
         companion.execution_strategy.reconcile(plan_id=plan["id"],occurred_at=iso(),reconciliation_id="statement-before-order-final")
     cancelled=companion.execution_strategy.report_order(plan_id=plan["id"],broker_order_ref="order-live",side="sell",quantity="100",status="cancelled",triggered_at=iso(),cancelled_quantity="40")
     execution_id=cancelled["reported_order_execution_id"]
+    old_as_of=iso(utc_now()+timedelta(seconds=1));companion.financial.market_add(action["asset_id"],"close","10",iso(),"old-broker-statement")
+    old_state=companion.financial.portfolio_state(old_as_of,action["account_id"]);old_positions={item["asset_id"]:item["quantity"] for item in old_state["positions"]};old_values={item["asset_id"]:item["market_value"] for item in old_state["positions"]};old_total=sum(Decimal(value) for value in old_state["cash"].values())+sum(Decimal(value) for value in old_values.values())
+    old_reconciliation=companion.financial.reconcile(action["account_id"],old_as_of,{"cash":old_state["cash"],"positions":old_positions,"position_values":old_values,"position_total_by_currency":{"CNY":str(sum(Decimal(value) for value in old_values.values()))},"total_by_currency":{"CNY":str(old_total)}},"broker-statement-before-fill")
     fill=companion.execution.report_fill(execution_id=execution_id,occurred_at=iso(),quantity="60",price="11",fee="1",source="broker-statement",external_id="grid-fill-60",final=True)
     companion.execution.confirm_fill(execution_id=execution_id,entry_id=fill["pending_ledger_entry"]["id"],final=True)
+    with pytest.raises(CompanionError,match="does not match the current confirmed Ledger"):
+        companion.execution_strategy.reconcile(plan_id=plan["id"],occurred_at=old_as_of,reconciliation_id=old_reconciliation["id"])
     as_of=iso(utc_now()+timedelta(seconds=1));companion.financial.market_add(action["asset_id"],"close","11",iso(),"broker-statement")
     state=companion.financial.portfolio_state(as_of,action["account_id"]);positions={item["asset_id"]:item["quantity"] for item in state["positions"]};values={item["asset_id"]:item["market_value"] for item in state["positions"]};total=sum(Decimal(value) for value in state["cash"].values())+sum(Decimal(value) for value in values.values())
     reconciliation=companion.financial.reconcile(action["account_id"],as_of,{"cash":state["cash"],"positions":positions,"position_values":values,"position_total_by_currency":{"CNY":str(sum(Decimal(value) for value in values.values()))},"total_by_currency":{"CNY":str(total)}},"broker-statement-final")
@@ -1464,7 +1475,8 @@ def test_each_broker_strategy_requires_exact_decision_authorization_and_side(tmp
     spec=_plan_spec(plan_type,action["account_id"],action["asset_id"])
     changed=dict(spec)
     if plan_type in {"priced_buy","priced_sell"}:changed={**spec,"trigger":{**spec["trigger"],"monitor_price":"8"}}
-    else:changed={**spec,"validity_sessions":60}
+    elif plan_type=="bracket_exit":changed={**spec,"base_price":"11"}
+    else:changed={**spec,"initial_reference_price":"9"}
     with pytest.raises(CompanionError,match="does not authorize"):
         companion.execution_strategy.create_from_queue(queue_id=queue["id"],plan_type=plan_type,spec=changed,valid_until=built["valid_until"],idempotency_key=f"wrong-{plan_type}")
     plan=companion.execution_strategy.create_from_queue(queue_id=queue["id"],plan_type=plan_type,spec=spec,valid_until=built["valid_until"],idempotency_key=f"plan-{plan_type}")
@@ -1478,3 +1490,15 @@ def test_each_broker_strategy_requires_exact_decision_authorization_and_side(tmp
     if plan_type=="moving_grid":
         sleeping=companion.execution_strategy.set_sleeping(plan_id=plan["id"],direction="buy",sleeping=True,occurred_at=iso(),reason="broker reported max net buy reached")
         assert sleeping["buy_direction_state"]=="sleeping" and sleeping["sell_direction_state"]=="active"
+
+
+def test_expired_condition_order_still_accepts_pre_deadline_order_lifecycle(tmp_path:Path):
+    companion,fixture=setup_operating_system(tmp_path);builder=lambda account_id,asset_id:{"plan_type":"priced_buy","spec":_plan_spec("priced_buy",account_id,asset_id)}
+    built=build_actionable_opportunity(companion,fixture,builder);queue=accept_action_card(companion,built);action=companion.operating.queue_card(queue["id"])["action"];spec=_plan_spec("priced_buy",action["account_id"],action["asset_id"])
+    plan=companion.execution_strategy.create_from_queue(queue_id=queue["id"],plan_type="priced_buy",spec=spec,valid_until=built["valid_until"],idempotency_key="expiry-plan");companion.execution_strategy.mark_configured(plan_id=plan["id"],broker_condition_ref="expiry-condition",configured_at=iso());companion.execution_strategy.activate(plan_id=plan["id"],occurred_at=iso())
+    triggered_at=iso();companion.execution_strategy.report_order(plan_id=plan["id"],broker_order_ref="pre-deadline",side="buy",quantity="100",status="submitted",triggered_at=triggered_at)
+    with companion.db.transaction() as con:con.execute("UPDATE broker_execution_plans SET valid_until=?,status='expired' WHERE id=?",(triggered_at,plan["id"]))
+    updated=companion.execution_strategy.report_order(plan_id=plan["id"],broker_order_ref="pre-deadline",side="buy",quantity="100",status="cancelled",triggered_at=triggered_at,cancelled_quantity="100")
+    assert updated["orders"][0]["status"]=="cancelled"
+    with pytest.raises(CompanionError,match="after the condition-order deadline"):
+        companion.execution_strategy.report_order(plan_id=plan["id"],broker_order_ref="post-deadline",side="buy",quantity="100",status="submitted",triggered_at=iso(utc_now()+timedelta(seconds=1)))

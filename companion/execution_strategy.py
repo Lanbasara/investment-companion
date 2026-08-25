@@ -42,6 +42,7 @@ class BrokerExecutionStrategyService:
         normalized = self._normalize_spec(plan_type, spec)
         if parse(valid_until) <= utc_now():raise CompanionError("broker execution plan valid_until must be in the future")
         if iso(parse(valid_until))!=revision.get("metadata",{}).get("valid_until"):raise CompanionError("broker execution plan deadline must equal the Decision valid_until and the broker-displayed deadline")
+        if (parse(valid_until).date()-utc_now().date()).days<normalized["validity_sessions"]-1:raise CompanionError("broker-displayed deadline cannot contain the selected number of trading sessions")
         action = self.c.operating.queue_card(queue_id)["action"]
         if normalized["account_id"] != action["account_id"] or normalized["asset_id"] != action["asset_id"]:
             raise CompanionError("broker execution plan account and asset must match its Action Card")
@@ -83,6 +84,18 @@ class BrokerExecutionStrategyService:
                 self._event_in_tx(con,plan_id,"exception",now,{"reason":"broker strategy validity elapsed","terminal_status":"expired"},f"expired:{plan_id}:{now}",actor)
         return ids
 
+    def recover_execution_links(self,*,actor:str="system-recovery") -> list[str]:
+        with self.c.db.connect() as con:orders=rows_dict(con.execute("SELECT * FROM broker_managed_orders WHERE execution_link_state='pending' OR (status<>'rejected' AND execution_id IS NULL)").fetchall())
+        recovered=[]
+        for order in orders:
+            plan=self.get(order["plan_id"])
+            execution=self._create_order_execution(plan=plan,order_id=order["id"],broker_order_ref=order["broker_order_ref"],side=order["side"],quantity=dec(order["quantity_text"]),ordered_at=order["triggered_at"])
+            with self.c.db.transaction() as con:
+                con.execute("UPDATE broker_managed_orders SET execution_id=?,execution_link_state='linked',updated_at=? WHERE id=?",(execution["id"],iso(),order["id"]))
+                self.c.audit.record(con,actor,"recover_execution_link","broker_managed_order",order["id"],after={"execution_id":execution["id"]},reason="recovered interrupted broker-order to Execution linkage")
+            recovered.append(order["id"])
+        return recovered
+
     def mark_configured(self, *, plan_id: str, broker_condition_ref: str, configured_at: str, actor: str = "primary-codex") -> dict[str, Any]:
         plan=self.get(plan_id)
         self._require_not_expired(plan)
@@ -107,8 +120,7 @@ class BrokerExecutionStrategyService:
 
     def report_order(self, *, plan_id: str, broker_order_ref: str, side: str, quantity: Any, status: str, triggered_at: str, trigger_price: Any | None = None, reference_price_before: Any | None = None, reference_price_after: Any | None = None, rejection_reason: str | None = None, cancelled_quantity: Any | None = None, condition_leg: str | None = None, actor: str = "primary-codex") -> dict[str, Any]:
         plan=self.get(plan_id)
-        self._require_not_expired(plan,allow_terminated=True)
-        if plan["status"] not in {"active","sleeping","termination_pending","terminated"}:raise CompanionError(f"plan cannot receive broker orders from {plan['status']}")
+        if plan["status"] not in {"active","sleeping","termination_pending","terminated","expired"}:raise CompanionError(f"plan cannot receive broker orders from {plan['status']}")
         if side not in {"buy","sell"} or status not in ORDER_STATUSES:raise CompanionError("invalid broker managed order side or status")
         expected_side={"priced_buy":"buy","priced_sell":"sell","bracket_exit":"sell"}.get(plan["plan_type"])
         if expected_side and side!=expected_side:raise CompanionError(f"{plan['plan_type']} can report only {expected_side} orders")
@@ -124,6 +136,7 @@ class BrokerExecutionStrategyService:
         executed=Decimal("0") if status=="rejected" else qty
         reference=self._text(broker_order_ref,"broker_order_ref");occurred=iso(parse(triggered_at))
         with self.c.db.connect() as con:existing=row_dict(con.execute("SELECT * FROM broker_managed_orders WHERE plan_id=? AND broker_order_ref=?",(plan_id,reference)).fetchone())
+        if not existing and parse(occurred)>parse(plan["valid_until"]):raise CompanionError("new broker strategy trigger occurred after the condition-order deadline")
         before=self._optional_positive(reference_price_before,"reference_price_before");after=self._optional_positive(reference_price_after,"reference_price_after")
         update_reason=None
         if plan["plan_type"]=="moving_grid" and not existing:
@@ -143,7 +156,8 @@ class BrokerExecutionStrategyService:
                 con.execute("UPDATE broker_managed_orders SET status=?,submitted_quantity_text=?,cancelled_quantity_text=?,updated_at=? WHERE id=?",(status,dtext(executed),dtext(cancelled),now,existing["id"]))
                 oid=existing["id"]
             else:
-                con.execute("INSERT INTO broker_managed_orders(id,plan_id,broker_order_ref,condition_leg,side,status,quantity_text,submitted_quantity_text,cancelled_quantity_text,trigger_price_text,reference_price_before_text,reference_price_after_text,reference_update_reason,triggered_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(oid,plan_id,reference,condition_leg,side,status,dtext(qty),dtext(executed),dtext(cancelled),dtext(dec(trigger_price,"trigger_price")) if trigger_price is not None else None,before,after,update_reason,occurred,now))
+                link_state="not_applicable" if status=="rejected" else "pending"
+                con.execute("INSERT INTO broker_managed_orders(id,plan_id,broker_order_ref,condition_leg,execution_link_state,side,status,quantity_text,submitted_quantity_text,cancelled_quantity_text,trigger_price_text,reference_price_before_text,reference_price_after_text,reference_update_reason,triggered_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",(oid,plan_id,reference,condition_leg,link_state,side,status,dtext(qty),dtext(executed),dtext(cancelled),dtext(dec(trigger_price,"trigger_price")) if trigger_price is not None else None,before,after,update_reason,occurred,now))
                 if plan["plan_type"]=="moving_grid" and after is not None:
                     changed=con.execute("UPDATE broker_execution_plans SET current_reference_price_text=?,updated_at=? WHERE id=? AND current_reference_price_text=?",(after,now,plan_id,before)).rowcount
                     if changed!=1:raise CompanionError("grid reference changed concurrently; reload before reporting the trigger")
@@ -153,7 +167,7 @@ class BrokerExecutionStrategyService:
         if not execution_id and status!="rejected":
             execution=self._create_order_execution(plan=plan,order_id=oid,broker_order_ref=reference,side=side,quantity=qty,ordered_at=occurred)
             execution_id=execution["id"]
-            with self.c.db.transaction() as con:con.execute("UPDATE broker_managed_orders SET execution_id=?,updated_at=? WHERE id=?",(execution_id,iso(),oid))
+            with self.c.db.transaction() as con:con.execute("UPDATE broker_managed_orders SET execution_id=?,execution_link_state='linked',updated_at=? WHERE id=?",(execution_id,iso(),oid))
         if execution_id and status=="cancelled" and cancelled==qty:
             execution=self.c.execution.get(execution_id)
             if execution["status"] not in {"cancelled","filled","deviated"}:self.c.execution.cancel(execution_id=execution_id,reason="broker reported the entire strategy order cancelled",actor=actor)
@@ -182,16 +196,22 @@ class BrokerExecutionStrategyService:
         if plan["status"]!="terminated":raise CompanionError("only a terminated broker strategy can be reconciled")
         live=[item for item in plan["orders"] if item["status"] in {"triggered","submitted","partially_filled","unknown"}]
         if live:raise CompanionError("terminated strategy still has live or unknown broker orders")
+        if any(item["status"]!="rejected" and (item.get("execution_link_state")!="linked" or not item.get("execution_id")) for item in plan["orders"]):raise CompanionError("strategy has broker orders whose Execution linkage is incomplete")
         occurred=iso(parse(occurred_at));reference=self._text(reconciliation_id,"reconciliation_id")
         with self.c.db.connect() as con:reconciliation=row_dict(con.execute("SELECT * FROM reconciliations WHERE id=?",(reference,)).fetchone())
         if not reconciliation or reconciliation["account_id"]!=plan["account_id"] or not reconciliation_is_full_match(reconciliation):raise CompanionError("strategy reconciliation requires a full-scope matched reconciliation for the same account")
+        if not reconciliation.get("confirmed_ledger_hash") or reconciliation["confirmed_ledger_hash"]!=self.c.financial.confirmed_ledger_hash():raise CompanionError("strategy reconciliation does not match the current confirmed Ledger")
         latest=max([parse(plan["terminated_at"]),*(parse(item["updated_at"]) for item in plan["orders"])])
         if parse(reconciliation["as_of"])<latest or parse(occurred)<parse(reconciliation["as_of"]):raise CompanionError("strategy reconciliation must cover termination and every broker order")
+        latest_confirmation=None
         for order in plan["orders"]:
             remaining=dec(order["quantity_text"])-dec(order["cancelled_quantity_text"])
             if order["status"] in {"filled","cancelled"} and remaining>0:
                 execution=self.c.execution.get(order["execution_id"])
-                if execution["status"] not in {"filled","deviated"} or not execution["ledger_entry_ids"] or any(self.c.financial.ledger_get(entry_id)["status"]!="confirmed" for entry_id in execution["ledger_entry_ids"]):raise CompanionError("all strategy fills must be confirmed in Ledger before reconciliation")
+                entries=[self.c.financial.ledger_get(entry_id) for entry_id in execution["ledger_entry_ids"]]
+                if execution["status"] not in {"filled","deviated"} or not entries or any(entry["status"]!="confirmed" for entry in entries):raise CompanionError("all strategy fills must be confirmed in Ledger before reconciliation")
+                for entry in entries:latest_confirmation=max(latest_confirmation,parse(entry["confirmed_at"])) if latest_confirmation else parse(entry["confirmed_at"])
+        if latest_confirmation and parse(reconciliation["created_at"])<latest_confirmation:raise CompanionError("strategy reconciliation predates confirmed Ledger fills")
         with self.c.db.transaction() as con:
             con.execute("UPDATE broker_execution_plans SET status='reconciled',updated_at=? WHERE id=?",(iso(),plan_id))
             self._event_in_tx(con,plan_id,"reconciled",occurred,{"reconciliation_id":reference},f"reconciled:{plan_id}:{reference}",actor)
