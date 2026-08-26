@@ -186,7 +186,7 @@ class InvestmentCommandService:
         if operation == "publish_source":
             required = {
                 "subject", "source", "source_group", "first_known_at", "observed_at",
-                "claims",
+                "claims", "evidence_type",
             }
             allowed = required | {"url", "published_at", "content", "metadata", "supersedes"}
             self._operation_payload(payload, required, allowed, "evidence publish_source")
@@ -196,6 +196,13 @@ class InvestmentCommandService:
                 raise CompanionError("evidence claims must be a non-empty list")
             if any(not isinstance(item, str) or not item.strip() for item in payload["claims"]):
                 raise CompanionError("evidence claims must contain non-empty strings")
+            if payload["evidence_type"] not in {
+                "observed_fact",
+                "official_disclosure",
+                "validated_analysis",
+                "predictive_signal",
+            }:
+                raise CompanionError("unsupported evidence_type")
             first_known = parse(payload["first_known_at"])
             observed = parse(payload["observed_at"])
             if first_known > observed:
@@ -463,7 +470,7 @@ class InvestmentCommandService:
             ),
             "cancel": ({"execution_id", "reason"}, {"execution_id", "reason"}),
             "strategy_create": ({"queue_id","plan_type","spec","valid_until","idempotency_key"},{"queue_id","plan_type","spec","valid_until","idempotency_key"}),
-            "strategy_configured": ({"plan_id","broker_condition_ref","configured_at"},{"plan_id","broker_condition_ref","configured_at"}),
+            "strategy_configured": ({"plan_id","broker_condition_ref","configured_at","broker_validity_sessions","broker_valid_until"},{"plan_id","broker_condition_ref","configured_at","broker_validity_sessions","broker_valid_until"}),
             "strategy_activate": ({"plan_id","occurred_at"},{"plan_id","occurred_at"}),
             "strategy_order_report": ({"plan_id","broker_order_ref","side","quantity","status","triggered_at"},{"plan_id","broker_order_ref","side","quantity","status","triggered_at","trigger_price","reference_price_before","reference_price_after","rejection_reason","cancelled_quantity","condition_leg"}),
             "strategy_terminate_request": ({"plan_id","occurred_at","reason"},{"plan_id","occurred_at","reason"}),
@@ -558,8 +565,10 @@ class InvestmentCommandService:
         execution_plan: dict[str, Any] | None = None,
         execution_sell_risk_calculation_id: str | None = None,
     ) -> dict[str, Any]:
-        if decision_kind not in {"action", "no_action", "watch"}:
-            raise CompanionError("decision_kind must be action, no_action or watch")
+        if decision_kind not in {"action", "conditional_action", "no_action", "watch"}:
+            raise CompanionError(
+                "decision_kind must be action, conditional_action, no_action or watch"
+            )
         if not isinstance(subject, dict) or not subject:
             raise CompanionError("decision subject must be a non-empty object")
         if not isinstance(content, str) or not content.strip():
@@ -609,12 +618,23 @@ class InvestmentCommandService:
                 knowledge_cutoff=knowledge_cutoff,
             )
             calculation_ids.append(research_validation["id"])
-        if decision_kind == "action" and not research_validation:
+        action_tier = "bounded" if decision_kind == "conditional_action" else "standard"
+        is_action_decision = decision_kind in {"action", "conditional_action"}
+        if is_action_decision and not research_validation:
             raise CompanionError(
                 "action decision requires an eligible Research Validation Calculation"
             )
-        if decision_kind == "action" and research_validation["outputs"].get("status") != "eligible_for_decision":
+        current_validation = (
+            self.c.research_validation.revalidate(research_validation["id"])
+            if research_validation and is_action_decision
+            else None
+        )
+        if decision_kind == "action" and not current_validation["eligible_for_decision"]:
             raise CompanionError("action decision research is not eligible for decision")
+        if decision_kind == "conditional_action" and not current_validation.get(
+            "eligible_for_bounded_action", False
+        ):
+            raise CompanionError("conditional action research is not eligible for bounded action")
         risk = None
         if risk_calculation_id:
             risk = self.c.financial.calculation_get(risk_calculation_id)
@@ -634,14 +654,29 @@ class InvestmentCommandService:
             if subject_asset and risk["inputs"].get("asset_id") != subject_asset:
                 raise CompanionError("decision Risk Gate belongs to another asset")
             calculation_ids.append(risk["id"])
-        if decision_kind == "action" and (not risk or risk["outputs"].get("blocked")):
+        if is_action_decision and (not risk or risk["outputs"].get("blocked")):
             raise CompanionError("action decision requires a passing Risk Gate Calculation")
+        if is_action_decision and risk["assumptions"].get("action_tier", "standard") != action_tier:
+            raise CompanionError("decision kind and Risk Gate action tier differ")
         authorized_execution_plan=None
         if execution_plan is not None:
-            if decision_kind!="action" or not isinstance(execution_plan,dict) or set(execution_plan)!={"plan_type","spec"}:
+            if not is_action_decision or not isinstance(execution_plan,dict) or set(execution_plan)!={"plan_type","spec"}:
                 raise CompanionError("execution_plan requires an action Decision and exactly plan_type/spec")
             plan_type=execution_plan["plan_type"]
             normalized=self.c.execution_strategy._normalize_spec(plan_type,execution_plan["spec"])
+            if action_tier == "bounded":
+                policy = risk["assumptions"].get("bounded_action_policy", {})
+                allowed_plan_types = policy.get("allowed_execution_plan_types", [])
+                if plan_type == "moving_grid":
+                    raise CompanionError(
+                        "bounded conditional actions do not support moving_grid"
+                    )
+                if plan_type not in allowed_plan_types:
+                    raise CompanionError("execution plan type is not allowed by bounded policy")
+                if normalized["validity_sessions"] != risk["assumptions"].get(
+                    "validity_sessions"
+                ):
+                    raise CompanionError("execution plan and bounded Risk Gate validity differ")
             if normalized["account_id"]!=account_id or normalized["asset_id"]!=subject.get("asset_id"):
                 raise CompanionError("execution_plan account or asset differs from Decision")
             risk_quantity=abs(dec(risk["inputs"]["quantity"],"risk quantity"))
@@ -659,7 +694,7 @@ class InvestmentCommandService:
                 if primary_signed<=0:raise CompanionError("moving_grid primary Risk Gate must cover net buying")
                 if not execution_sell_risk_calculation_id:raise CompanionError("moving_grid requires a separate sell Risk Gate")
                 sell_risk=self.c.financial.calculation_get(execution_sell_risk_calculation_id)
-                if sell_risk["kind"]!="risk_gate" or sell_risk["outputs"].get("blocked") or sell_risk["inputs"].get("account_id")!=account_id or sell_risk["inputs"].get("asset_id")!=subject.get("asset_id") or sell_risk["as_of"]!=as_of or sell_risk["outputs"].get("portfolio_calculation_id")!=portfolio["calculation_id"] or sell_risk["assumptions"].get("mandate")!=mandate["content"] or sell_risk["assumptions"].get("valid_until")!=valid_until:
+                if sell_risk["kind"]!="risk_gate" or sell_risk["outputs"].get("blocked") or sell_risk["inputs"].get("account_id")!=account_id or sell_risk["inputs"].get("asset_id")!=subject.get("asset_id") or sell_risk["as_of"]!=as_of or sell_risk["outputs"].get("portfolio_calculation_id")!=portfolio["calculation_id"] or sell_risk["assumptions"].get("mandate")!=mandate["content"] or sell_risk["assumptions"].get("valid_until")!=valid_until or sell_risk["assumptions"].get("action_tier","standard")!=action_tier or sell_risk["assumptions"].get("program_revision_id")!=risk["assumptions"].get("program_revision_id") or sell_risk["assumptions"].get("bounded_action_policy")!=risk["assumptions"].get("bounded_action_policy"):
                     raise CompanionError("moving_grid sell Risk Gate does not match the Decision context")
                 sell_quantity=dec(sell_risk["inputs"]["quantity"],"grid sell risk quantity")
                 if sell_quantity>=0 or abs(sell_quantity)<dec(normalized["position_range"]["max_net_sell"],"max_net_sell"):raise CompanionError("moving_grid sell Risk Gate does not cover max_net_sell")
@@ -687,6 +722,7 @@ class InvestmentCommandService:
             metadata={
                 "decision_contract_version": 1,
                 "decision_kind": decision_kind,
+                "action_tier": action_tier if is_action_decision else None,
                 "valid_until": valid_until,
                 "invalidators": invalidators,
                 "no_action": no_action,
@@ -730,8 +766,11 @@ class InvestmentCommandService:
         mandate = self.c.cognition.context_current("mandate")
         if not mandate:
             raise CompanionError("risk assessment requires a confirmed current Mandate")
-        if "mandate" in trade:
-            raise CompanionError("risk_assess always uses the confirmed current Mandate")
+        forbidden = {"mandate", "bounded_action_policy", "program_revision_id"} & set(trade)
+        if forbidden:
+            raise CompanionError(
+                "risk_assess derives Mandate and bounded-action policy from confirmed state"
+            )
         required = {
             "reality_spec",
             "market_snapshot_id",
@@ -743,6 +782,16 @@ class InvestmentCommandService:
         if missing:
             raise CompanionError(f"risk_assess missing production inputs: {sorted(missing)}")
         reality = RealitySpec.from_value(trade["reality_spec"])
+        action_tier = trade.get("action_tier", "standard")
+        bounded_policy = None
+        program_revision_id = None
+        if action_tier == "bounded":
+            program = self.c.operating.program_current()
+            if program and program.get("current_revision"):
+                program_revision_id = program["current_revision"]["id"]
+                bounded_policy = program["current_revision"]["content"].get("risk_budget", {}).get(
+                    "bounded_action"
+                )
         quantity, price = dec(trade["quantity"]), dec(trade["price"])
         gross = abs(quantity) * price
         commission = max(Decimal(reality.minimum_commission), gross * Decimal(reality.commission_rate))
@@ -753,7 +802,12 @@ class InvestmentCommandService:
         if "fee" in trade and dec(trade["fee"]) != expected_fee:
             raise CompanionError("risk_assess fee differs from RealitySpec")
         trade = {**trade, "fee": dtext(expected_fee), "reality_spec": reality.to_dict()}
-        return self.c.risk.assess_trade(**trade, mandate=mandate["content"])
+        return self.c.risk.assess_trade(
+            **trade,
+            mandate=mandate["content"],
+            bounded_action_policy=bounded_policy,
+            program_revision_id=program_revision_id,
+        )
 
     def action_plan(self, **trade: Any) -> dict[str, Any]:
         risk = self.risk_assess(**trade)
@@ -768,9 +822,13 @@ class InvestmentCommandService:
                 "reference_price": dtext(dec(trade["price"], "action price")),
                 "price_range": trade["price_range"],
                 "valid_until": trade["valid_until"],
+                "validity_sessions": trade.get("validity_sessions"),
             },
             "risk": risk,
             "eligible_for_decision": not risk["blocked"],
+            "action_tier": trade.get("action_tier", "standard"),
+            "eligible_for_conditional_decision": trade.get("action_tier", "standard") == "bounded"
+            and not risk["blocked"],
             "automatic_decision_or_execution": False,
         }
 

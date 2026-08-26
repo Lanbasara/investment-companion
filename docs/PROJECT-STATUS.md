@@ -73,7 +73,7 @@ Primary Codex 仍是唯一最终语义判断、正式发布和用户沟通主体
 - Review/Change Proposal 服务，复盘只能提议新版本，不能在线修改当前策略；
 - Research Validation Service 把定性 Thesis 的两组冻结来源、PIT 时点、新鲜度、反证、适用范围和成本，以及量化 Strategy 的预注册离线结果与 Shadow 前向样本，统一记录为可重放 Calculation；
 - Research Catalog 已把持续扫描、旧预测、信号与前向复核映射为版本无关 `ResearchRecord`；历史 V5/V6 标签不会被自动晋升为 StrategyVersion；
-- 行动型版本无关 Decision 必须同时引用 `eligible_for_decision` Research Validation 与通过的 Risk Gate；未验证预测只能停留在研究层；
+- 版本无关 Decision 已按研究强度分级：`eligible_for_bounded_action` 只能形成 Program 限额的条件行动，`eligible_for_decision` 才能形成正式行动；两者仍必须通过匹配等级的 Risk Gate，纯未验证预测只能停留在研究层；
 - Opportunity 资格不再保存自报证据等级，只引用正式 Research Validation Calculation；Actionability Service 在行动入队、呈现和接受前重新检查研究版本、Decision、Context、确认账本、最新行情与 Risk Gate；
 - Execution Lifecycle Service 区分行动卡接受、执行准备、用户报告订单、待确认成交、确认 Ledger 与部分/全部/偏离成交；只有确认 Ledger 改变组合；
 - Investment Briefing Service 将 Execution、待确认/已确认 Ledger、DecisionQueue 与最新 Reconciliation 投影到 Investment Home 和 Today，并为日/周/月 Brief 自动冻结不可伪造的 `execution_operating_snapshot` Calculation；

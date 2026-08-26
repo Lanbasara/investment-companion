@@ -136,7 +136,19 @@ def setup_operating_system(tmp_path: Path) -> tuple[Companion, dict]:
         "objective": "在个人风险和流动性约束内检验可重复的超额收益来源",
         "success_criteria": ["结果相对基准可计算", "每个行动均可追溯到证据和个人约束"],
         "benchmark": {"name": "CSI 300 total-return proxy", "calculation_policy": "frozen monthly"},
-        "risk_budget": {"max_drawdown_review_level": "0.15", "single_position_weight": "0.20"},
+        "risk_budget": {
+            "max_drawdown_review_level": "0.15",
+            "single_position_weight": "0.20",
+            "bounded_action": {
+                "enabled": True,
+                "allowed_asset_types": ["stock", "etf"],
+                "allowed_execution_plan_types": ["priced_buy", "priced_sell", "bracket_exit"],
+                "max_trade_weight": "0.02",
+                "max_post_trade_weight": "0.05",
+                "max_validity_sessions": 20,
+                "max_active_bounded_actions": 2,
+            },
+        },
         "universe": {"markets": ["CN-A"], "exclusions": ["unverified identity"]},
         "horizons": {"research": "6-24 months", "decision_validity": "explicit per Decision"},
         "operating_cadence": {"daily": "exceptions", "weekly": "committee", "monthly": "scorecard"},
@@ -244,7 +256,7 @@ def build_actionable_opportunity(companion: Companion, fixture: dict, execution_
         qualification=qualified,
         reason="Evidence passed the research qualification contract",
     )
-    valid_until = iso(utc_now() + timedelta(hours=6))
+    valid_until = iso(utc_now() + timedelta(days=7))
     market = companion.financial.market_add(
         asset["id"], "close", "10", cutoff, "fixture-market", "healthy", "CNY"
     )
@@ -365,8 +377,9 @@ def test_version_neutral_profile_covers_program_opportunity_action_and_workflow(
     evidence = companion.investment_commands.evidence_update(
         operation="publish_source",
         subject={"asset_id": "fixture:profile"},
-        source="fixture filing",
-        source_group="issuer",
+            source="fixture filing",
+            source_group="issuer",
+            evidence_type="official_disclosure",
         first_known_at=iso(),
         observed_at=iso(),
         claims=["A bounded research question exists"],
@@ -590,6 +603,36 @@ def test_v5_program_opportunity_queue_and_user_briefs(tmp_path: Path):
     assert metrics["decision_flow"]["accepted"] == 1
     assert metrics["rates"]["created_cohort_actionable_by_period_end"] == "1.0000"
     assert metrics["rates"]["presented_cohort_accepted_by_period_end"] == "1.0000"
+
+
+def test_action_card_is_revalidated_before_it_is_presented(tmp_path: Path):
+    companion, fixture = setup_operating_system(tmp_path)
+    built = build_actionable_opportunity(companion, fixture)
+    queue = companion.operating.queue_enqueue(
+        built["opportunity"]["id"],
+        decision_revision_id=built["decision_revision"]["id"],
+    )
+    changed = companion.financial.ledger_add(
+        account_id=fixture["account"]["id"],
+        entry_type="cash_deposit",
+        occurred_at=iso(),
+        amount="1",
+        currency="CNY",
+        source="portfolio changed before presentation",
+    )
+    companion.financial.ledger_confirm(changed["id"])
+    attention = companion.attention.decide(
+        topic="stale-action-card",
+        materiality="high",
+        confidence="decision_grade",
+        reason="Attempt to present a stale card",
+        evidence=[queue["id"]],
+    )
+    companion.attention.mark_delivered(attention["id"])
+    with pytest.raises(CompanionError, match="confirmed Ledger has changed"):
+        companion.operating.queue_respond(
+            queue["id"], state="presented", attention_decision_id=attention["id"]
+        )
     with companion.db.transaction() as con:
         con.execute(
             "UPDATE decision_queue_items SET valid_until=? WHERE id=?",
@@ -1055,7 +1098,7 @@ def test_today_requires_execution_review_then_allows_an_acknowledged_no_action(
     assert "账户对账结果存在差异" in reconciliation_today["message"]
 
 
-def test_v5_unvalidated_predictive_evidence_cannot_qualify_opportunity(tmp_path: Path):
+def test_v5_unvalidated_signal_with_official_evidence_can_only_qualify_bounded(tmp_path: Path):
     companion, _fixture = setup_operating_system(tmp_path)
     cutoff = iso()
     signal = companion.data.manifest_publish(
@@ -1070,11 +1113,12 @@ def test_v5_unvalidated_predictive_evidence_cannot_qualify_opportunity(tmp_path:
         },
     )
     filing = companion.data.manifest_publish(
-        kind="v5_issuer_evidence",
+        kind="investment_evidence",
         schema_version="research-evidence/v1",
         manifest={
             "source": "issuer filing",
             "source_group": "issuer",
+            "evidence_type": "official_disclosure",
             "first_known_at": cutoff,
             "observed_at": cutoff,
         },
@@ -1101,24 +1145,186 @@ def test_v5_unvalidated_predictive_evidence_cannot_qualify_opportunity(tmp_path:
         reason="Research completed but formal validation still fails",
     )
 
-    with pytest.raises(CompanionError, match="cannot enter qualified.*research_only"):
-        companion.operating.opportunity_transition(
-            opportunity["id"],
-            expected_version=2,
-            to_stage="qualified",
-            to_status="active",
-            evidence_refs=[
-                signal["id"],
-                filing["id"],
-                research["validation"]["calculation_id"],
-            ],
-            qualification={
-                "validation_calculation_id": research["validation"]["calculation_id"],
-                "major_unknowns": ["predictive evidence remains unvalidated"],
-                "decision_basis": "No action until formal validation passes.",
-            },
-            reason="Must fail closed",
+    qualified = companion.operating.opportunity_transition(
+        opportunity["id"],
+        expected_version=2,
+        to_stage="qualified",
+        to_status="active",
+        evidence_refs=[
+            signal["id"],
+            filing["id"],
+            research["validation"]["calculation_id"],
+        ],
+        qualification={
+            "validation_calculation_id": research["validation"]["calculation_id"],
+            "major_unknowns": ["predictive evidence remains unvalidated"],
+            "decision_basis": "Only a separately capped conditional action may proceed.",
+        },
+        reason="Bounded research qualification",
+    )
+    assert qualified["stage"] == "qualified"
+    assert qualified["evidence_band"] == "eligible_for_bounded_action"
+
+
+def test_bounded_research_can_publish_only_a_capped_conditional_decision(tmp_path: Path):
+    companion, fixture = setup_operating_system(tmp_path)
+    cutoff = iso()
+    asset = companion.financial.asset_upsert(
+        "stock", "Bounded Candidate", "CNY", {"ts_code": "600001.SH"}
+    )
+    first = companion.data.manifest_publish(
+        kind="investment_evidence",
+        schema_version="research-evidence/v1",
+        manifest={
+            "source": "issuer filing",
+            "source_group": "issuer",
+            "evidence_type": "official_disclosure",
+            "first_known_at": cutoff,
+            "observed_at": cutoff,
+        },
+    )
+    duplicate = companion.data.manifest_publish(
+        kind="investment_evidence",
+        schema_version="research-evidence/v1",
+        manifest={
+            "source": "exchange copy of issuer filing",
+            "source_group": "issuer",
+            "evidence_type": "official_disclosure",
+            "first_known_at": cutoff,
+            "observed_at": cutoff,
+        },
+    )
+    evidence_ids = [first["id"], duplicate["id"]]
+    research = companion.investment_commands.research_publish(
+        subject={"asset_id": asset["id"]},
+        content="# Bounded thesis\nIndependent corroboration is still pending.",
+        evidence_manifest_ids=evidence_ids,
+        knowledge_cutoff=cutoff,
+        validation_spec=research_validation_spec(),
+    )
+    assert research["validation"]["status"] == "eligible_for_bounded_action"
+    opportunity = companion.operating.opportunity_create(
+        subject={"asset_id": asset["id"]},
+        evidence_refs=[first["id"]],
+        reason="Bounded candidate",
+        thesis_id=research["thesis"]["id"],
+    )
+    opportunity = companion.operating.opportunity_transition(
+        opportunity["id"],
+        expected_version=1,
+        to_stage="researching",
+        to_status="active",
+        evidence_refs=evidence_ids,
+        reason="Research the bounded candidate",
+    )
+    bounded_qualification = {
+        "validation_calculation_id": research["validation"]["calculation_id"],
+        "major_unknowns": ["independent corroboration remains pending"],
+        "decision_basis": "Only the capped conditional lane may proceed.",
+    }
+    opportunity = companion.operating.opportunity_transition(
+        opportunity["id"],
+        expected_version=2,
+        to_stage="qualified",
+        to_status="active",
+        evidence_refs=[*evidence_ids, research["validation"]["calculation_id"]],
+        qualification=bounded_qualification,
+        reason="Bounded validation passed",
+    )
+    market = companion.financial.market_add(
+        asset["id"], "close", "10", cutoff, "fixture-market", "healthy", "CNY"
+    )
+    valid_until = iso(utc_now() + timedelta(days=7))
+    risk = companion.investment_commands.risk_assess(
+        as_of=cutoff,
+        account_id=fixture["account"]["id"],
+        asset_id=asset["id"],
+        quantity="100",
+        price="10",
+        reality_spec=ashare_reality(),
+        market_snapshot_id=market["id"],
+        max_market_age_seconds=3600,
+        valid_until=valid_until,
+        price_range={"min": "9", "max": "10.2"},
+        action_tier="bounded",
+        validity_sessions=5,
+    )
+    assert risk["status"] == "pass"
+    with pytest.raises(CompanionError, match="not eligible for decision"):
+        companion.investment_commands.decision_publish(
+            subject={"asset_id": asset["id"]},
+            content="# Invalid standard action",
+            decision_kind="action",
+            account_id=fixture["account"]["id"],
+            as_of=cutoff,
+            knowledge_cutoff=cutoff,
+            valid_until=valid_until,
+            thesis_revision_ids=[research["revision"]["id"]],
+            evidence_manifest_ids=evidence_ids,
+            invalidators=["independent evidence contradicts the thesis"],
+            no_action={"choice": "wait for corroboration"},
+            alternatives=[{"choice": "hold cash"}],
+            risk_calculation_id=risk["calculation_id"],
+            research_validation_calculation_id=research["validation"]["calculation_id"],
         )
+    decision = companion.investment_commands.decision_publish(
+        subject={"asset_id": asset["id"]},
+        content="# Conditional action\nOnly the capped risk lane is authorized.",
+        decision_kind="conditional_action",
+        account_id=fixture["account"]["id"],
+        as_of=cutoff,
+        knowledge_cutoff=cutoff,
+        valid_until=valid_until,
+        thesis_revision_ids=[research["revision"]["id"]],
+        evidence_manifest_ids=evidence_ids,
+        invalidators=["independent evidence contradicts the thesis"],
+        no_action={"choice": "wait for corroboration"},
+        alternatives=[{"choice": "hold cash"}],
+        risk_calculation_id=risk["calculation_id"],
+        research_validation_calculation_id=research["validation"]["calculation_id"],
+        execution_plan={
+            "plan_type": "priced_buy",
+            "spec": {
+                "account_id": fixture["account"]["id"],
+                "asset_id": asset["id"],
+                "validity_sessions": 5,
+                "monitoring_window": None,
+                "trigger": {"direction": "cross_down", "monitor_price": "9"},
+                "order": _condition_order(),
+                "quantity": "100",
+            },
+        },
+    )
+    assert decision["revision"]["metadata"]["action_tier"] == "bounded"
+    opportunity = companion.operating.opportunity_transition(
+        opportunity["id"],
+        expected_version=3,
+        to_stage="actionable",
+        to_status="active",
+        evidence_refs=[
+            *evidence_ids,
+            research["validation"]["calculation_id"],
+            risk["calculation_id"],
+            decision["revision"]["id"],
+        ],
+        qualification=bounded_qualification,
+        decision_revision_id=decision["revision"]["id"],
+        reason="Capped conditional action is ready for user review",
+    )
+    queue = accept_action_card(
+        companion,
+        {"opportunity": opportunity, "decision_revision": decision["revision"]},
+    )
+    spec = decision["revision"]["metadata"]["execution_plan"]["spec"]
+    plan = companion.execution_strategy.create_from_queue(
+        queue_id=queue["id"],
+        plan_type="priced_buy",
+        spec=spec,
+        valid_until=valid_until,
+        idempotency_key="bounded-priced-buy",
+    )
+    assert plan["status"] == "draft"
+    assert plan["spec"]["validity_sessions"] == 5
 
 
 def test_v5_raw_decision_cannot_bypass_professional_action_gates(tmp_path: Path):
@@ -1403,13 +1609,47 @@ def test_cicc_four_condition_order_specs_are_frozen_without_invented_trigger_dir
     assert grid["terminate_and_liquidate_failure"]=="broker_unspecified_manual_reconciliation_required"
 
 
+def test_standard_grid_action_card_blocks_when_current_sell_gate_blocks(tmp_path: Path, monkeypatch):
+    companion, fixture = setup_operating_system(tmp_path)
+    built = build_actionable_opportunity(
+        companion,
+        fixture,
+        lambda account_id, asset_id: {
+            "plan_type": "moving_grid",
+            "spec": _grid_spec(account_id, asset_id),
+        },
+        asset_type="etf",
+    )
+    original = companion.investment_commands.risk_assess
+    calls = {"count": 0}
+
+    def block_second_gate(**kwargs):
+        calls["count"] += 1
+        result = original(**kwargs)
+        if calls["count"] == 2:
+            return {
+                **result,
+                "status": "blocked",
+                "blocked": True,
+                "violations": [{"rule": "fixture_sell_gate_block"}],
+            }
+        return result
+
+    monkeypatch.setattr(companion.investment_commands, "risk_assess", block_second_gate)
+    card = companion.actionability.revalidate_generic_action(
+        built["decision_revision"]["id"]
+    )
+    assert card["executable"] is False
+    assert "grid_sell:fixture_sell_gate_block" in card["reasons"]
+
+
 def test_grid_lifecycle_preserves_customer_service_reference_and_termination_rules(tmp_path: Path):
     companion, fixture = setup_operating_system(tmp_path)
     built=build_actionable_opportunity(companion,fixture,lambda account_id,asset_id:{"plan_type":"moving_grid","spec":_grid_spec(account_id,asset_id)},asset_type="etf");queue=accept_action_card(companion,built)
     card=companion.operating.queue_card(queue["id"]);action=card["action"]
     spec=_grid_spec(action["account_id"],action["asset_id"])
     plan=companion.execution_strategy.create_from_queue(queue_id=queue["id"],plan_type="moving_grid",spec=spec,valid_until=built["valid_until"],idempotency_key="grid-plan")
-    companion.execution_strategy.mark_configured(plan_id=plan["id"],broker_condition_ref="cicc-grid-1",configured_at=iso())
+    companion.execution_strategy.mark_configured(plan_id=plan["id"],broker_condition_ref="cicc-grid-1",configured_at=iso(),broker_validity_sessions=spec["validity_sessions"],broker_valid_until=built["valid_until"])
     companion.execution_strategy.activate(plan_id=plan["id"],occurred_at=iso())
     unchanged=companion.execution_strategy.report_order(plan_id=plan["id"],broker_order_ref="order-rejected",side="buy",quantity="100",status="rejected",triggered_at=iso(),reference_price_before="10",rejection_reason="insufficient_cash")
     assert unchanged["orders"][0]["reference_update_reason"]=="unchanged_insufficient_resources"
@@ -1480,7 +1720,7 @@ def test_each_broker_strategy_requires_exact_decision_authorization_and_side(tmp
     with pytest.raises(CompanionError,match="does not authorize"):
         companion.execution_strategy.create_from_queue(queue_id=queue["id"],plan_type=plan_type,spec=changed,valid_until=built["valid_until"],idempotency_key=f"wrong-{plan_type}")
     plan=companion.execution_strategy.create_from_queue(queue_id=queue["id"],plan_type=plan_type,spec=spec,valid_until=built["valid_until"],idempotency_key=f"plan-{plan_type}")
-    companion.execution_strategy.mark_configured(plan_id=plan["id"],broker_condition_ref=f"broker-{plan_type}",configured_at=iso());companion.execution_strategy.activate(plan_id=plan["id"],occurred_at=iso())
+    companion.execution_strategy.mark_configured(plan_id=plan["id"],broker_condition_ref=f"broker-{plan_type}",configured_at=iso(),broker_validity_sessions=spec["validity_sessions"],broker_valid_until=built["valid_until"]);companion.execution_strategy.activate(plan_id=plan["id"],occurred_at=iso())
     if forbidden_side:
         with pytest.raises(CompanionError,match="can report only"):
             companion.execution_strategy.report_order(plan_id=plan["id"],broker_order_ref="wrong-side",side=forbidden_side,quantity="100",status="submitted",triggered_at=iso())
@@ -1495,7 +1735,7 @@ def test_each_broker_strategy_requires_exact_decision_authorization_and_side(tmp
 def test_expired_condition_order_still_accepts_pre_deadline_order_lifecycle(tmp_path:Path):
     companion,fixture=setup_operating_system(tmp_path);builder=lambda account_id,asset_id:{"plan_type":"priced_buy","spec":_plan_spec("priced_buy",account_id,asset_id)}
     built=build_actionable_opportunity(companion,fixture,builder);queue=accept_action_card(companion,built);action=companion.operating.queue_card(queue["id"])["action"];spec=_plan_spec("priced_buy",action["account_id"],action["asset_id"])
-    plan=companion.execution_strategy.create_from_queue(queue_id=queue["id"],plan_type="priced_buy",spec=spec,valid_until=built["valid_until"],idempotency_key="expiry-plan");companion.execution_strategy.mark_configured(plan_id=plan["id"],broker_condition_ref="expiry-condition",configured_at=iso());companion.execution_strategy.activate(plan_id=plan["id"],occurred_at=iso())
+    plan=companion.execution_strategy.create_from_queue(queue_id=queue["id"],plan_type="priced_buy",spec=spec,valid_until=built["valid_until"],idempotency_key="expiry-plan");companion.execution_strategy.mark_configured(plan_id=plan["id"],broker_condition_ref="expiry-condition",configured_at=iso(),broker_validity_sessions=spec["validity_sessions"],broker_valid_until=built["valid_until"]);companion.execution_strategy.activate(plan_id=plan["id"],occurred_at=iso())
     triggered_at=iso();companion.execution_strategy.report_order(plan_id=plan["id"],broker_order_ref="pre-deadline",side="buy",quantity="100",status="submitted",triggered_at=triggered_at)
     with companion.db.transaction() as con:con.execute("UPDATE broker_execution_plans SET valid_until=?,status='expired' WHERE id=?",(triggered_at,plan["id"]))
     updated=companion.execution_strategy.report_order(plan_id=plan["id"],broker_order_ref="pre-deadline",side="buy",quantity="100",status="cancelled",triggered_at=triggered_at,cancelled_quantity="100")

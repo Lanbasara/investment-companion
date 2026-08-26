@@ -74,7 +74,10 @@ class ActionabilityService:
         }
         if contract == "4":
             return result
-        if contract != "1" or metadata.get("decision_kind") != "action":
+        if contract != "1" or metadata.get("decision_kind") not in {
+            "action",
+            "conditional_action",
+        }:
             raise CompanionError(
                 "actionable Opportunity requires an action Decision with a supported professional contract"
             )
@@ -86,7 +89,13 @@ class ActionabilityService:
         if revision.get("context_refs", {}).get("research_validation_calculation_id") != validation_id:
             raise CompanionError("action Decision Research Validation lineage is inconsistent")
         validation = self.c.research_validation.revalidate(validation_id)
-        if not validation["eligible_for_decision"]:
+        required_tier = metadata.get("action_tier", "standard")
+        validation_eligible = (
+            validation["eligible_for_decision"]
+            if required_tier == "standard"
+            else validation.get("eligible_for_bounded_action", False)
+        )
+        if not validation_eligible:
             raise CompanionError(
                 f"action Decision research validation is no longer eligible: {validation['reasons']}"
             )
@@ -140,6 +149,18 @@ class ActionabilityService:
             raise CompanionError("action Decision confirmed Ledger has changed")
         if risk["assumptions"].get("valid_until") != metadata["valid_until"]:
             raise CompanionError("action Decision and Risk Gate validity differ")
+        if risk["assumptions"].get("action_tier", "standard") != required_tier:
+            raise CompanionError("action Decision and Risk Gate action tier differ")
+        if required_tier == "bounded":
+            program = self.c.operating.program_current()
+            revision = program.get("current_revision") if program else None
+            policy = revision.get("content", {}).get("risk_budget", {}).get(
+                "bounded_action"
+            ) if revision else None
+            if not revision or risk["assumptions"].get("program_revision_id") != revision["id"]:
+                raise CompanionError("bounded action Program revision has changed")
+            if risk["assumptions"].get("bounded_action_policy") != policy:
+                raise CompanionError("bounded action risk policy has changed")
         subject_asset = decision.get("subject", {}).get("asset_id")
         if subject_asset and risk["inputs"].get("asset_id") != subject_asset:
             raise CompanionError("action Decision Risk Gate belongs to another asset")
@@ -166,9 +187,9 @@ class ActionabilityService:
             raise CompanionError("Opportunity qualification requires a Research Validation Calculation")
         validation = self.c.research_validation.revalidate(calculation_id)
         allowed = (
-            {"eligible_for_decision"}
+            {"eligible_for_bounded_action", "eligible_for_decision"}
             if stage == "actionable"
-            else {"eligible_for_shadow", "eligible_for_decision"}
+            else {"eligible_for_bounded_action", "eligible_for_shadow", "eligible_for_decision"}
         )
         if validation["current_status"] not in allowed:
             raise CompanionError(
@@ -194,8 +215,6 @@ class ActionabilityService:
         unknowns = self._string_list(
             qualification["major_unknowns"], "major_unknowns", allow_empty=True
         )
-        if stage == "actionable" and unknowns:
-            raise CompanionError("actionable Opportunity requires no major unknowns")
         return {
             "validation_calculation_id": calculation_id,
             "major_unknowns": unknowns,
@@ -237,6 +256,8 @@ class ActionabilityService:
             risk_id = gate["revision"]["metadata"].get("risk_calculation_id")
             if risk_id not in evidence_refs:
                 raise CompanionError("Opportunity evidence_refs must include its frozen Risk Gate Calculation")
+            if gate["revision"]["metadata"].get("action_tier", "standard") == "standard" and qualification["major_unknowns"]:
+                raise CompanionError("standard actionable Opportunity requires no major unknowns")
         return gate
 
     def revalidate_generic_action(self, decision_revision_id: str) -> dict[str, Any]:
@@ -286,14 +307,42 @@ class ActionabilityService:
             valid_until=assumptions["valid_until"],
             price_range=assumptions["price_range"],
             average_daily_amount=assumptions.get("average_daily_amount"),
+            action_tier=assumptions.get("action_tier", "standard"),
+            validity_sessions=assumptions.get("validity_sessions"),
         )
         reasons = [item["rule"] for item in current["violations"]]
+        sell_current = None
+        execution_plan = gate["revision"]["metadata"].get("execution_plan")
+        if execution_plan and execution_plan.get("plan_type") == "moving_grid":
+            sell_risk_id = execution_plan.get("sell_risk_calculation_id")
+            sell_frozen = self.c.financial.calculation_get(sell_risk_id)
+            sell_assumptions = sell_frozen["assumptions"]
+            sell_current = self.c.investment_commands.risk_assess(
+                as_of=iso(now),
+                account_id=sell_frozen["inputs"]["account_id"],
+                asset_id=sell_frozen["inputs"]["asset_id"],
+                quantity=sell_frozen["inputs"]["quantity"],
+                price=market["value_text"],
+                reality_spec=sell_assumptions["reality_spec"],
+                market_snapshot_id=market["id"],
+                max_market_age_seconds=sell_assumptions["max_market_age_seconds"],
+                valid_until=sell_assumptions["valid_until"],
+                price_range=sell_assumptions["price_range"],
+                average_daily_amount=sell_assumptions.get("average_daily_amount"),
+                action_tier=sell_assumptions.get("action_tier", "standard"),
+                validity_sessions=sell_assumptions.get("validity_sessions"),
+            )
+            reasons.extend(
+                f"grid_sell:{item['rule']}" for item in sell_current["violations"]
+            )
         return {
             "action": action,
-            "executable": not current["blocked"],
+            "executable": not current["blocked"]
+            and (sell_current is None or not sell_current["blocked"]),
             "reasons": reasons,
             "market_snapshot_id": market["id"],
             "risk_calculation_id": current["calculation_id"],
+            "sell_risk_calculation_id": sell_current["calculation_id"] if sell_current else None,
             "research_validation": gate["research_validation"],
             "frozen_risk_calculation_id": risk["id"],
         }

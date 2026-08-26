@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 
 from .db import row_dict
 from .financial import dec, dtext, mandate_constraints
 from .foundation import CompanionError
+from .market_calendar import BROKER_VALIDITY_MAX_CALENDAR_DAYS
 from .quant_runtime import RealitySpec
 from .timeutil import parse
 
@@ -31,6 +33,10 @@ class RiskGate:
         valid_until: str | None = None,
         price_range: dict[str, Any] | None = None,
         average_daily_amount: Any | None = None,
+        action_tier: str = "standard",
+        bounded_action_policy: dict[str, Any] | None = None,
+        program_revision_id: str | None = None,
+        validity_sessions: int | None = None,
     ) -> dict[str, Any]:
         now = parse(as_of)
         qty, px, fee_value = dec(quantity, "risk quantity"), dec(price, "risk price"), dec(fee, "risk fee")
@@ -38,6 +44,8 @@ class RiskGate:
             raise CompanionError("risk quantity must be non-zero")
         if px <= 0 or fee_value < 0:
             raise CompanionError("risk price must be positive and fee non-negative")
+        if action_tier not in {"standard", "bounded"}:
+            raise CompanionError("action_tier must be standard or bounded")
         if max_market_age_seconds is not None and (
             isinstance(max_market_age_seconds, bool)
             or not isinstance(max_market_age_seconds, int)
@@ -194,6 +202,97 @@ class RiskGate:
                             maximum=dtext(dec(maximum_participation)),
                         )
 
+        if action_tier == "bounded":
+            required_policy_fields = {
+                "enabled",
+                "allowed_asset_types",
+                "allowed_execution_plan_types",
+                "max_trade_weight",
+                "max_post_trade_weight",
+                "max_validity_sessions",
+                "max_active_bounded_actions",
+            }
+            policy = bounded_action_policy
+            if not isinstance(policy, dict) or set(policy) != required_policy_fields:
+                add("bounded_action_policy_missing_or_invalid")
+            else:
+                allowed_types = policy.get("allowed_asset_types")
+                if policy.get("enabled") is not True:
+                    add("bounded_action_disabled")
+                if (
+                    not isinstance(allowed_types, list)
+                    or not allowed_types
+                    or any(not isinstance(item, str) or not item for item in allowed_types)
+                ):
+                    add("bounded_allowed_asset_types_invalid")
+                elif asset["asset_type"] not in set(allowed_types):
+                    add("bounded_asset_type_not_allowed", asset_type=asset["asset_type"])
+                allowed_plan_types = policy.get("allowed_execution_plan_types")
+                if (
+                    not isinstance(allowed_plan_types, list)
+                    or not allowed_plan_types
+                    or any(
+                        item not in {"priced_buy", "priced_sell", "bracket_exit"}
+                        for item in allowed_plan_types
+                    )
+                ):
+                    add("bounded_allowed_execution_plan_types_invalid")
+                try:
+                    max_trade_weight = dec(policy.get("max_trade_weight"), "bounded maximum trade weight")
+                    max_post_trade_weight = dec(
+                        policy.get("max_post_trade_weight"), "bounded maximum post-trade weight"
+                    )
+                except CompanionError:
+                    add("bounded_weight_limits_invalid")
+                else:
+                    if not Decimal("0") < max_trade_weight <= Decimal("1"):
+                        add("bounded_max_trade_weight_invalid")
+                    if not Decimal("0") < max_post_trade_weight <= Decimal("1"):
+                        add("bounded_max_post_trade_weight_invalid")
+                    if turnover is not None and turnover > max_trade_weight:
+                        add(
+                            "bounded_max_trade_weight",
+                            actual=dtext(turnover),
+                            maximum=dtext(max_trade_weight),
+                        )
+                    if qty > 0 and position_weight is not None and position_weight > max_post_trade_weight:
+                        add(
+                            "bounded_max_post_trade_weight",
+                            actual=dtext(position_weight),
+                            maximum=dtext(max_post_trade_weight),
+                        )
+                max_sessions = policy.get("max_validity_sessions")
+                if (
+                    isinstance(max_sessions, bool)
+                    or not isinstance(max_sessions, int)
+                    or max_sessions not in {5, 20, 60, 180}
+                ):
+                    add("bounded_max_validity_sessions_invalid")
+                if validity_sessions not in {5, 20, 60, 180}:
+                    add("bounded_validity_sessions_missing_or_invalid")
+                elif isinstance(max_sessions, int) and validity_sessions > max_sessions:
+                    add(
+                        "bounded_validity_sessions_too_long",
+                        actual_sessions=validity_sessions,
+                        maximum_sessions=max_sessions,
+                    )
+                if (
+                    validity_sessions in BROKER_VALIDITY_MAX_CALENDAR_DAYS
+                    and valid_until is not None
+                    and (parse(valid_until) - now).total_seconds()
+                    > BROKER_VALIDITY_MAX_CALENDAR_DAYS[validity_sessions] * 86400
+                ):
+                    add(
+                        "bounded_deadline_exceeds_session_envelope",
+                        validity_sessions=validity_sessions,
+                        maximum_calendar_days=BROKER_VALIDITY_MAX_CALENDAR_DAYS[
+                            validity_sessions
+                        ],
+                    )
+                max_active = policy.get("max_active_bounded_actions")
+                if isinstance(max_active, bool) or not isinstance(max_active, int) or max_active <= 0:
+                    add("bounded_max_active_actions_invalid")
+
         outputs = {
             "status": "blocked" if violations else "pass",
             "blocked": bool(violations),
@@ -218,6 +317,9 @@ class RiskGate:
                 "price": dtext(px),
                 "fee": dtext(fee_value),
                 "market_snapshot_id": market_snapshot_id,
+                "action_tier": action_tier,
+                "program_revision_id": program_revision_id,
+                "validity_sessions": validity_sessions,
             },
             {
                 "mandate": mandate or {},
@@ -228,6 +330,10 @@ class RiskGate:
                 "average_daily_amount": (
                     dtext(dec(average_daily_amount)) if average_daily_amount is not None else None
                 ),
+                "action_tier": action_tier,
+                "bounded_action_policy": bounded_action_policy or {},
+                "program_revision_id": program_revision_id,
+                "validity_sessions": validity_sessions,
             },
             {
                 "blocked": "any hard-rule violation",

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+import re
 from typing import Any
 
 from .foundation import CompanionError
@@ -134,6 +135,7 @@ class ResearchValidationService:
         }
         evidence_details = []
         source_groups: set[str] = set()
+        non_predictive_evidence_count = 0
         for item in manifests:
             body = item["manifest"].get("manifest", {})
             source = body.get("source")
@@ -168,6 +170,12 @@ class ResearchValidationService:
                     checks["evidence_current"] = False
             if self._has_unvalidated_prediction(body):
                 checks["predictive_evidence_validated"] = False
+            if item["kind"] == "investment_evidence" and body.get("evidence_type") in {
+                "observed_fact",
+                "official_disclosure",
+                "validated_analysis",
+            } and not self._contains_predictive_content(body):
+                non_predictive_evidence_count += 1
             evidence_details.append(detail)
         checks["independent_sources"] = (
             checks["minimum_frozen_evidence"]
@@ -181,7 +189,19 @@ class ResearchValidationService:
             )
         )
         failures = [name for name, passed in checks.items() if not passed]
-        status = "eligible_for_decision" if not failures else "research_only"
+        bounded_hard_checks = {
+            key: value
+            for key, value in checks.items()
+            if key not in {"minimum_frozen_evidence", "independent_sources", "predictive_evidence_validated"}
+        }
+        bounded_eligible = all(bounded_hard_checks.values()) and non_predictive_evidence_count >= 1
+        status = (
+            "eligible_for_decision"
+            if not failures
+            else "eligible_for_bounded_action"
+            if bounded_eligible
+            else "research_only"
+        )
         outputs = {
             "status": status,
             "validation_type": "thesis",
@@ -189,8 +209,10 @@ class ResearchValidationService:
             "thesis_revision_id": revision["id"],
             "evidence_manifest_ids": evidence_manifest_ids,
             "independent_source_count": len(source_groups),
+            "non_predictive_evidence_count": non_predictive_evidence_count,
             "checks": checks,
             "failures": failures,
+            "eligible_for_bounded_action": bounded_eligible,
             "automatic_decision_or_execution": False,
         }
         calculation = self.c.financial.calculation_record(
@@ -336,8 +358,8 @@ class ResearchValidationService:
         current_status = frozen_status
         reasons: list[str] = []
         if calculation["kind"] == "thesis_validation":
-            if frozen_status != "eligible_for_decision":
-                reasons.append("frozen_validation_not_decision_eligible")
+            if frozen_status not in {"eligible_for_bounded_action", "eligible_for_decision"}:
+                reasons.append("frozen_validation_not_action_eligible")
             revision = self.c.cognition.revision_get(
                 calculation["inputs"].get("thesis_revision_id")
             )
@@ -412,6 +434,9 @@ class ResearchValidationService:
             "frozen_status": frozen_status,
             "current_status": current_status,
             "eligible_for_decision": current_status == "eligible_for_decision" and not reasons,
+            "eligible_for_bounded_action": current_status
+            in {"eligible_for_bounded_action", "eligible_for_decision"}
+            and not reasons,
             "reasons": reasons,
             "checked_at": iso(now),
         }
@@ -428,6 +453,43 @@ class ResearchValidationService:
             return any(ResearchValidationService._has_unvalidated_prediction(item) for item in value.values())
         if isinstance(value, list):
             return any(ResearchValidationService._has_unvalidated_prediction(item) for item in value)
+        return False
+
+    @staticmethod
+    def _contains_predictive_content(value: Any) -> bool:
+        predictive_keys = {
+            "prediction",
+            "predictions",
+            "forecast",
+            "forecasts",
+            "expected_return",
+            "target_price",
+            "recommendation_state",
+            "signal_direction",
+            "signals",
+        }
+        if isinstance(value, dict):
+            if predictive_keys & set(value):
+                return True
+            return any(
+                ResearchValidationService._contains_predictive_content(item)
+                for item in value.values()
+            )
+        if isinstance(value, list):
+            return any(
+                ResearchValidationService._contains_predictive_content(item)
+                for item in value
+            )
+        if isinstance(value, str):
+            # Bounded eligibility must be earned by contemporaneous facts, not
+            # by hiding a forecast in a free-text claim under a factual label.
+            predictive_language = re.compile(
+                r"(?:未来|预计|预期|预测|目标价|将(?:上涨|下跌|增长|下降)|"
+                r"forecast|expected\s+(?:return|price|growth)|target\s+price|"
+                r"will\s+(?:rise|fall|increase|decrease|grow|decline))",
+                re.IGNORECASE,
+            )
+            return bool(predictive_language.search(value))
         return False
 
     def _manifests(self, manifest_ids: list[str]) -> list[dict[str, Any]]:

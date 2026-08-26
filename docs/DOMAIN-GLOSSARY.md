@@ -48,6 +48,6 @@ Execution 的 `ordered` 只表示用户报告已向券商下单；`partially_fil
 - “系统学习了”：必须说明是新增 Review、Change Proposal、Thesis Revision 还是 Strategy Version。
 - “已经执行”：必须区分建议已接受、Execution 已创建、用户已下单和 Ledger 已确认。
 - “已经验证”：必须说明数据、样本外、Shadow、实盘或结果评价中的哪一级。
-- “有资格进入决策”：只表示冻结来源、时点、反证、范围、成本或策略样本达到声明门槛；不表示预测必然正确。定性 Thesis 使用 `research_only / eligible_for_decision`，量化 Strategy 另有 `eligible_for_shadow` 中间态。
+- “有资格进入决策”：只表示冻结来源、时点、反证、范围、成本或策略样本达到声明门槛；不表示预测必然正确。定性 Thesis 使用 `research_only / eligible_for_bounded_action / eligible_for_decision`；量化 Strategy 另有 `eligible_for_shadow` 中间态。
 - “系统盈利”：必须给出账户范围、期间、现金流处理、成本、基准和 Calculation/Performance ID。
 - “无变化”：必须说明来源覆盖已经通过，否则只能说覆盖不足。

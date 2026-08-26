@@ -7,6 +7,7 @@ from typing import Any
 from .db import row_dict, rows_dict
 from .financial import dec, dtext, reconciliation_is_full_match
 from .foundation import CompanionError, canonical, digest, new_id
+from .market_calendar import BROKER_VALIDITY_MAX_CALENDAR_DAYS
 from .timeutil import iso, parse, utc_now
 
 
@@ -43,6 +44,7 @@ class BrokerExecutionStrategyService:
         if parse(valid_until) <= utc_now():raise CompanionError("broker execution plan valid_until must be in the future")
         if iso(parse(valid_until))!=revision.get("metadata",{}).get("valid_until"):raise CompanionError("broker execution plan deadline must equal the Decision valid_until and the broker-displayed deadline")
         if (parse(valid_until).date()-utc_now().date()).days<normalized["validity_sessions"]-1:raise CompanionError("broker-displayed deadline cannot contain the selected number of trading sessions")
+        if (parse(valid_until)-utc_now()).total_seconds()>BROKER_VALIDITY_MAX_CALENDAR_DAYS[normalized["validity_sessions"]]*86400:raise CompanionError("broker-displayed deadline exceeds the selected validity-session envelope")
         action = self.c.operating.queue_card(queue_id)["action"]
         if normalized["account_id"] != action["account_id"] or normalized["asset_id"] != action["asset_id"]:
             raise CompanionError("broker execution plan account and asset must match its Action Card")
@@ -96,15 +98,20 @@ class BrokerExecutionStrategyService:
             recovered.append(order["id"])
         return recovered
 
-    def mark_configured(self, *, plan_id: str, broker_condition_ref: str, configured_at: str, actor: str = "primary-codex") -> dict[str, Any]:
+    def mark_configured(self, *, plan_id: str, broker_condition_ref: str, configured_at: str, broker_validity_sessions: int, broker_valid_until: str, actor: str = "primary-codex") -> dict[str, Any]:
         plan=self.get(plan_id)
         self._require_not_expired(plan)
         self._require_authorization_current(plan)
         if plan["status"] not in {"draft","presented","accepted","configured"}:raise CompanionError(f"plan cannot be configured from {plan['status']}")
         occurred=iso(parse(configured_at));reference=self._text(broker_condition_ref,"broker_condition_ref")
+        if broker_validity_sessions != plan["spec"]["validity_sessions"]:
+            raise CompanionError("broker validity-session selection differs from the authorized plan")
+        displayed_deadline=iso(parse(broker_valid_until))
+        if displayed_deadline != plan["valid_until"]:
+            raise CompanionError("broker-displayed deadline differs from the authorized plan")
         with self.c.db.transaction() as con:
             con.execute("UPDATE broker_execution_plans SET status='configured',broker_condition_ref=?,configured_at=?,updated_at=? WHERE id=?",(reference,occurred,iso(),plan_id))
-            self._event_in_tx(con,plan_id,"configured",occurred,{"broker_condition_ref":reference},f"configured:{plan_id}:{reference}",actor)
+            self._event_in_tx(con,plan_id,"configured",occurred,{"broker_condition_ref":reference,"broker_validity_sessions":broker_validity_sessions,"broker_valid_until":displayed_deadline},f"configured:{plan_id}:{reference}",actor)
         return self.get(plan_id)
 
     def activate(self, *, plan_id: str, occurred_at: str, actor: str = "primary-codex") -> dict[str, Any]:
@@ -274,6 +281,12 @@ class BrokerExecutionStrategyService:
 
     def _normalize_spec(self, plan_type: str, spec: Any) -> dict[str, Any]:
         if not isinstance(spec,dict):raise CompanionError("broker execution plan spec must be an object")
+        # Decision revisions persist the normalized broker contract, including
+        # the system-owned semantics annotation.  Accept that exact persisted
+        # form when it is later materialized from an accepted Action Card, but
+        # never trust caller-supplied semantics: regenerate it below.
+        spec=dict(spec)
+        spec.pop("broker_semantics",None)
         common={"account_id","asset_id","validity_sessions","monitoring_window"}
         required={
             "priced_buy":common|{"trigger","order","quantity"},"priced_sell":common|{"trigger","order","quantity"},

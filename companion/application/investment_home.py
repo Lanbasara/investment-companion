@@ -248,7 +248,10 @@ class InvestmentHomeService:
                 **catalog["boundary"],
                 "may_produce": ["evidence", "hypothesis", "signal", "opportunity"],
                 "may_not_produce": ["ledger_entry", "execution", "automatic_trade"],
-                "action_requires": "eligible_for_decision research validation",
+                "action_requires": {
+                    "standard": "eligible_for_decision research validation",
+                    "bounded_conditional": "eligible_for_bounded_action plus confirmed bounded risk policy",
+                },
             },
         }
 

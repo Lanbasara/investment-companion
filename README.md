@@ -31,7 +31,7 @@ Tushare 凭据放在本机的 `~/.config/tushare/token`（权限必须屏蔽 gro
 
 开发验收可用 `COMPANION_MCP_PROFILE=investment ./bin/companion-mcp` 启动 22 个版本无关语义接口；`admin` 只提供历史管理工具，`all` 保持迁移期兼容。固定生产 Runtime 当前仍使用 `all`，切换按[生产灰度验收清单](docs/PRODUCTION-ROLLOUT-CHECKLIST.md)执行。
 
-行动型 Decision 有两道独立硬门槛：研究必须先形成 `eligible_for_decision` 的不可变验证 Calculation，交易方案还必须通过当前 Mandate、确认账本和市场现实驱动的 Risk Gate。扫描榜单、`unvalidated` 预测和研究文字都不能直接授权行动。
+行动型 Decision 有两道独立硬门槛：研究资格决定最大行动强度，交易方案还必须通过当前 Mandate、确认账本和市场现实驱动的 Risk Gate。`eligible_for_bounded_action` 只允许 Program 明确授权的小额条件行动，`eligible_for_decision` 才允许正式行动；`research_only`、纯 `unvalidated` 预测和研究文字都不能直接授权行动。
 
 人工执行明确分为：接受 Action Card → 准备 Execution → 用户报告已下单 → 登记待确认成交 → 用户确认 Ledger → Execution 对账完成。前四步都不能改变真实持仓。飞书正式交互使用自然语言，Primary Codex 将用户意图映射到这些版本无关动作；不额外开发业务交互卡片。
 

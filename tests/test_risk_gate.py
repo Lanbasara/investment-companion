@@ -119,3 +119,80 @@ def test_risk_gate_fails_closed_when_required_market_or_liquidity_data_is_missin
     )
     rules = {item["rule"] for item in result["violations"]}
     assert {"market_snapshot_missing", "liquidity_data_missing"} <= rules
+
+
+def test_bounded_action_requires_confirmed_policy_and_enforces_smaller_caps(tmp_path):
+    companion, account, asset, market = setup_portfolio(tmp_path)
+    common = {
+        "as_of": iso(),
+        "account_id": account["id"],
+        "asset_id": asset["id"],
+        "quantity": "100",
+        "price": "10",
+        "fee": "5",
+        "mandate": {},
+        "reality_spec": reality(),
+        "market_snapshot_id": market["id"],
+        "max_market_age_seconds": 600,
+        "valid_until": iso(utc_now() + timedelta(minutes=30)),
+        "price_range": {"min": "9.5", "max": "10.5"},
+        "action_tier": "bounded",
+    }
+    missing = companion.risk.assess_trade(**common)
+    assert "bounded_action_policy_missing_or_invalid" in {
+        item["rule"] for item in missing["violations"]
+    }
+
+    passed = companion.risk.assess_trade(
+        **common,
+        bounded_action_policy={
+            "enabled": True,
+            "allowed_asset_types": ["stock", "etf"],
+            "allowed_execution_plan_types": ["priced_buy", "priced_sell", "bracket_exit"],
+            "max_trade_weight": "0.011",
+            "max_post_trade_weight": "0.05",
+            "max_validity_sessions": 20,
+            "max_active_bounded_actions": 2,
+        },
+        program_revision_id="programrev_fixture",
+        validity_sessions=5,
+    )
+    assert passed["status"] == "pass"
+    calculation = companion.financial.calculation_get(passed["calculation_id"])
+    assert calculation["assumptions"]["action_tier"] == "bounded"
+
+    oversized_sell = companion.risk.assess_trade(
+        **{**common, "quantity": "-200"},
+        bounded_action_policy={
+            "enabled": True,
+            "allowed_asset_types": ["stock", "etf"],
+            "allowed_execution_plan_types": ["priced_buy", "priced_sell", "bracket_exit"],
+            "max_trade_weight": "0.011",
+            "max_post_trade_weight": "0.05",
+            "max_validity_sessions": 20,
+            "max_active_bounded_actions": 2,
+        },
+        program_revision_id="programrev_fixture",
+        validity_sessions=5,
+    )
+    assert "bounded_max_trade_weight" in {
+        item["rule"] for item in oversized_sell["violations"]
+    }
+
+    distant_deadline = companion.risk.assess_trade(
+        **{**common, "valid_until": iso(utc_now() + timedelta(days=365))},
+        bounded_action_policy={
+            "enabled": True,
+            "allowed_asset_types": ["stock", "etf"],
+            "allowed_execution_plan_types": ["priced_buy", "priced_sell", "bracket_exit"],
+            "max_trade_weight": "0.011",
+            "max_post_trade_weight": "0.05",
+            "max_validity_sessions": 20,
+            "max_active_bounded_actions": 2,
+        },
+        program_revision_id="programrev_fixture",
+        validity_sessions=5,
+    )
+    assert "bounded_deadline_exceeds_session_envelope" in {
+        item["rule"] for item in distant_deadline["violations"]
+    }

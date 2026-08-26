@@ -7,6 +7,8 @@ from zoneinfo import ZoneInfo
 from .foundation import CompanionError, canonical
 from .timeutil import parse
 
+BROKER_VALIDITY_MAX_CALENDAR_DAYS = {5: 14, 20: 35, 60: 100, 180: 280}
+
 
 class MarketCalendar:
     """Single deterministic interpretation of China-market sessions and phases."""

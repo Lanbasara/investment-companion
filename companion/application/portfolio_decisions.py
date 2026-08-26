@@ -504,6 +504,18 @@ class PortfolioDecisionService(InvestmentProgramService):
             raise CompanionError("DecisionQueue Decision differs from the Opportunity")
         gate = self.c.actionability.validate_decision(decision_revision_id)
         revision = gate["revision"]
+        bounded_limit = None
+        if revision.get("metadata", {}).get("action_tier") == "bounded":
+            policy = program["current_revision"]["content"].get("risk_budget", {}).get(
+                "bounded_action", {}
+            )
+            bounded_limit = policy.get("max_active_bounded_actions")
+            if (
+                isinstance(bounded_limit, bool)
+                or not isinstance(bounded_limit, int)
+                or bounded_limit <= 0
+            ):
+                raise CompanionError("bounded action policy has no valid active-action limit")
         qualification_id = (opportunity.get("qualification") or {}).get(
             "validation_calculation_id"
         )
@@ -557,6 +569,23 @@ class PortfolioDecisionService(InvestmentProgramService):
             raise CompanionError(
                 f"Decision already has an active DecisionQueue item: {active_for_decision['id']}"
             )
+        if bounded_limit is not None:
+            with self.db.connect() as con:
+                active_bounded = con.execute(
+                    "SELECT COUNT(*) FROM decision_queue_items q "
+                    "JOIN cognitive_revisions r ON r.id=q.decision_revision_id "
+                    "WHERE q.program_id=? AND q.state IN ('ready','presented','snoozed','accepted') "
+                    "AND json_extract(r.metadata_json,'$.action_tier')='bounded' "
+                    "AND NOT EXISTS (SELECT 1 FROM broker_execution_plans p WHERE p.queue_id=q.id "
+                    "AND (p.status IN ('reconciled','cancelled') OR "
+                    "(p.status IN ('terminated','expired') AND NOT EXISTS ("
+                    "SELECT 1 FROM broker_managed_orders o WHERE o.plan_id=p.id "
+                    "AND o.status IN ('triggered','submitted','partially_filled','unknown')"
+                    "))))",
+                    (program["id"],),
+                ).fetchone()[0]
+            if active_bounded >= bounded_limit:
+                raise CompanionError("bounded action queue limit reached")
         queue_id, now = new_id("queue"), iso()
         saved_queue_id = queue_id
         with self.db.transaction() as con:
@@ -582,6 +611,22 @@ class PortfolioDecisionService(InvestmentProgramService):
                     raise CompanionError(
                         f"Decision already has an active DecisionQueue item: {concurrent_active['id']}"
                     )
+                if bounded_limit is not None:
+                    active_bounded = con.execute(
+                        "SELECT COUNT(*) FROM decision_queue_items q "
+                        "JOIN cognitive_revisions r ON r.id=q.decision_revision_id "
+                        "WHERE q.program_id=? AND q.state IN ('ready','presented','snoozed','accepted') "
+                        "AND json_extract(r.metadata_json,'$.action_tier')='bounded' "
+                        "AND NOT EXISTS (SELECT 1 FROM broker_execution_plans p WHERE p.queue_id=q.id "
+                        "AND (p.status IN ('reconciled','cancelled') OR "
+                        "(p.status IN ('terminated','expired') AND NOT EXISTS ("
+                        "SELECT 1 FROM broker_managed_orders o WHERE o.plan_id=p.id "
+                        "AND o.status IN ('triggered','submitted','partially_filled','unknown')"
+                        "))))",
+                        (program["id"],),
+                    ).fetchone()[0]
+                    if active_bounded >= bounded_limit:
+                        raise CompanionError("bounded action queue limit reached")
                 con.execute(
                     "INSERT INTO decision_queue_items(id,program_id,opportunity_id,decision_revision_id,manual_action_spec_id,state,valid_until,idempotency_key,created_at,updated_at) "
                     "VALUES(?,?,?,?,?,'ready',?,?,?,?)",
@@ -778,6 +823,11 @@ class PortfolioDecisionService(InvestmentProgramService):
         if state not in transitions.get(item["state"], set()):
             raise CompanionError(f"invalid DecisionQueue transition: {item['state']} -> {state}")
         attention = None
+        card = None
+        if state in {"presented", "accepted"}:
+            card = self.queue_card(queue_id)
+            if not card["executable_now"]:
+                raise CompanionError(f"Action Card is not executable: {card['blocking_reasons']}")
         if state == "presented":
             if not attention_decision_id:
                 raise CompanionError("presented DecisionQueue item requires attention_decision_id")
@@ -786,10 +836,6 @@ class PortfolioDecisionService(InvestmentProgramService):
                 raise CompanionError("DecisionQueue presentation requires a delivered notify_now AttentionDecision")
             if queue_id not in attention.get("evidence", []):
                 raise CompanionError("DecisionQueue AttentionDecision must cite the queue item as evidence")
-        if state == "accepted":
-            card = self.queue_card(queue_id)
-            if not card["executable_now"]:
-                raise CompanionError(f"Action Card is not executable: {card['blocking_reasons']}")
         if item.get("manual_action_spec_id"):
             action = self.c.cognition.manual_action_get(item["manual_action_spec_id"])
             if state == "presented" and action["status"] == "draft":

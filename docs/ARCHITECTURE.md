@@ -85,6 +85,7 @@ Research 可以提出证据、Thesis、策略和预测。Validation 独立检查
 当前统一验证结果使用不可变 Calculation 表达，而不是再增加一个可随意编辑的“研究状态”：
 
 - 定性 Thesis 只有在精确版本、至少两个冻结且声明为独立组的来源、`first_known_at`/`observed_at` 均不晚于知识截止时间、数据未过期、反证搜索、失效条件、适用范围和成本假设全部齐备时，才是 `eligible_for_decision`；这证明证据流程达到决策级，不宣称观点必然正确。
+- 当上述完整标准只缺多源独立印证或预测前向验证，但仍有至少一项非预测的冻结证据，且时点、新鲜度、反证、失效条件、适用范围和成本全部合格时，可成为 `eligible_for_bounded_action`。它只能进入由确认 Program 限额的 `conditional_action`，不能升级为正式行动。
 - 量化 Strategy 复用唯一的预注册 Experiment 与 Shadow 事实。完整离线计划和最终留出集通过后为 `eligible_for_shadow`；只有不调参的前向 Shadow 样本也达到门槛后，才是 `eligible_for_decision`。
 - 任何含 `unvalidated` 预测状态的证据只能保持 `research_only`。Validation 不能创建 Decision、行动卡、Execution、Ledger 或在线修改 Strategy。
 
@@ -163,7 +164,7 @@ Market Calendar & Clock 是全系统唯一的市场时间解释服务，至少�
 
 1. 只有 confirmed Ledger Entry 能改变真实组合。
 2. 扫描、Forecast、Agent 输出和 Opportunity 不能直接创建成交或持仓。
-3. 行动型 Decision 必须引用 `eligible_for_decision` 的研究验证；未验证预测不能以自然语言绕过。
+3. 正式行动必须引用 `eligible_for_decision`；受限条件行动必须至少引用 `eligible_for_bounded_action` 并通过确认 Program 的 bounded policy。纯未验证预测不能以自然语言绕过。
 4. 硬风险规则必须是确定性的，并在行动呈现和接受前重新验证。
 5. 任何学习只能产生新版本，不能改写历史或自动修改当前策略。
 6. 新领域代码和默认用户接口不再使用 V8、V9 等版本名称；旧名称只存在于兼容适配器。

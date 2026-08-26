@@ -19,7 +19,8 @@
       "required_test_refs": [
         "tests/test_v5_quant_experiment.py::test_real_data_shape_scan_records_forward_outcome_without_decision_or_ledger",
         "tests/test_v6_predictive_recommendations.py::test_v6_fund_job_publishes_only_a_forecast_artifact",
-        "tests/test_research_validation.py::test_unvalidated_predictive_signal_cannot_become_decision_eligible"
+        "tests/test_research_validation.py::test_unvalidated_predictive_signal_alone_remains_research_only",
+        "tests/test_v5_operating_system.py::test_bounded_research_can_publish_only_a_capped_conditional_decision"
       ],
       "invariants": [
         "research pipelines do not create decisions, executions, or ledger entries",
