@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import subprocess
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from ..timeutil import iso, utc_now
+from ..timeutil import iso, parse, utc_now
 
 
 CRITICAL_RESEARCH_ROLES = {
@@ -83,15 +84,22 @@ class ProductionHealthService:
         result = []
         schedules = [item for item in self.schedule_list(status="active") if item.get("origin", {}).get("role") in CRITICAL_RESEARCH_ROLES]
         for schedule in schedules:
-            history = self.schedule_history(schedule["id"], 1)
+            history = self.schedule_history(schedule["id"], 2)
             latest = history[0] if history else None
-            healthy = bool(latest and latest.get("status") == "succeeded")
+            previous = history[1] if len(history) > 1 else None
+            reference = (latest or {}).get("created_at") or (latest or {}).get("due_at")
+            recent = bool(reference and parse(reference) >= utc_now() - timedelta(minutes=15))
+            in_progress = bool(
+                latest and latest.get("status") in {"queued", "running"} and recent
+                and previous and previous.get("status") == "succeeded"
+            )
+            healthy = bool(latest and (latest.get("status") == "succeeded" or in_progress))
             result.append({
                 "schedule_id": schedule["id"], "role": schedule.get("origin", {}).get("role"),
                 "latest_run": latest.get("id") if latest else None,
                 "latest_status": latest.get("status") if latest else None,
                 "finished_at": latest.get("finished_at") if latest else None,
-                "healthy": healthy,
+                "healthy": healthy, "in_progress": in_progress,
             })
         return sorted(result, key=lambda item: (str(item["role"]), item["schedule_id"]))
 
@@ -147,5 +155,5 @@ class ProductionHealthService:
             "latest_etf_feature_trade_date": latest_etf_trade_date,
             "stock_market_data_sessions_complete": bool(expected and not missing),
             "stock_scan_semantically_fresh": bool(expected and scan_day == expected),
-            "etf_features_semantically_fresh": bool(expected and latest_etf_trade_date == expected),
+            "etf_features_semantically_fresh": bool(expected and latest_etf_trade_date and latest_etf_trade_date >= expected),
         }

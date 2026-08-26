@@ -115,3 +115,22 @@ def test_production_doctor_fails_when_successful_pipeline_outputs_are_stale(tmp_
     assert {item["check"] for item in result["incidents"]} == {
         "stock_market_data_sessions_complete", "etf_features_semantically_fresh"
     }
+
+
+def test_pipeline_health_treats_recent_queued_successor_as_in_progress(tmp_path: Path, monkeypatch):
+    companion = Companion(tmp_path, gate_scope="test_fixture")
+    companion.initialize()
+    now = "2026-08-26T10:05:00Z"
+    monkeypatch.setattr("companion.platform.production_health.utc_now", lambda: __import__("datetime").datetime(2026, 8, 26, 10, 5, tzinfo=__import__("datetime").timezone.utc))
+    monkeypatch.setattr(companion, "schedule_list", lambda **_kwargs: [
+        {"id": "etf", "origin": {"role": "etf_candidates"}},
+    ])
+    monkeypatch.setattr(companion, "schedule_history", lambda _schedule_id, limit: [
+        {"id": "new", "status": "queued", "created_at": now},
+        {"id": "old", "status": "succeeded", "finished_at": "2026-08-25T10:00:00Z"},
+    ][:limit])
+
+    result = companion._pipeline_health()
+
+    assert result[0]["healthy"] is True
+    assert result[0]["in_progress"] is True
