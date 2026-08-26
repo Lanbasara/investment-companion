@@ -40,6 +40,7 @@ class ProductionHealthService:
         checks["critical_pipeline_roles_complete"] = {item["role"] for item in pipelines} == CRITICAL_RESEARCH_ROLES
         checks["critical_pipelines_have_runs"] = all(item["latest_run"] is not None for item in pipelines)
         checks["critical_pipelines_latest_run_succeeded"] = all(item["healthy"] for item in pipelines)
+        checks["critical_pipeline_outputs_ready"] = all(item["semantic_ready"] for item in pipelines)
         freshness = self._research_freshness()
         checks["stock_market_data_sessions_complete"] = freshness["stock_market_data_sessions_complete"]
         checks["stock_scan_semantically_fresh"] = freshness["stock_scan_semantically_fresh"]
@@ -94,12 +95,22 @@ class ProductionHealthService:
                 and previous and previous.get("status") == "succeeded"
             )
             healthy = bool(latest and (latest.get("status") == "succeeded" or in_progress))
+            output_status = None
+            semantic_ready = True
+            if latest and latest.get("status") == "succeeded" and latest.get("job_run_id"):
+                job = self.jobs.run_get(latest["job_run_id"])
+                manifest_id = job.get("output_manifest_id")
+                if manifest_id:
+                    body = self.data.manifest_get(manifest_id, verify=True)["manifest"]["manifest"]
+                    output_status = body.get("status")
+                    semantic_ready = output_status != "waiting_upstream"
             result.append({
                 "schedule_id": schedule["id"], "role": schedule.get("origin", {}).get("role"),
                 "latest_run": latest.get("id") if latest else None,
                 "latest_status": latest.get("status") if latest else None,
                 "finished_at": latest.get("finished_at") if latest else None,
                 "healthy": healthy, "in_progress": in_progress,
+                "output_status": output_status, "semantic_ready": semantic_ready,
             })
         return sorted(result, key=lambda item: (str(item["role"]), item["schedule_id"]))
 
@@ -113,9 +124,9 @@ class ProductionHealthService:
         calendar = self.quant_research._calendar_rows(now)
         local_now = now.astimezone(ZoneInfo("Asia/Shanghai"))
         local_day = local_now.date().isoformat()
-        # The last research role is scheduled for 18:30 China time.  Before
+        # The last research role is scheduled for 18:35 China time.  Before
         # that daily completion window, today's session is not yet required.
-        require_today = (local_now.hour, local_now.minute) >= (18, 30)
+        require_today = (local_now.hour, local_now.minute) >= (18, 45)
         sessions = sorted({
             str(row.get("date")) for row in calendar
             if row.get("exchange") == "SSE" and row.get("is_open") in {True, 1, "1"}

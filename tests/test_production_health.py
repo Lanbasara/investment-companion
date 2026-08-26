@@ -96,7 +96,7 @@ def test_production_doctor_fails_when_successful_pipeline_outputs_are_stale(tmp_
         for unit in SYSTEMD_UNITS
     ]))
     monkeypatch.setattr(companion, "_pipeline_health", lambda: [
-        {"role": role, "latest_run": f"run-{role}", "healthy": True}
+        {"role": role, "latest_run": f"run-{role}", "healthy": True, "semantic_ready": True}
         for role in sorted({"data", "scan", "stock_candidates", "stock_signals", "etf_data", "etf_candidates", "etf_signals"})
     ])
     monkeypatch.setattr(companion, "_research_freshness", lambda: {
@@ -134,3 +134,26 @@ def test_pipeline_health_treats_recent_queued_successor_as_in_progress(tmp_path:
 
     assert result[0]["healthy"] is True
     assert result[0]["in_progress"] is True
+    assert result[0]["semantic_ready"] is True
+
+
+def test_pipeline_health_rejects_succeeded_run_with_waiting_upstream_output(tmp_path: Path, monkeypatch):
+    companion = Companion(tmp_path, gate_scope="test_fixture")
+    companion.initialize()
+    waiting = companion.data.manifest_publish(
+        kind="v6_stock_research_candidates", schema_version="fixture/v1",
+        manifest={"status": "waiting_upstream"},
+    )
+    monkeypatch.setattr(companion, "schedule_list", lambda **_kwargs: [
+        {"id": "stock", "origin": {"role": "stock_candidates"}},
+    ])
+    monkeypatch.setattr(companion, "schedule_history", lambda _schedule_id, _limit: [
+        {"id": "run", "status": "succeeded", "job_run_id": "job"},
+    ])
+    monkeypatch.setattr(companion.jobs, "run_get", lambda _job_id: {"output_manifest_id": waiting["id"]})
+
+    result = companion._pipeline_health()
+
+    assert result[0]["healthy"] is True
+    assert result[0]["output_status"] == "waiting_upstream"
+    assert result[0]["semantic_ready"] is False
