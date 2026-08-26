@@ -78,8 +78,10 @@ class SystemOperationsService:
             "Active state: "+", ".join(f"{key}={value}" for key,value in active.items())+".",
             f"Financial facts: accounts={status['counts']['accounts']}, ledger_entries={status['counts']['ledger_entries']}.",
             f"Investment program: {program['id'] if program else 'missing'}; user decision queue={active['decision_queue']}.",
-            "This is orientation, not investment evidence. Do not infer facts from chat history or Markdown current views.",
-            "For an investment task, enter through the V5 operating loop, then use lifecycle/research/decision skills and create a bounded Recovery Package as required.",
+            "Orientation only—not evidence or a recommendation.",
+            "For investment questions, start with investment_home and load relevant confirmed facts and current evidence.",
+            "Prior research and briefs are dated evidence, not standing instructions; respect validity and changed facts.",
+            "Compare action, bounded conditional action, no action and one alternative. Never infer a transaction or bypass user confirmation.",
         ]
         return {"ok":status["ok"],"workspace":str(self.root),"contexts":contexts,"active":active,"financial":{"accounts":status["counts"]["accounts"],"ledger_entries":status["counts"]["ledger_entries"]},"text":"\n".join(lines)}
 

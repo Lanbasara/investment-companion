@@ -134,8 +134,12 @@ class CompanionTest(unittest.TestCase):
         self.assertEqual(brief["contexts"]["attention"]["state"],"confirmed")
         self.assertEqual(brief["contexts"]["investor"]["state"],"draft")
         self.assertEqual(brief["active"]["schedules"],3)
-        self.assertIn("create a bounded Recovery Package",brief["text"])
-        self.assertLess(len(brief["text"]),1200)
+        self.assertIn("start with investment_home",brief["text"])
+        self.assertIn("dated evidence, not standing instructions",brief["text"])
+        self.assertIn("bounded conditional action",brief["text"])
+        self.assertNotIn("V5",brief["text"])
+        self.assertNotIn("Recovery Package",brief["text"])
+        self.assertLessEqual(len(brief["text"]),800)
 
 
 if __name__=="__main__":unittest.main()
