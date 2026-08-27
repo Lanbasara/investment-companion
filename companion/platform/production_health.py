@@ -227,6 +227,6 @@ class ProductionHealthService:
             "latest_stock_scan_date": scan_day,
             "latest_etf_feature_trade_date": latest_etf_trade_date,
             "stock_market_data_sessions_complete": bool(expected and not missing),
-            "stock_scan_semantically_fresh": bool(expected and scan_day == expected),
+            "stock_scan_semantically_fresh": bool(expected and scan_day and scan_day >= expected),
             "etf_features_semantically_fresh": bool(expected and latest_etf_trade_date and latest_etf_trade_date >= expected),
         }
