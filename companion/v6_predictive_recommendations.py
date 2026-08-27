@@ -731,8 +731,8 @@ class V6PredictiveRecommendations:
         existing=self._stock_candidate_for_v5_scan(config["program_id"],scan_id)
         report=existing or self.generate_stock_research_candidates(program_id=config["program_id"],source_v5_scan_manifest_id=scan_id,top_k=parameters["top_k"])
         body=report["manifest"]["manifest"]
-        return {"manifest_id":report["id"],"output_refs":[report["id"],scan_id,*outcome_ids],"material":bool(body.get("candidates")),"model_tokens":0,"event_summary":f"V6 stock candidates: {body['status']}; {len(outcome_ids)} outcome batches checked"}
-
+        work=self.c.research_work.enqueue_candidate_manifest(report["id"]);refs=[report["id"],scan_id,*outcome_ids]
+        return {"manifest_id":report["id"],"output_refs":refs,"material":bool(work["item"]),"model_tokens":0,"event_summary":f"V6 stock candidates: {body['status']}; explicit research triage required; {len(outcome_ids)} outcome batches checked"}
     def _job_stock_provisional_signal(self, context: dict[str, Any]) -> dict[str, Any]:
         config=self.require_program();parameters=context["inputs"].get("parameters",{})
         if set(parameters)!={"program_id","horizon_sessions"} or parameters["program_id"]!=config["program_id"]:
@@ -763,7 +763,8 @@ class V6PredictiveRecommendations:
             top_k=parameters["top_k"],
         )
         body = report["manifest"]["manifest"]
-        return {"manifest_id": report["id"], "output_refs": [report["id"], feature_id], "material": False, "model_tokens": 0, "event_summary": f"V6 ETF research candidates: {body['status']}; not a forecast or Decision"}
+        work=self.c.research_work.enqueue_candidate_manifest(report["id"]);refs=[report["id"],feature_id]
+        return {"manifest_id": report["id"], "output_refs": refs, "material": bool(work["item"]), "model_tokens": 0, "event_summary": f"V6 ETF research candidates: {body['status']}; explicit research triage required; not a forecast or Decision"}
 
     def _job_fund_provisional_signal(self, context: dict[str, Any]) -> dict[str, Any]:
         config=self.require_program();parameters=context["inputs"].get("parameters",{})

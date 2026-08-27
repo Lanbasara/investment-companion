@@ -5,6 +5,7 @@ from ..application import (
     InvestmentCommandService,
     InvestmentHomeService,
     ResearchCatalogService,
+    ResearchWorkService,
 )
 from ..application.program_evaluation import ProgramEvaluationCoverage
 from ..actionability import ActionabilityService
@@ -66,6 +67,7 @@ def compose_services(companion) -> None:
     companion.v6_predictive = V6PredictiveRecommendations(companion)
     companion.predictive_research = PredictiveResearchAdapter(companion)
     companion.research_catalog = ResearchCatalogService(companion)
+    companion.research_work = ResearchWorkService(companion)
     companion.delivery = DeliveryEngine(companion)
     companion.investment = InvestmentHomeService(companion)
     companion.investment_commands = InvestmentCommandService(companion)

@@ -112,11 +112,29 @@ class InvestmentCommandService:
                     "idempotency_key",
                 },
             ),
+            "work_claim": (
+                {"item_id"}, {"item_id", "owner", "lease_seconds"},
+            ),
+            "triage_complete": (
+                {"item_id", "dispositions"}, {"item_id", "owner", "dispositions"},
+            ),
+            "research_complete": (
+                {"item_id", "outcome", "reason"},
+                {"item_id", "owner", "outcome", "reason", "result_refs", "opportunity_id", "next_check_at"},
+            ),
         }
         if operation not in contracts:
-            raise CompanionError("opportunity operation must be create or transition")
+            raise CompanionError("unsupported opportunity or research-work operation")
         required, allowed = contracts[operation]
         self._operation_payload(payload, required, allowed, f"opportunity {operation}")
+        if operation in {"work_claim", "triage_complete", "research_complete"}:
+            item_id = payload.pop("item_id")
+            owner = payload.pop("owner", actor)
+            if operation == "work_claim":
+                return self.c.research_work.claim(item_id, owner=owner, **payload)
+            if operation == "triage_complete":
+                return self.c.research_work.complete_triage(item_id, owner=owner, **payload)
+            return self.c.research_work.complete_research(item_id, owner=owner, **payload)
         if operation == "create":
             return self.c.operating.opportunity_create(**payload, actor=actor)
         opportunity_id = payload.pop("opportunity_id")

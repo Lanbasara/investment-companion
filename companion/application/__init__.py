@@ -6,6 +6,7 @@ from .investment_home import InvestmentHomeService
 from .portfolio_decisions import PortfolioDecisionService
 from .programs import InvestmentProgramService
 from .research_catalog import ResearchCatalogService
+from .research_work import ResearchWorkService
 
 __all__ = [
     "InvestmentBriefingService",
@@ -14,4 +15,5 @@ __all__ = [
     "PortfolioDecisionService",
     "InvestmentProgramService",
     "ResearchCatalogService",
+    "ResearchWorkService",
 ]

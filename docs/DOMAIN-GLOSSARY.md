@@ -14,6 +14,7 @@
 | Investment Policy | 当前投资目标、基准、范围、风险预算、节奏和停止条件 | InvestmentProgram + 当前 Context 引用 |
 | Portfolio Ledger | 经确认的现金、持仓、成交、费用和公司行动事实 | Account、Asset、confirmed Ledger Entry |
 | Research Case | 一个有边界、可结束、可证伪的研究问题及其证据进度 | Case + Opportunity 的用户语义投影 |
+| Research Work | 候选分流或完整研究的持久义务，包含期限、租约和结果引用，不保存投资结论 | ResearchWorkItem |
 | Investment Thesis | 对标的或投资方法为何可能有效、何时失效的版本化判断 | Thesis Revision、ResearchHypothesis |
 | Strategy Version | 可重放的信号、组合、成本、适用范围和验证条件 | StrategyVersion、预测模型标识 |
 | Investment Decision | 基于当时证据、真实组合和替代方案形成的有期限正式判断 | Decision Revision |

@@ -44,14 +44,14 @@ RECONCILIATION_STATEMENT = {
 }
 
 INVESTMENT_TOOLS = {
-    "investment_home": ("读取今天的行动、异常、研究、绩效和交付总入口。", schema()),
+    "investment_home": ("读取今天的行动、异常、研究工作队列、绩效和交付总入口；未完成研究返回 review_required。", schema()),
     "portfolio_context": (
         "读取确认账本重建的组合、现金、个人约束和投资政策。",
         schema({"account_id": S, "as_of": S, "prices": O}),
     ),
     "research_context": (
-        "读取某标的或全局研究机会、策略验证和最新扫描。",
-        schema({"subject_id": S, "limit": I}),
+        "读取某标的或 work_item_id 对应的候选范围、研究队列、ResearchRecord、Validation 与机会。",
+        schema({"subject_id": S, "work_item_id": S, "limit": I}),
     ),
     "decision_context": (
         "读取当前建议、行动卡、失效原因和人工执行边界。",
@@ -127,10 +127,10 @@ INVESTMENT_TOOLS = {
         ),
     ),
     "investment_opportunity_update": (
-        "登记研究机会或按验证证据推进、拒绝、过期和关闭；不能直接创建交易。",
+        "维护研究闭环：work_claim 领取任务，triage_complete 逐项分流，research_complete 绑定正式研究结果；create/transition 维护机会。不能直接创建交易。",
         schema(
             {
-                "operation": {"type": "string", "enum": ["create", "transition"]},
+                "operation": {"type": "string", "enum": ["create", "transition", "work_claim", "triage_complete", "research_complete"]},
                 "subject": O,
                 "evidence_refs": A,
                 "reason": S,
@@ -144,9 +144,38 @@ INVESTMENT_TOOLS = {
                 "qualification": O,
                 "decision_revision_id": S,
                 "idempotency_key": S,
+                "item_id": S,
+                "owner": S,
+                "lease_seconds": I,
+                "dispositions": {"type": "array", "items": {
+                    "type": "object",
+                    "properties": {
+                        "candidate_id": S,
+                        "outcome": {"type": "string", "enum": ["research", "reject", "monitor"]},
+                        "reason": S,
+                        "subject": O,
+                        "due_at": S,
+                        "next_check_at": S,
+                    },
+                    "required": ["candidate_id", "outcome", "reason"],
+                    "additionalProperties": False,
+                    "allOf": [
+                        {"if": {"properties": {"outcome": {"const": "monitor"}}, "required": ["outcome"]},
+                         "then": {"required": ["candidate_id", "outcome", "reason", "next_check_at"]}},
+                    ],
+                }},
+                "outcome": {"type": "string", "enum": ["promoted", "rejected", "monitoring"]},
+                "result_refs": A,
+                "next_check_at": S,
             },
             ["operation"],
-        ),
+        ) | {"allOf": [
+            {"if": {"properties": {"operation": {"const": "work_claim"}}}, "then": {"required": ["operation", "item_id"]}},
+            {"if": {"properties": {"operation": {"const": "triage_complete"}}}, "then": {"required": ["operation", "item_id", "dispositions"]}},
+            {"if": {"properties": {"operation": {"const": "research_complete"}}}, "then": {"required": ["operation", "item_id", "outcome", "reason", "result_refs"]}},
+            {"if": {"properties": {"operation": {"const": "research_complete"}, "outcome": {"const": "promoted"}}, "required": ["operation", "outcome"]}, "then": {"required": ["opportunity_id"]}},
+            {"if": {"properties": {"operation": {"const": "research_complete"}, "outcome": {"const": "monitoring"}}, "required": ["operation", "outcome"]}, "then": {"required": ["next_check_at"]}},
+        ]},
     ),
     "investment_transaction_update": (
         "登记账户和资产身份，或记录、确认、冲销、对账金融事实；只有 confirm 才改变真实组合。reconcile 的 statement 必须包含 cash、positions、position_values、position_total_by_currency、total_by_currency；全部验证才返回 matched。",

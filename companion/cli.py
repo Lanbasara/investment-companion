@@ -18,7 +18,7 @@ def emit(value):
 def parser() -> argparse.ArgumentParser:
     p=argparse.ArgumentParser(prog="companion",description="Investment Companion operational CLI")
     p.add_argument("--root",default=os.environ.get("COMPANION_ROOT","/home/ghk/investment-home"));sub=p.add_subparsers(dest="command",required=True)
-    for name in ["init","status","doctor","production-doctor","recover","bootstrap","agent-check","session-brief","v5-status","today","v5-quant-status","v5-experiment-status","v6-predictive-status","delivery-status"]:sub.add_parser(name)
+    for name in ["init","status","doctor","production-doctor","recover","bootstrap","agent-check","session-brief","v5-status","today","v5-quant-status","v5-experiment-status","v6-predictive-status","delivery-status","research-work-backfill-latest"]:sub.add_parser(name)
     tick=sub.add_parser("tick");tick.add_argument("--limit",type=int,default=20)
     quality=sub.add_parser("v5-research-quality");quality.add_argument("--days",type=int,default=30)
     migrate=sub.add_parser("migrate");migrate.add_argument("--backup-directory",required=True)
@@ -83,6 +83,7 @@ def main(argv=None) -> int:
             elif a.command in {"v5-quant-status","v5-experiment-status"}:result=c.quant_research.status()
             elif a.command=="v6-predictive-status":result=c.v6_predictive.status()
             elif a.command=="delivery-status":result=c.delivery.status()
+            elif a.command=="research-work-backfill-latest":result=c.research_work.backfill_latest_candidates(actor="cli-rollout")
             elif a.command=="v5-research-quality":result=c.research_quality_status(a.days)
             elif a.command=="today":result=c.operating.today()
             elif a.command=="v4-bootstrap-jobs":result=c.v4_bootstrap_jobs(activate=a.activate)

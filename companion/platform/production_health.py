@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from ..foundation import CompanionError
 from ..timeutil import iso, parse, utc_now
 
 
@@ -51,6 +52,10 @@ class ProductionHealthService:
         checks["etf_features_semantically_fresh"] = freshness["etf_features_semantically_fresh"]
         with self.db.connect() as con:orphan_count=con.execute("SELECT COUNT(*) FROM broker_managed_orders WHERE status<>'rejected' AND (execution_id IS NULL OR execution_link_state<>'linked')").fetchone()[0]
         checks["broker_orders_linked_to_execution"] = orphan_count==0
+        current_program = self.operating.program_current()
+        research_work = self.research_work.summary(program_id=current_program["id"] if current_program else None)
+        checks["latest_candidate_cohorts_have_research_work"] = self._latest_candidates_have_work(current_program["id"] if current_program else None)
+        checks["research_work_not_overdue"] = research_work["overdue"] == 0
         incidents = [
             {"severity": "critical", "check": key}
             for key, passed in checks.items() if not passed
@@ -61,8 +66,39 @@ class ProductionHealthService:
             "checks": checks, "services": services, "pipelines": pipelines,
             "research_freshness": freshness,
             "broker_execution_orphan_count": orphan_count,
+            "research_work": research_work,
             "incidents": incidents,
         }
+
+    def _latest_candidates_have_work(self, program_id: str | None) -> bool:
+        """Require latest legacy cohorts and every post-migration cohort to own work."""
+        import json
+        if not program_id: return True
+        kinds = ("v6_stock_research_candidates", "v6_fund_research_candidates")
+        with self.db.connect() as con:
+            migration = con.execute(
+                "SELECT applied_at FROM schema_migrations WHERE migration_id='0009_research_work_queue'"
+            ).fetchone()
+            activated_at = migration["applied_at"] if migration else iso()
+            for kind in kinds:
+                rows = con.execute(
+                    "SELECT id,created_at,manifest_json FROM artifact_manifests WHERE kind=? AND status='ready' "
+                    "ORDER BY created_at DESC,id DESC", (kind,),
+                ).fetchall()
+                required = []
+                for row in rows:
+                    body = json.loads(row["manifest_json"]).get("manifest", {})
+                    if body.get("program_id") != program_id: continue
+                    if body.get("status") == "waiting_upstream" or not body.get("candidates"):
+                        continue
+                    if not required or row["created_at"] >= activated_at:
+                        required.append(row["id"])
+                for manifest_id in required:
+                    exists = con.execute(
+                        "SELECT 1 FROM research_work_items WHERE source_manifest_id=? LIMIT 1", (manifest_id,),
+                    ).fetchone()
+                    if not exists: return False
+        return True
 
     @staticmethod
     def _runtime_head(runtime: Path | None) -> str | None:
@@ -123,9 +159,13 @@ class ProductionHealthService:
                 job = self.jobs.run_get(latest["job_run_id"])
                 manifest_id = job.get("output_manifest_id")
                 if manifest_id:
-                    body = self.data.manifest_get(manifest_id, verify=True)["manifest"]["manifest"]
-                    output_status = body.get("status")
-                    semantic_ready = output_status != "waiting_upstream"
+                    try:
+                        body = self.data.manifest_get(manifest_id, verify=True)["manifest"]["manifest"]
+                        output_status = body.get("status")
+                        semantic_ready = output_status != "waiting_upstream"
+                    except CompanionError:
+                        output_status = "invalid_manifest"
+                        semantic_ready = False
             result.append({
                 "schedule_id": schedule["id"], "role": schedule.get("origin", {}).get("role"),
                 "latest_run": latest.get("id") if latest else None,

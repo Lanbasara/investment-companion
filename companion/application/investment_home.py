@@ -28,6 +28,8 @@ class InvestmentHomeService:
             kind="account_performance", limit=1
         )
         research = self.c.research_catalog.context(limit=3)
+        current_program = self.c.operating.program_current()
+        research_work = self.c.research_work.summary(program_id=current_program["id"] if current_program else None)
         validations = self._research_validations(limit=3)
         active_schedules = self.c.schedule_list(status="active")
         recent_runs = self.c.run_list(limit=50)
@@ -44,6 +46,7 @@ class InvestmentHomeService:
                 "records": research["records"],
                 "boundary": research["boundary"],
                 "validations": validations,
+                "work_queue": research_work,
             },
             "evaluation": performance[0] if performance else None,
             "workflow": {
@@ -227,7 +230,7 @@ class InvestmentHomeService:
         }
 
     def research_context(
-        self, *, subject_id: str | None = None, limit: int = 20
+        self, *, subject_id: str | None = None, work_item_id: str | None = None, limit: int = 20
     ) -> dict[str, Any]:
         opportunities = self.c.operating.opportunity_list(limit=limit)
         if subject_id:
@@ -244,6 +247,11 @@ class InvestmentHomeService:
             "strategies": self.c.research.strategy_list(),
             "records": catalog["records"],
             "validations": validations,
+            "work_queue": {
+                "summary": self.c.research_work.summary(program_id=(self.c.operating.program_current() or {}).get("id")),
+                "selected": self.c.research_work.get(work_item_id) if work_item_id else None,
+                "items": self.c.research_work.list(program_id=(self.c.operating.program_current() or {}).get("id"), limit=limit),
+            },
             "boundary": {
                 **catalog["boundary"],
                 "may_produce": ["evidence", "hypothesis", "signal", "opportunity"],

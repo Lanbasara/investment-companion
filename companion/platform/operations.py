@@ -24,6 +24,7 @@ class SystemOperationsService:
             recovered["outbox"]=con.execute("UPDATE outbox SET status='retry',lease_owner=NULL,lease_until=NULL,available_at=?,updated_at=? WHERE status='sending' AND lease_until<=?",(now,now,now)).rowcount
             con.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('last_recovery_at',?)",(now,))
         job_recovery=self.jobs.recover();recovered.update(job_recovery)
+        recovered.update(self.research_work.refresh())
         recovered["broker_execution_links"]=len(self.execution_strategy.recover_execution_links())
         recovered["deliveries"]=sum(self.delivery.recover_outbox(outbox_id) for outbox_id in stale_delivery_outbox_ids)
         return {"ok":True,"integrity":integrity,"recovered":recovered,"at":now}
@@ -43,7 +44,7 @@ class SystemOperationsService:
         integrity=self.db.integrity_check()
         with self.db.connect() as con:
             meta={r["key"]:r["value"] for r in con.execute("SELECT * FROM meta").fetchall()}
-            counts={table:con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for table in ["schedules","runs","watches","events","cases","patrols","source_items","artifacts","outbox","delivery_records","accounts","assets","ledger_entries","calculations","context_revisions","cognitive_objects","cognitive_revisions","executions","broker_execution_plans","broker_managed_orders","broker_execution_events","attention_decisions","source_health","job_definitions","job_runs","data_objects","artifact_manifests","dataset_snapshots","research_hypotheses","strategy_versions","experiment_runs","agent_invocations","shadow_books","manual_action_specs","investment_programs","investment_program_revisions","opportunities","decision_queue_items","operating_briefs","program_scorecards"]}
+            counts={table:con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] for table in ["schedules","runs","watches","events","cases","patrols","source_items","artifacts","outbox","delivery_records","accounts","assets","ledger_entries","calculations","context_revisions","cognitive_objects","cognitive_revisions","executions","broker_execution_plans","broker_managed_orders","broker_execution_events","attention_decisions","source_health","job_definitions","job_runs","data_objects","artifact_manifests","dataset_snapshots","research_hypotheses","strategy_versions","experiment_runs","agent_invocations","shadow_books","manual_action_specs","investment_programs","investment_program_revisions","opportunities","research_work_items","decision_queue_items","operating_briefs","program_scorecards"]}
             failures=con.execute("SELECT COUNT(*) FROM runs WHERE status='failed'").fetchone()[0]
             pending=con.execute("SELECT COUNT(*) FROM outbox WHERE status IN ('pending','retry','sending')").fetchone()[0]
             migrations=rows_dict(con.execute("SELECT * FROM schema_migrations ORDER BY version").fetchall())
@@ -68,6 +69,7 @@ class SystemOperationsService:
                 "pending_runs":con.execute("SELECT COUNT(*) FROM runs WHERE status IN ('queued','recoverable','leased')").fetchone()[0],
                 "theses":con.execute("SELECT COUNT(*) FROM cognitive_objects WHERE object_type='thesis' AND status='active'").fetchone()[0],
                 "opportunities":con.execute("SELECT COUNT(*) FROM opportunities WHERE status='active'").fetchone()[0],
+                "research_work":con.execute("SELECT COUNT(*) FROM research_work_items WHERE status IN ('queued','leased','waiting','monitoring')").fetchone()[0],
                 "decision_queue":con.execute("SELECT COUNT(*) FROM decision_queue_items WHERE state IN ('ready','presented','snoozed','accepted') AND valid_until>?",(iso(),)).fetchone()[0],
             }
         program=self.operating.program_current()
@@ -91,6 +93,9 @@ class SystemOperationsService:
         checks["schema_current"]=status["meta"].get("schema_version")==str(SCHEMA_VERSION)
         checks["ordered_migrations"]=len(status.get("migrations",[]))>=3
         checks["required_results_not_overdue"]=status["delivery"]["overdue_required"]==0
+        current_program=self.operating.program_current()
+        research_work=self.research_work.summary(program_id=current_program["id"] if current_program else None)
+        checks["research_work_not_overdue"]=research_work["overdue"]==0
         project_config=self.root/".codex"/"config.toml"
         if project_config.is_file():
             from ..agent_config import validate_agent_config

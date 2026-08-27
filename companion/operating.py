@@ -139,6 +139,13 @@ class InvestmentOperatingSystem(PortfolioDecisionService):
                 ).fetchone()
                 if conflict:
                     raise CompanionError("no_action brief conflicts with an active DecisionQueue item")
+                unfinished = con.execute(
+                    "SELECT id FROM research_work_items WHERE program_id=? "
+                    "AND status IN ('queued','leased','waiting','monitoring') LIMIT 1",
+                    (program["id"],),
+                ).fetchone()
+                if unfinished:
+                    raise CompanionError("no_action brief conflicts with unfinished research work")
             if conclusion == "action":
                 for queue_item in queue_items:
                     current = con.execute(
@@ -695,6 +702,7 @@ class InvestmentOperatingSystem(PortfolioDecisionService):
         latest_daily = briefs["daily"]
         execution_summary = self.c.briefing.projection(program_id=current["id"], as_of=iso(), since=latest_daily["created_at"] if latest_daily else None)
         execution_signal = self.c.briefing.today_signal(execution_summary)
+        research_work = self.c.research_work.summary(program_id=current["id"])
         production_health=self.c.production_health()
         if not production_health["ok"]:
             mode="system_degraded";message="关键运行或研究流水线异常，系统当前无法形成可信的行动/不行动判断。"
@@ -720,6 +728,13 @@ class InvestmentOperatingSystem(PortfolioDecisionService):
             message = f"有 {len(snoozed)} 项行动被你延后，将在 {next_resume} 后重新进入判断队列。"
         elif execution_signal:
             mode, message = execution_signal["mode"], execution_signal["message"]
+        elif research_work["open"]:
+            mode = "review_required"
+            overdue = research_work["overdue"]
+            message = (
+                f"研究队列有 {research_work['open']} 项待完成，其中 {overdue} 项已逾期；"
+                "候选尚未完成分流或完整研究，不能把当前状态写成不行动。"
+            )
         elif (
             latest_daily
             and latest_daily["program_revision_id"] == current["current_revision_id"]
@@ -748,6 +763,7 @@ class InvestmentOperatingSystem(PortfolioDecisionService):
             "execution_summary": execution_summary,
             "production_health": production_health,
             "urgent_execution_review": execution_signal if not production_health["ok"] else None,
+            "research_work": research_work,
             "latest_briefs": briefs,
             "claims": {
                 "automatic_trading": False,

@@ -29,7 +29,8 @@ flowchart TB
 
     H --> P[Investment Policy\n目标·范围·风险预算]
     H --> L[Portfolio Ledger\n现金·持仓·成交真相]
-    H --> R[Research & Validation\n证据·策略·预测·验证]
+    H --> W[Research Work Queue\n候选分流·期限·租约]
+    W --> R[Research & Validation\n证据·策略·预测·验证]
 
     P --> D[Portfolio Construction & Decision]
     L --> D
@@ -79,6 +80,8 @@ Investment Policy 保存目标、基准、投资范围、风险预算、时间�
 ### 5.2 Research 与 Validation 分离
 
 Research 可以提出证据、Thesis、策略和预测。Validation 独立检查数据时点、样本外结果、成本、反证和适用范围。研究产物只有通过声明的验证条件后，才能进入组合决策；扫描榜单和未验证预测不能直接创建行动卡。
+
+`ResearchWorkService` 补齐候选发现与完整研究之间的协调断点。每个非空候选批次幂等地产生分流任务，要求逐项进入研究、淘汰或限期观察；租约与到期恢复防止跨会话遗忘。它不保存研究结论，也不能写 Decision、Execution 或 Ledger。未完成任务阻止 `no_action`，逾期任务或最新候选无任务由 Doctor 报错。
 
 `ResearchCatalogService` 是研究读取面的版本无关边界。它把持续扫描、预测候选、信号、前向复核和正式验证映射为稳定 `ResearchRecord`，但不把历史 Pipeline 名称自动注册为 StrategyVersion。未在 Strategy Registry 中真实存在的方法始终标记为 `research_method_only`；展示统一不等于资格升级。
 
@@ -153,7 +156,7 @@ Market Calendar & Clock 是全系统唯一的市场时间解释服务，至少�
 |---|---|---|
 | 个人事实与硬约束 | confirmed Context Revision | Policy 引用，不复制 |
 | 现金、持仓、成交 | confirmed Ledger Entry | 组合视图和绩效均为派生 |
-| 市场与研究输入 | 不可变 Data Object / Manifest / Source | Research Case 只保存引用 |
+| 市场与研究输入 | 不可变 Data Object / Manifest / Source | Research Work/Case 只保存引用与进度 |
 | 当前研究判断 | Thesis / Strategy Version | Brief 只负责呈现 |
 | 正式投资判断 | Decision Revision | Action Card 是待用户处理的投影 |
 | 真实执行 | Execution + confirmed Ledger | 接受建议不等于成交 |
@@ -168,6 +171,7 @@ Market Calendar & Clock 是全系统唯一的市场时间解释服务，至少�
 4. 硬风险规则必须是确定性的，并在行动呈现和接受前重新验证。
 5. 任何学习只能产生新版本，不能改写历史或自动修改当前策略。
 6. 新领域代码和默认用户接口不再使用 V8、V9 等版本名称；旧名称只存在于兼容适配器。
+7. 每个非空候选批次必须存在可恢复的 Research Work；未完成或逾期不能伪装成“不行动”。
 
 ## 10. 扩展方式
 

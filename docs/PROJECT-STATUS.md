@@ -1,16 +1,16 @@
 # Investment Companion：项目状态与会话交棒
 
-更新时间：2026-08-23
+更新时间：2026-08-27
 
-当前生产基线：V7 / SQLite Schema 7 / 固定 Git Runtime（已迁移并运行）
+当前生产基线：SQLite Schema 8 / 固定 Git Runtime `2f831b3`（已运行）
 
-当前开发目标：版本无关架构 Batch A–C 代码收口已完成，Batch D 开发态工具面已完成；生产 Runtime 不随工作树自动切换
+当前开发目标：Schema 9 Research Work Queue 已完成开发与测试；尚未迁移生产数据库或切换 Runtime
 
-当前分支：`feature/v5-investment-operating-system`
+当前分支：`feature/research-work-queue`
 
 V4 冻结：annotated tag `v4.0.0-engineering-baseline`
 
-当前 Plugin：`0.1.0+codex.20260821121340`，仍使用生产兼容工具面；新 Skill 在新会话加载
+当前生产 Plugin：`0.1.0+codex.20260826145310`；插件源码已更新 Research Work 契约，但尚未重装
 
 ## 1. 当前结论
 
@@ -66,6 +66,11 @@ Primary Codex 仍是唯一最终语义判断、正式发布和用户沟通主体
 
 当前工作树新增、尚未切换生产 Runtime 的架构能力：
 
+- Research Work Queue 把股票/ETF候选自动变成持久研究义务，支持逐项分流、完整研究、期限、租约、观察到期和恢复；
+- Investment Home 在研究未完成时返回 `review_required`，确定性拒绝把未处理候选写成 `no_action`；
+- Production Doctor 检查最新候选是否拥有工作项以及研究任务是否逾期；
+- 不增加 MCP 工具数量，Codex 仍通过 `research_context` 与 `investment_opportunity_update` 使用该能力；
+
 - `foundation`、公共 Audit Trail 和显式 Composition Root；Schedule/Run、Outbox/Wake 和 System Operations 已抽入 `platform`，`core.py` 从 1,194 行缩至约 513 行；
 - Program/Policy 生命周期和 Opportunity/Portfolio Decision/DecisionQueue 已抽为独立应用服务，`operating.py` 从 2,008 行缩至 748 行；
 - 独立确定性 Risk Gate，覆盖当前 Mandate、现金、集中度、范围、流动性、行情新鲜度、有效期和 A 股交易单位；
@@ -82,7 +87,7 @@ Primary Codex 仍是唯一最终语义判断、正式发布和用户沟通主体
 - 22 工具的版本无关 Investment MCP Profile；发布审计补齐了原 15 工具缺少的账户/资产、证据、Program、Opportunity、Action、Brief、Schedule/Wake/Delivery 入口，旧 157 工具保留在兼容/Admin Profile；
 - 跨模块黄金闭环已贯通研究、Research Validation、Risk Gate、Decision、待确认成交、确认账本、现金流调整绩效和惰性变更提案；
 - 精确同周期 Performance Calculation 已接入 Program 评价覆盖，月度指标不再把已有真实收益误报为缺失；
-- 156 项测试、8 个子测试通过；架构测试同时锁定大型模块上限、版本依赖、新服务边界与 22 工具闭环完整性。Agent 配置未发生变化。
+- 195 项测试、8 个子测试通过；架构测试同时锁定大型模块上限、版本依赖、新服务边界与 22 工具闭环完整性。Agent 配置未发生变化。
 
 当前生产 Runtime 已实现并继续保留：
 
