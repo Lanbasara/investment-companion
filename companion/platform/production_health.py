@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from datetime import timedelta
 from pathlib import Path
@@ -74,10 +75,17 @@ class ProductionHealthService:
     def _service_health(runtime: Path | None) -> list[dict[str, Any]]:
         result = []
         expected = str(runtime) if runtime else None
+        # Codex-launched MCP servers may not inherit the interactive shell's
+        # user-bus variables.  systemctl --user still has a stable per-user
+        # socket, so provide the canonical environment explicitly.
+        service_env = os.environ.copy()
+        runtime_dir = service_env.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+        service_env["XDG_RUNTIME_DIR"] = runtime_dir
+        service_env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path={runtime_dir}/bus")
         for unit in SYSTEMD_UNITS:
             proc = subprocess.run(
                 ["systemctl", "--user", "show", unit, "-p", "WorkingDirectory", "-p", "Result", "-p", "ExecMainStatus", "-p", "ActiveState", "-p", "SubState"],
-                capture_output=True, text=True, timeout=10, check=False,
+                capture_output=True, text=True, timeout=10, check=False, env=service_env,
             )
             values = dict(line.split("=", 1) for line in proc.stdout.splitlines() if "=" in line)
             working, status, code = values.get("WorkingDirectory", ""), values.get("Result", ""), values.get("ExecMainStatus", "")
@@ -91,6 +99,7 @@ class ProductionHealthService:
                 "active_state": active_state or None, "sub_state": sub_state or None,
                 "runtime_match": runtime_match,
                 "healthy": runtime_match and (completed_successfully or currently_running),
+                "query_error": proc.stderr.strip() or None if proc.returncode != 0 else None,
             })
         return result
 

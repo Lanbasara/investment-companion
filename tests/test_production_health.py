@@ -105,6 +105,35 @@ def test_service_health_treats_running_oneshot_without_final_result_as_healthy(t
     assert all(item["active_state"] == "activating" for item in services)
 
 
+def test_service_health_supplies_user_bus_environment_to_mcp_subprocess(tmp_path: Path, monkeypatch):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+    captured = []
+
+    class Result:
+        returncode = 0
+        stderr = ""
+        stdout = "\n".join([
+            f"WorkingDirectory={runtime}", "Result=success", "ExecMainStatus=0",
+            "ActiveState=inactive", "SubState=dead",
+        ])
+
+    def fake_run(*_args, **kwargs):
+        captured.append(kwargs["env"])
+        return Result()
+
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("DBUS_SESSION_BUS_ADDRESS", raising=False)
+    monkeypatch.setattr("companion.platform.production_health.os.getuid", lambda: 1234)
+    monkeypatch.setattr("companion.platform.production_health.subprocess.run", fake_run)
+
+    services = ProductionHealthService._service_health(runtime)
+
+    assert all(item["healthy"] for item in services)
+    assert all(env["XDG_RUNTIME_DIR"] == "/run/user/1234" for env in captured)
+    assert all(env["DBUS_SESSION_BUS_ADDRESS"] == "unix:path=/run/user/1234/bus" for env in captured)
+
+
 def test_production_doctor_fails_when_successful_pipeline_outputs_are_stale(tmp_path: Path, monkeypatch):
     companion = Companion(tmp_path, gate_scope="test_fixture")
     companion.initialize()
