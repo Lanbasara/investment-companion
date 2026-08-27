@@ -13,6 +13,7 @@
 | Investment Mandate | 用户确认的不可越过硬约束 | Mandate Context Revision |
 | Investment Policy | 当前投资目标、基准、范围、风险预算、节奏和停止条件 | InvestmentProgram + 当前 Context 引用 |
 | Portfolio Ledger | 经确认的现金、持仓、成交、费用和公司行动事实 | Account、Asset、confirmed Ledger Entry |
+| Account Continuity | 用户确认自 matched 对账锚点后无漏报，并承诺持续报告；维持人工 Ledger 可用性但不冒充券商实时同步 | AccountContinuityConfirmation、Reconciliation、confirmed Ledger |
 | Research Case | 一个有边界、可结束、可证伪的研究问题及其证据进度 | Case + Opportunity 的用户语义投影 |
 | Research Work | 候选分流或完整研究的持久义务，包含期限、租约和结果引用，不保存投资结论 | ResearchWorkItem |
 | Investment Thesis | 对标的或投资方法为何可能有效、何时失效的版本化判断 | Thesis Revision、ResearchHypothesis |

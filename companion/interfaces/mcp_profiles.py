@@ -178,14 +178,14 @@ INVESTMENT_TOOLS = {
         ]},
     ),
     "investment_transaction_update": (
-        "登记账户和资产身份，或记录、确认、冲销、对账金融事实；只有 confirm 才改变真实组合。reconcile 的 statement 必须包含 cash、positions、position_values、position_total_by_currency、total_by_currency；全部验证才返回 matched。",
+        "登记账户和资产身份，记录、确认、冲销、对账金融事实，或确认人工账本连续性；只有 confirm 才改变真实组合。连续性确认不替代最终下单前的券商可用现金/持仓预检。",
         schema(
             {
                 "operation": {
                     "type": "string",
                     "enum": [
                         "account_create", "asset_register", "record", "confirm", "reverse",
-                        "reconcile",
+                        "reconcile", "continuity_confirm", "continuity_revoke",
                     ],
                 },
                 "name": S,
@@ -210,6 +210,11 @@ INVESTMENT_TOOLS = {
                 "as_of": S,
                 "statement": RECONCILIATION_STATEMENT,
                 "source_ref": S,
+                "confirmed_at": S,
+                "user_confirmation_ref": S,
+                "reporting_commitment": {"type": "boolean"},
+                "confirmation_id": S,
+                "reason": S,
             },
             ["operation"],
         ),

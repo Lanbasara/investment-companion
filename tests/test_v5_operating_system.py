@@ -1567,7 +1567,7 @@ def test_schema4_to_schema5_is_explicit_and_preserves_v3_schedules(tmp_path: Pat
     assert result["schema_version"] == str(SCHEMA_VERSION)
     assert companion.schedule_get("sch_legacy")["mission"] == "preserve me"
     assert companion.schedule_get("sch_legacy")["dispatch_type"] == "codex_turn"
-    assert len(companion.system_status()["migrations"]) == 7
+    assert len(companion.system_status()["migrations"]) == 8
 
 
 def _condition_order(price_instruction="instant"):

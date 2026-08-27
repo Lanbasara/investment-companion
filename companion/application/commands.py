@@ -195,9 +195,25 @@ class InvestmentCommandService:
                 payload["statement"],
                 payload.get("source_ref"),
             )
+        if operation == "continuity_confirm":
+            self._operation_payload(
+                payload,
+                {"account_id", "confirmed_at", "user_confirmation_ref", "reporting_commitment"},
+                {"account_id", "confirmed_at", "user_confirmation_ref", "reporting_commitment"},
+                "transaction continuity_confirm",
+            )
+            return self.c.financial.continuity_confirm(**payload)
+        if operation == "continuity_revoke":
+            self._operation_payload(
+                payload,
+                {"confirmation_id", "reason"},
+                {"confirmation_id", "reason"},
+                "transaction continuity_revoke",
+            )
+            return self.c.financial.continuity_revoke(**payload)
         raise CompanionError(
             "transaction operation must be account_create, asset_register, record, confirm, "
-            "reverse or reconcile"
+            "reverse, reconcile, continuity_confirm or continuity_revoke"
         )
 
     def evidence_update(self, *, operation: str, **payload: Any) -> dict[str, Any]:
@@ -830,6 +846,14 @@ class InvestmentCommandService:
     def action_plan(self, **trade: Any) -> dict[str, Any]:
         risk = self.risk_assess(**trade)
         quantity = dec(trade["quantity"], "action quantity")
+        portfolio_context = self.c.investment.portfolio_context(
+            account_id=trade["account_id"],
+            as_of=trade["as_of"],
+            prices={trade["asset_id"]: trade["price"]},
+        )
+        precision = portfolio_context["precision_boundary"]
+        exact_sizing = precision["precise_position_advice_allowed"]
+        risk_clear = not risk["blocked"]
         return {
             "schema": "investment-companion.portfolio-action-plan/v1",
             "action": {
@@ -841,12 +865,18 @@ class InvestmentCommandService:
                 "price_range": trade["price_range"],
                 "valid_until": trade["valid_until"],
                 "validity_sessions": trade.get("validity_sessions"),
+                "quantity_status": "finalizable_after_broker_preflight" if exact_sizing else "conditional_only",
             },
             "risk": risk,
-            "eligible_for_decision": not risk["blocked"],
+            "precision_boundary": precision,
+            "truth_freshness": portfolio_context["truth_freshness"],
+            "eligible_for_decision": risk_clear and exact_sizing,
+            "conditional_sizing_available": True,
+            "decision_blockers": (["risk_gate"] if not risk_clear else [])
+            + (["ledger_continuity_confirmation"] if not exact_sizing else []),
             "action_tier": trade.get("action_tier", "standard"),
             "eligible_for_conditional_decision": trade.get("action_tier", "standard") == "bounded"
-            and not risk["blocked"],
+            and risk_clear and exact_sizing,
             "automatic_decision_or_execution": False,
         }
 

@@ -9,12 +9,19 @@ from zoneinfo import ZoneInfo
 
 from .foundation import CompanionError, canonical, digest, new_id
 from .db import row_dict, rows_dict
-from .timeutil import iso, parse
+from .timeutil import iso, parse, utc_now
 
 getcontext().prec = 34
 ENGINE_VERSION = "financial-kernel-4.0.0"
 RECONCILIATION_SCHEMA = "investment-companion.account-reconciliation/v2"
 RECONCILIATION_SCOPES = ("cash", "positions", "valuations", "total_value")
+CONTINUITY_SCOPES = (
+    "trades",
+    "cash_flows",
+    "income_fees_taxes",
+    "corporate_actions",
+    "open_orders_and_conditions",
+)
 SUPPORTED_MANDATE_CONSTRAINTS={
     "minimum_cash","max_position_weight","max_single_position_weight",
     "prohibited_asset_ids","forbidden_asset_ids","allowed_asset_ids",
@@ -99,6 +106,127 @@ class FinancialKernel:
     def account_list(self) -> list[dict]:
         with self.db.connect() as con:return rows_dict(con.execute("SELECT * FROM accounts ORDER BY name").fetchall())
 
+    def continuity_confirm(
+        self,
+        *,
+        account_id: str,
+        confirmed_at: str,
+        user_confirmation_ref: str,
+        reporting_commitment: bool,
+    ) -> dict[str, Any]:
+        """Activate user-maintained ledger continuity after a full matched statement."""
+        self.account_get(account_id)
+        at = iso(parse(confirmed_at))
+        if parse(at) > utc_now():
+            raise CompanionError("continuity confirmation cannot be in the future")
+        if reporting_commitment is not True:
+            raise CompanionError("continuity confirmation requires an explicit reporting commitment")
+        reference = str(user_confirmation_ref).strip()
+        if not reference:
+            raise CompanionError("continuity confirmation requires user_confirmation_ref")
+        with self.db.connect() as con:
+            reconciliation = row_dict(
+                con.execute(
+                    "SELECT * FROM reconciliations WHERE account_id=? AND julianday(as_of)<=julianday(?) "
+                    "ORDER BY julianday(as_of) DESC,rowid DESC LIMIT 1",
+                    (account_id, at),
+                ).fetchone()
+            )
+            pending = int(
+                con.execute(
+                    "SELECT COUNT(*) FROM ledger_entries WHERE account_id=? AND status='needs_confirmation'",
+                    (account_id,),
+                ).fetchone()[0]
+            )
+        if not reconciliation_is_full_match(reconciliation):
+            raise CompanionError("continuity confirmation requires a prior full-scope matched reconciliation")
+        if pending:
+            raise CompanionError("continuity confirmation is blocked by pending transactions")
+        cid, now = new_id("continuity"), iso()
+        ledger_hash = self.confirmed_ledger_hash(account_id=account_id)
+        with self.db.transaction() as con:
+            duplicate = row_dict(
+                con.execute(
+                    "SELECT * FROM account_continuity_confirmations WHERE user_confirmation_ref=?",
+                    (reference,),
+                ).fetchone()
+            )
+            if duplicate:
+                if duplicate["account_id"] != account_id:
+                    raise CompanionError("continuity confirmation reference was already used for another account")
+                return duplicate
+            previous = row_dict(
+                con.execute(
+                    "SELECT * FROM account_continuity_confirmations WHERE account_id=? AND status='active'",
+                    (account_id,),
+                ).fetchone()
+            )
+            if previous:
+                con.execute(
+                    "UPDATE account_continuity_confirmations SET status='superseded' WHERE id=?",
+                    (previous["id"],),
+                )
+            con.execute(
+                "INSERT INTO account_continuity_confirmations("
+                "id,account_id,anchor_reconciliation_id,anchor_reconciliation_as_of,status,scopes_json,"
+                "reporting_commitment,user_confirmation_ref,confirmed_ledger_hash,confirmed_at,supersedes,created_at"
+                ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    cid, account_id, reconciliation["id"], reconciliation["as_of"], "active",
+                    canonical(list(CONTINUITY_SCOPES)), 1, reference, ledger_hash, at,
+                    previous["id"] if previous else None, now,
+                ),
+            )
+        return self.continuity_get(cid)
+
+    def continuity_revoke(self, *, confirmation_id: str, reason: str) -> dict[str, Any]:
+        note = str(reason).strip()
+        if not note:
+            raise CompanionError("continuity revocation requires reason")
+        with self.db.transaction() as con:
+            current = row_dict(
+                con.execute(
+                    "SELECT * FROM account_continuity_confirmations WHERE id=?",
+                    (confirmation_id,),
+                ).fetchone()
+            )
+            if not current:
+                raise CompanionError(f"continuity confirmation not found: {confirmation_id}")
+            if current["status"] == "revoked":
+                return current
+            if current["status"] != "active":
+                raise CompanionError("only an active continuity confirmation can be revoked")
+            con.execute(
+                "UPDATE account_continuity_confirmations SET status='revoked',revoked_at=?,revoke_reason=? WHERE id=?",
+                (iso(), note, confirmation_id),
+            )
+        return self.continuity_get(confirmation_id)
+
+    def continuity_get(self, confirmation_id: str) -> dict[str, Any]:
+        with self.db.connect() as con:
+            item = row_dict(
+                con.execute(
+                    "SELECT * FROM account_continuity_confirmations WHERE id=?",
+                    (confirmation_id,),
+                ).fetchone()
+            )
+        if not item:
+            raise CompanionError(f"continuity confirmation not found: {confirmation_id}")
+        item["reporting_commitment"] = bool(item["reporting_commitment"])
+        return item
+
+    def continuity_current(self, account_id: str) -> dict[str, Any] | None:
+        with self.db.connect() as con:
+            item = row_dict(
+                con.execute(
+                    "SELECT * FROM account_continuity_confirmations WHERE account_id=? AND status='active'",
+                    (account_id,),
+                ).fetchone()
+            )
+        if item:
+            item["reporting_commitment"] = bool(item["reporting_commitment"])
+        return item
+
     def asset_upsert(self, asset_type: str, name: str, currency: str, identifiers: dict, metadata: dict | None = None) -> dict:
         if not identifiers: raise CompanionError("asset requires at least one external identifier")
         stable=digest(asset_type,currency.upper(),identifiers)[:16];aid=f"asset_{stable}";now=iso()
@@ -148,9 +276,12 @@ class FinancialKernel:
         q+=" ORDER BY occurred_at,id LIMIT ?";p.append(limit)
         with self.db.connect() as con:return rows_dict(con.execute(q,p).fetchall())
 
-    def confirmed_ledger_hash(self,exclude_ids:list[str]|None=None)->str:
+    def confirmed_ledger_hash(self,exclude_ids:list[str]|None=None,account_id:str|None=None)->str:
         excluded=set(exclude_ids or [])
-        with self.db.connect() as con:rows=[row for row in rows_dict(con.execute("SELECT * FROM ledger_entries WHERE status IN ('confirmed','reversed') ORDER BY occurred_at,id").fetchall()) if row["id"] not in excluded]
+        query="SELECT * FROM ledger_entries WHERE status IN ('confirmed','reversed')";params=[]
+        if account_id:query+=" AND account_id=?";params.append(account_id)
+        query+=" ORDER BY occurred_at,id"
+        with self.db.connect() as con:rows=[row for row in rows_dict(con.execute(query,params).fetchall()) if row["id"] not in excluded]
         return digest("confirmed-ledger-v1",rows)
 
     def ledger_import_csv(self,content:str,source:str="broker_csv")->dict:

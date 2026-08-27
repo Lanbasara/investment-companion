@@ -2,15 +2,15 @@
 
 更新时间：2026-08-27
 
-当前生产基线：SQLite Schema 8 / 固定 Git Runtime `2f831b3`（已运行）
+当前生产基线：SQLite Schema 9 / 固定 Git Runtime `de69ccf`（已运行）
 
-当前开发目标：Schema 9 Research Work Queue 已完成开发与测试；尚未迁移生产数据库或切换 Runtime
+当前开发目标：Schema 10 Account Continuity 已完成开发与测试；尚未迁移生产数据库或切换 Runtime
 
 当前分支：`feature/research-work-queue`
 
 V4 冻结：annotated tag `v4.0.0-engineering-baseline`
 
-当前生产 Plugin：`0.1.0+codex.20260826145310`；插件源码已更新 Research Work 契约，但尚未重装
+当前生产 Plugin：`0.1.0+codex.20260827060113`；插件源码已更新 Account Continuity 契约，但尚未重装
 
 ## 1. 当前结论
 
@@ -65,6 +65,8 @@ Primary Codex 仍是唯一最终语义判断、正式发布和用户沟通主体
 ## 4. 已实现并验证
 
 当前工作树新增、尚未切换生产 Runtime 的架构能力：
+
+- Account Continuity 把人工账户精度拆为 matched 对账锚点、用户无漏报/持续报告确认和独立市场估值；旧对账不再自动阻断方向、范围或条件化数量，确认连续性后允许精确方案，最终下单仍要求券商 App 预检；
 
 - Research Work Queue 把股票/ETF候选自动变成持久研究义务，支持逐项分流、完整研究、期限、租约、观察到期和恢复；
 - Investment Home 在研究未完成时返回 `review_required`，确定性拒绝把未处理候选写成 `no_action`；

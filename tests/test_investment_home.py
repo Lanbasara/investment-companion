@@ -147,6 +147,102 @@ def test_context_workbenches_compose_truth_owners_without_new_state(tmp_path):
     assert reconciled["precision_boundary"]["precise_position_advice_allowed"] is True
 
 
+def test_dated_reconciliation_allows_advice_after_user_continuity_confirmation(tmp_path):
+    companion = Companion(tmp_path, gate_scope="test_fixture")
+    companion.initialize()
+    account = companion.financial.account_create("Manual broker", "CNY")
+    opening = companion.financial.ledger_add(
+        account_id=account["id"],
+        entry_type="opening_balance",
+        occurred_at=iso(utc_now() - timedelta(days=10)),
+        amount="100000",
+        currency="CNY",
+        source="fixture",
+    )
+    companion.financial.ledger_confirm(opening["id"])
+    old_as_of = iso(utc_now() - timedelta(days=5))
+    matched = companion.financial.reconcile(
+        account["id"],
+        old_as_of,
+        {
+            "cash": {"CNY": "100000"},
+            "positions": {},
+            "position_values": {},
+            "position_total_by_currency": {"CNY": "0"},
+            "total_by_currency": {"CNY": "100000"},
+        },
+        "broker-statement",
+    )
+    before = companion.investment.portfolio_context(account_id=account["id"])
+    assert before["truth_freshness"]["status"] == "continuity_confirmation_required"
+    assert before["precision_boundary"]["precise_position_advice_allowed"] is False
+    assert before["precision_boundary"]["conditional_position_advice_allowed"] is True
+
+    confirmation = companion.investment_commands.transaction_update(
+        operation="continuity_confirm",
+        account_id=account["id"],
+        confirmed_at=iso(),
+        user_confirmation_ref="user:test:no-unrecorded-activity",
+        reporting_commitment=True,
+    )
+    assert confirmation["anchor_reconciliation_id"] == matched["id"]
+    repeated = companion.investment_commands.transaction_update(
+        operation="continuity_confirm",
+        account_id=account["id"],
+        confirmed_at=iso(),
+        user_confirmation_ref="user:test:no-unrecorded-activity",
+        reporting_commitment=True,
+    )
+    assert repeated["id"] == confirmation["id"]
+    after = companion.investment.portfolio_context(account_id=account["id"])
+    assert after["truth_freshness"]["status"] == "ledger_continuity_confirmed"
+    assert after["truth_freshness"]["reconciliation_stale"] is True
+    assert after["precision_boundary"]["current_broker_position_proven"] is False
+    assert after["precision_boundary"]["ledger_position_continuity_supported"] is True
+    assert after["precision_boundary"]["precise_position_advice_allowed"] is True
+    assert after["precision_boundary"]["market_moves_do_not_invalidate_quantities"] is True
+    assert after["precision_boundary"]["final_order_quantities_require_broker_preflight"] is True
+
+    revoked = companion.investment_commands.transaction_update(
+        operation="continuity_revoke",
+        confirmation_id=confirmation["id"],
+        reason="user reports an omitted broker transaction",
+    )
+    assert revoked["status"] == "revoked"
+    blocked = companion.investment.portfolio_context(account_id=account["id"])
+    assert blocked["precision_boundary"]["precise_position_advice_allowed"] is False
+
+
+def test_continuity_confirmation_fails_closed_on_pending_transaction(tmp_path):
+    companion = Companion(tmp_path, gate_scope="test_fixture")
+    companion.initialize()
+    account = companion.financial.account_create("Manual broker", "CNY")
+    opening = companion.financial.ledger_add(
+        account_id=account["id"], entry_type="opening_balance",
+        occurred_at=iso(utc_now() - timedelta(days=5)), amount="1000",
+        currency="CNY", source="fixture",
+    )
+    companion.financial.ledger_confirm(opening["id"])
+    companion.financial.reconcile(
+        account["id"], iso(utc_now() - timedelta(days=4)),
+        {"cash":{"CNY":"1000"},"positions":{},"position_values":{},
+         "position_total_by_currency":{"CNY":"0"},"total_by_currency":{"CNY":"1000"}},
+    )
+    companion.financial.ledger_add(
+        account_id=account["id"], entry_type="fee", occurred_at=iso(), amount="-1",
+        currency="CNY", source="user-report",
+    )
+    with pytest.raises(CompanionError, match="pending transactions"):
+        companion.investment_commands.transaction_update(
+            operation="continuity_confirm", account_id=account["id"], confirmed_at=iso(),
+            user_confirmation_ref="user:test:blocked", reporting_commitment=True,
+        )
+    context = companion.investment.portfolio_context(account_id=account["id"])
+    assert context["truth_freshness"]["status"] == "pending_transactions"
+    assert context["precision_boundary"]["conditional_position_advice_allowed"] is True
+    assert context["precision_boundary"]["precise_position_advice_allowed"] is False
+
+
 def test_evaluation_context_reads_verified_performance_calculations(tmp_path):
     companion = Companion(tmp_path, gate_scope="test_fixture")
     companion.initialize()
@@ -302,7 +398,8 @@ def test_investment_mcp_profile_exposes_only_version_neutral_workbenches_and_com
         check=True,
     )
     responses = [json.loads(line) for line in proc.stdout.splitlines()]
-    names = {item["name"] for item in responses[1]["result"]["tools"]}
+    tools = responses[1]["result"]["tools"]
+    names = {item["name"] for item in tools}
     assert len(names) == 22
     assert {
         "investment_home",
@@ -331,6 +428,9 @@ def test_investment_mcp_profile_exposes_only_version_neutral_workbenches_and_com
     assert "investment_transaction_confirm" not in names
     assert "investment_risk_assess" not in names
     assert not any(name.startswith(("v4_", "v5_", "v6_")) for name in names)
+    transaction_tool = next(item for item in tools if item["name"] == "investment_transaction_update")
+    transaction_operations = transaction_tool["inputSchema"]["properties"]["operation"]["enum"]
+    assert {"continuity_confirm", "continuity_revoke"} <= set(transaction_operations)
     assert responses[2]["result"]["structuredContent"]["result"]["state"] == "setup_required"
     assert responses[3]["result"]["isError"] is True
     assert "unknown tool" in responses[3]["result"]["content"][0]["text"]

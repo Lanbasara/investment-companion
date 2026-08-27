@@ -308,7 +308,7 @@ def test_latest_schema_requires_explicit_migration_and_is_repeatable(tmp_path: P
     assert result["schema_version"]==str(SCHEMA_VERSION) and result["integrity"]=="ok"
     assert Path(result["from_backup"]).is_file()
     companion.initialize()
-    assert len(companion.system_status()["migrations"])==7
+    assert len(companion.system_status()["migrations"])==8
 
 
 def test_doctor_survives_system_operations_extraction(tmp_path: Path):

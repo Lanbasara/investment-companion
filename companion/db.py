@@ -7,10 +7,9 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
-from .migrations.execution_strategy import MIGRATION_008_CHECKSUM, MIGRATION_008_ID, MIGRATION_008_SQL
-from .migrations.research_work import MIGRATION_009_CHECKSUM, MIGRATION_009_ID, MIGRATION_009_SQL
+from .migrations.execution_strategy import MIGRATION_008_CHECKSUM, MIGRATION_008_ID, MIGRATION_008_SQL; from .migrations.research_work import MIGRATION_009_CHECKSUM, MIGRATION_009_ID, MIGRATION_009_SQL; from .migrations.account_continuity import MIGRATION_010_CHECKSUM, MIGRATION_010_ID, MIGRATION_010_SQL
 from .timeutil import iso
-SCHEMA_VERSION=9
+SCHEMA_VERSION=10
 SCHEMA = r"""
 CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
@@ -947,13 +946,10 @@ CREATE INDEX idx_delivery_records_run ON delivery_records(run_id);
 """
 MIGRATION_007_CHECKSUM = hashlib.sha256(MIGRATION_007_SQL.encode("utf-8")).hexdigest()
 MIGRATIONS = (
-    (4, MIGRATION_004_ID, MIGRATION_004_SQL, MIGRATION_004_CHECKSUM),
-    (5, MIGRATION_005_ID, MIGRATION_005_SQL, MIGRATION_005_CHECKSUM),
-    (6, MIGRATION_006_ID, MIGRATION_006_SQL, MIGRATION_006_CHECKSUM),
-    (7, MIGRATION_007_ID, MIGRATION_007_SQL, MIGRATION_007_CHECKSUM),
-    (8, MIGRATION_008_ID, MIGRATION_008_SQL, MIGRATION_008_CHECKSUM),
-    (9, MIGRATION_009_ID, MIGRATION_009_SQL, MIGRATION_009_CHECKSUM),
-)
+    (4, MIGRATION_004_ID, MIGRATION_004_SQL, MIGRATION_004_CHECKSUM), (5, MIGRATION_005_ID, MIGRATION_005_SQL, MIGRATION_005_CHECKSUM),
+    (6, MIGRATION_006_ID, MIGRATION_006_SQL, MIGRATION_006_CHECKSUM), (7, MIGRATION_007_ID, MIGRATION_007_SQL, MIGRATION_007_CHECKSUM),
+    (8, MIGRATION_008_ID, MIGRATION_008_SQL, MIGRATION_008_CHECKSUM), (9, MIGRATION_009_ID, MIGRATION_009_SQL, MIGRATION_009_CHECKSUM),
+    (10, MIGRATION_010_ID, MIGRATION_010_SQL, MIGRATION_010_CHECKSUM),)
 class Database:
     def __init__(self, path: str | Path):
         self.path = Path(path).expanduser().resolve()
@@ -1015,7 +1011,7 @@ class Database:
                     (BASELINE_MIGRATION_ID, 3, BASELINE_CHECKSUM, iso()),
                 )
 
-            if current not in {3, 4, 5, 6, 7, 8, 9}:
+            if current not in {3, 4, 5, 6, 7, 8, 9, 10}:
                 raise RuntimeError(f"unsupported source schema version: {current}")
 
             for version, migration_id, _sql, checksum in MIGRATIONS:
