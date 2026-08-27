@@ -82,6 +82,29 @@ def test_production_health_is_not_applicable_to_isolated_test_fixtures(tmp_path:
     assert companion.production_health() == {"ok": True, "applicable": False, "checks": {}, "incidents": []}
 
 
+def test_service_health_treats_running_oneshot_without_final_result_as_healthy(tmp_path: Path, monkeypatch):
+    runtime = tmp_path / "runtime"
+    runtime.mkdir()
+
+    class Result:
+        returncode = 0
+        stdout = "\n".join([
+            f"WorkingDirectory={runtime}",
+            "Result=",
+            "ExecMainStatus=",
+            "ActiveState=activating",
+            "SubState=start",
+        ])
+
+    monkeypatch.setattr("companion.platform.production_health.subprocess.run", lambda *_args, **_kwargs: Result())
+
+    services = ProductionHealthService._service_health(runtime)
+
+    assert len(services) == len(SYSTEMD_UNITS)
+    assert all(item["healthy"] for item in services)
+    assert all(item["active_state"] == "activating" for item in services)
+
+
 def test_production_doctor_fails_when_successful_pipeline_outputs_are_stale(tmp_path: Path, monkeypatch):
     companion = Companion(tmp_path, gate_scope="test_fixture")
     companion.initialize()

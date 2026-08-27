@@ -35,7 +35,10 @@ class ProductionHealthService:
         }
         services = self._service_health(runtime)
         checks["services_use_runtime"] = all(item["runtime_match"] for item in services)
-        checks["services_last_result_success"] = all(item["result"] == "success" and item["exec_status"] == "0" for item in services)
+        checks["services_last_result_success"] = all(
+            item.get("healthy", item["result"] == "success" and item["exec_status"] == "0")
+            for item in services
+        )
         pipelines = self._pipeline_health()
         checks["critical_pipeline_roles_complete"] = {item["role"] for item in pipelines} == CRITICAL_RESEARCH_ROLES
         checks["critical_pipelines_have_runs"] = all(item["latest_run"] is not None for item in pipelines)
@@ -73,12 +76,22 @@ class ProductionHealthService:
         expected = str(runtime) if runtime else None
         for unit in SYSTEMD_UNITS:
             proc = subprocess.run(
-                ["systemctl", "--user", "show", unit, "-p", "WorkingDirectory", "-p", "Result", "-p", "ExecMainStatus"],
+                ["systemctl", "--user", "show", unit, "-p", "WorkingDirectory", "-p", "Result", "-p", "ExecMainStatus", "-p", "ActiveState", "-p", "SubState"],
                 capture_output=True, text=True, timeout=10, check=False,
             )
             values = dict(line.split("=", 1) for line in proc.stdout.splitlines() if "=" in line)
             working, status, code = values.get("WorkingDirectory", ""), values.get("Result", ""), values.get("ExecMainStatus", "")
-            result.append({"unit": unit, "working_directory": working or None, "result": status or None, "exec_status": code or None, "runtime_match": proc.returncode == 0 and working == expected})
+            active_state, sub_state = values.get("ActiveState", ""), values.get("SubState", "")
+            runtime_match = proc.returncode == 0 and working == expected
+            completed_successfully = status == "success" and code == "0"
+            currently_running = active_state in {"activating", "active"} and status in {"", "success"} and code in {"", "0"}
+            result.append({
+                "unit": unit, "working_directory": working or None,
+                "result": status or None, "exec_status": code or None,
+                "active_state": active_state or None, "sub_state": sub_state or None,
+                "runtime_match": runtime_match,
+                "healthy": runtime_match and (completed_successfully or currently_running),
+            })
         return result
 
     def _pipeline_health(self) -> list[dict[str, Any]]:
