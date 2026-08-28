@@ -175,10 +175,11 @@ TOOLS={
  "system_doctor":("诊断数据库、工作区、个人上下文和金融事实准备度。",schema()),
 }
 
-
 def call(name:str,a:dict[str,Any]):
     definition=active_tools(TOOLS).get(name)
     if not definition:raise CompanionError(f"unknown tool: {name}")
+    if name in INVESTMENT_TOOLS and INVESTMENT_CAPABILITY_REGISTRY.handles(name):
+        return call_investment(C,name,a,"primary-codex")
     from .jobs import _validate_schema
     _validate_schema(a,definition[1],f"{name} arguments")
     actor="primary-codex"

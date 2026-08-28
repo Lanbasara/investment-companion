@@ -435,7 +435,10 @@ def test_investment_mcp_profile_exposes_only_version_neutral_workbenches_and_com
     assert "investment_risk_assess" not in names
     assert not any(name.startswith(("v4_", "v5_", "v6_")) for name in names)
     transaction_tool = next(item for item in tools if item["name"] == "investment_transaction_update")
-    transaction_operations = transaction_tool["inputSchema"]["properties"]["operation"]["enum"]
+    transaction_operations = {
+        variant["properties"]["operation"]["const"]
+        for variant in transaction_tool["inputSchema"]["oneOf"]
+    }
     assert {"continuity_confirm", "continuity_revoke"} <= set(transaction_operations)
     assert responses[2]["result"]["structuredContent"]["result"]["state"] == "setup_required"
     assert responses[3]["result"]["isError"] is True

@@ -258,19 +258,9 @@ def test_briefing_projection_freezes_truth_without_becoming_a_truth_owner():
 
 
 def test_default_investment_tool_profile_is_bounded_complete_and_version_neutral():
-    source = (PACKAGE / "interfaces" / "mcp_profiles.py").read_text(encoding="utf-8")
-    tree = ast.parse(source)
-    tools: list[str] = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
-            continue
-        if not any(
-            isinstance(target, ast.Name) and target.id == "INVESTMENT_TOOLS"
-            for target in node.targets
-        ):
-            continue
-        assert isinstance(node.value, ast.Dict)
-        tools = [key.value for key in node.value.keys if isinstance(key, ast.Constant)]
+    from companion.interfaces.mcp_profiles import INVESTMENT_TOOLS
+
+    tools = list(INVESTMENT_TOOLS)
     assert 15 <= len(tools) <= 22
     assert not [name for name in tools if re.match(r"^v\d+_", name)]
     assert {

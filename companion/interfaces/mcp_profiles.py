@@ -4,8 +4,7 @@ import os
 from typing import Any
 
 from ..capabilities import (
-    HOME_DESCRIPTION,
-    HOME_INPUT_SCHEMA,
+    RECONCILIATION_STATEMENT_SCHEMA,
     investment_capability_registry,
 )
 from ..foundation import CompanionError
@@ -27,33 +26,9 @@ S = {"type": "string"}
 I = {"type": "integer"}
 O = {"type": "object", "additionalProperties": True}
 A = {"type": "array", "items": S}
-DECIMAL_MAP = {"type": "object", "additionalProperties": {}}
-RECONCILIATION_STATEMENT = {
-    "type": "object",
-    "properties": {
-        "cash": DECIMAL_MAP,
-        "positions": DECIMAL_MAP,
-        "position_values": DECIMAL_MAP,
-        "position_total_by_currency": DECIMAL_MAP,
-        "total_by_currency": DECIMAL_MAP,
-        "metadata": O,
-    },
-    "required": [
-        "cash",
-        "positions",
-        "position_values",
-        "position_total_by_currency",
-        "total_by_currency",
-    ],
-    "additionalProperties": False,
-}
+RECONCILIATION_STATEMENT = RECONCILIATION_STATEMENT_SCHEMA
 
-INVESTMENT_TOOLS = {
-    "investment_home": (HOME_DESCRIPTION, HOME_INPUT_SCHEMA),
-    "portfolio_context": (
-        "读取确认账本重建的组合、现金、个人约束和投资政策。",
-        schema({"account_id": S, "as_of": S, "prices": O}),
-    ),
+UNCONTRACTED_INVESTMENT_TOOLS = {
     "research_context": (
         "读取某标的或 work_item_id 对应的候选范围、研究队列、ResearchRecord、Validation 与机会。",
         schema({"subject_id": S, "work_item_id": S, "limit": I}),
@@ -90,22 +65,6 @@ INVESTMENT_TOOLS = {
                 "limit": I,
             },
             ["view"],
-        ),
-    ),
-    "investment_context_update": (
-        "创建或确认个人事实、投资约束和注意力策略；草稿不会自动生效。",
-        schema(
-            {
-                "operation": {"type": "string", "enum": ["draft", "confirm"]},
-                "context_type": {"type": "string", "enum": ["investor", "mandate", "attention"]},
-                "content": O,
-                "reason": S,
-                "effective_from": S,
-                "expires_at": S,
-                "revision_id": S,
-                "trial": {"type": "boolean"},
-            },
-            ["operation"],
         ),
     ),
     "investment_program_update": (
@@ -181,48 +140,6 @@ INVESTMENT_TOOLS = {
             {"if": {"properties": {"operation": {"const": "research_complete"}, "outcome": {"const": "promoted"}}, "required": ["operation", "outcome"]}, "then": {"required": ["opportunity_id"]}},
             {"if": {"properties": {"operation": {"const": "research_complete"}, "outcome": {"const": "monitoring"}}, "required": ["operation", "outcome"]}, "then": {"required": ["next_check_at"]}},
         ]},
-    ),
-    "investment_transaction_update": (
-        "登记账户和资产身份，记录、确认、冲销、对账金融事实，或确认人工账本连续性；只有 confirm 才改变真实组合。连续性确认不替代最终下单前的券商可用现金/持仓预检。",
-        schema(
-            {
-                "operation": {
-                    "type": "string",
-                    "enum": [
-                        "account_create", "asset_register", "record", "confirm", "reverse",
-                        "reconcile", "continuity_confirm", "continuity_revoke",
-                    ],
-                },
-                "name": S,
-                "base_currency": S,
-                "institution": S,
-                "asset_type": S,
-                "identifiers": O,
-                "entry_id": S,
-                "account_id": S,
-                "entry_type": S,
-                "occurred_at": S,
-                "amount": {},
-                "currency": S,
-                "source": S,
-                "asset_id": S,
-                "quantity": {},
-                "price": {},
-                "fee": {},
-                "settled_at": S,
-                "external_id": S,
-                "metadata": O,
-                "as_of": S,
-                "statement": RECONCILIATION_STATEMENT,
-                "source_ref": S,
-                "confirmed_at": S,
-                "user_confirmation_ref": S,
-                "reporting_commitment": {"type": "boolean"},
-                "confirmation_id": S,
-                "reason": S,
-            },
-            ["operation"],
-        ),
     ),
     "investment_evidence_update": (
         "冻结可追溯来源证据或登记决策使用的市场快照；不会形成建议或交易。",
@@ -522,8 +439,11 @@ INVESTMENT_TOOLS = {
     ),
 }
 
-INVESTMENT_CAPABILITY_REGISTRY = investment_capability_registry(INVESTMENT_TOOLS)
-INVESTMENT_TOOL_PROJECTION = INVESTMENT_CAPABILITY_REGISTRY.discovery_tools()
+INVESTMENT_CAPABILITY_REGISTRY = investment_capability_registry(
+    UNCONTRACTED_INVESTMENT_TOOLS
+)
+INVESTMENT_TOOLS = INVESTMENT_CAPABILITY_REGISTRY.discovery_tools()
+INVESTMENT_TOOL_PROJECTION = INVESTMENT_TOOLS
 
 
 def active_tools(legacy_tools: dict[str, Any]) -> dict[str, Any]:
@@ -542,8 +462,6 @@ def call_investment(companion, name: str, arguments: dict[str, Any], actor: str)
         return INVESTMENT_CAPABILITY_REGISTRY.invoke(
             companion, name, arguments, actor=actor
         )
-    if name == "portfolio_context":
-        return companion.investment.portfolio_context(**arguments)
     if name == "research_context":
         return companion.investment.research_context(**arguments)
     if name == "decision_context":
@@ -555,12 +473,6 @@ def call_investment(companion, name: str, arguments: dict[str, Any], actor: str)
     if name == "investment_workflow_context":
         return companion.investment.workflow_context(**arguments)
     commands = companion.investment_commands
-    if name == "investment_context_update":
-        operation = arguments["operation"]
-        return commands.context_update(
-            operation=operation,
-            **{key: value for key, value in arguments.items() if key != "operation"},
-        )
     if name == "investment_program_update":
         operation = arguments["operation"]
         return commands.program_update(
@@ -573,12 +485,6 @@ def call_investment(companion, name: str, arguments: dict[str, Any], actor: str)
         return commands.opportunity_update(
             operation=operation,
             actor=actor,
-            **{key: value for key, value in arguments.items() if key != "operation"},
-        )
-    if name == "investment_transaction_update":
-        operation = arguments["operation"]
-        return commands.transaction_update(
-            operation=operation,
             **{key: value for key, value in arguments.items() if key != "operation"},
         )
     if name == "investment_evidence_update":

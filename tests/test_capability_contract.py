@@ -24,7 +24,7 @@ from companion.core import Companion, CompanionError
 from companion.interfaces.mcp_profiles import INVESTMENT_TOOLS
 
 
-def test_provider_manifest_contracts_home_and_marks_remaining_tools_uncontracted():
+def test_provider_manifest_contracts_personal_finance_and_marks_remaining_tools_uncontracted():
     registry = investment_capability_registry(INVESTMENT_TOOLS)
 
     first = registry.provider_manifest()
@@ -45,10 +45,43 @@ def test_provider_manifest_contracts_home_and_marks_remaining_tools_uncontracted
     assert "production_health" in home["output_schema"]["required"]
     assert home["errors"] == ["capability.input.invalid", "capability.output.invalid"]
     assert home["invariants"] == ["investment_home.production_health.required/v1"]
+    contracted = {
+        "investment_home",
+        "portfolio_context",
+        "investment_context_update",
+        "investment_transaction_update",
+    }
     assert {
         name for name, capability in first.document["capabilities"].items()
         if capability["status"] == "uncontracted"
-    } == set(INVESTMENT_TOOLS) - {"investment_home"}
+    } == set(INVESTMENT_TOOLS) - contracted
+    assert {
+        name for name, capability in first.document["capabilities"].items()
+        if capability["status"] == "contracted"
+    } == contracted
+
+    context = first.document["capabilities"]["investment_context_update"]
+    assert context["handler"] == "investment_commands.context_update"
+    assert set(context["operations"]) == {"draft", "confirm"}
+    assert {
+        variant["properties"]["operation"]["const"]
+        for variant in context["input_schema"]["oneOf"]
+    } == {"draft", "confirm"}
+    transaction = first.document["capabilities"]["investment_transaction_update"]
+    assert transaction["handler"] == "investment_commands.transaction_update"
+    assert set(transaction["operations"]) == {
+        "account_create",
+        "asset_register",
+        "record",
+        "confirm",
+        "reverse",
+        "reconcile",
+        "continuity_confirm",
+        "continuity_revoke",
+    }
+    assert first.document["capabilities"]["portfolio_context"]["handler"] == (
+        "investment.portfolio_context"
+    )
 
 
 def baseline_requirements() -> dict:
@@ -205,6 +238,53 @@ def test_validator_rejects_provider_that_narrows_consumer_input(provider_input):
     }
 
 
+@pytest.mark.parametrize(
+    ("drift", "expected_code"),
+    [
+        ("missing_operation", "missing_operation"),
+        ("missing_operation_output", "missing_operation_output"),
+    ],
+)
+def test_validator_checks_required_operation_outputs(drift, expected_code):
+    provider = deepcopy(
+        investment_capability_registry(INVESTMENT_TOOLS).provider_manifest().document
+    )
+    transaction = provider["capabilities"]["investment_transaction_update"]
+    requirements = baseline_requirements()
+    requirements["capabilities"]["investment_transaction_update"] = {
+        "level": "workflow_required",
+        "workflows": ["manage-investment-lifecycle"],
+        "rationale": "The workflow confirms a specifically referenced pending entry.",
+        "input_schema": deepcopy(transaction["input_schema"]),
+        "required_outputs": [],
+        "required_operations": {
+            "confirm": {
+                "required_outputs": [
+                    {
+                        "path": "status",
+                        "schema": {"type": "string", "const": "confirmed"},
+                    }
+                ]
+            }
+        },
+        "errors": ["capability.input.invalid"],
+        "invariants": [
+            "investment_transaction_update.confirmed_ledger_only_changes_portfolio/v1"
+        ],
+    }
+    if drift == "missing_operation":
+        del transaction["operations"]["confirm"]
+    else:
+        transaction["operations"]["confirm"]["output_schema"]["required"].remove(
+            "status"
+        )
+
+    result = validate_compatibility(provider, requirements)
+
+    assert result["compatible"] is False
+    assert expected_code in {failure["code"] for failure in result["failures"]}
+
+
 def test_registry_rejects_home_handler_result_that_violates_output_contract():
     registry = investment_capability_registry(INVESTMENT_TOOLS)
     companion = SimpleNamespace(
@@ -232,6 +312,42 @@ def test_registry_rejects_invalid_dynamic_workflow_status(tmp_path):
 
     with pytest.raises(CompanionError, match="capability.output.invalid"):
         registry.invoke(companion, "investment_home", {}, actor="test")
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"operation": "confirm"},
+        {"operation": "draft", "revision_id": "ctx_wrong_variant"},
+        {"operation": "confirm", "revision_id": "ctx_1", "content": {}},
+    ],
+)
+def test_registry_rejects_ambiguous_or_incomplete_context_variants(arguments):
+    registry = investment_capability_registry(INVESTMENT_TOOLS)
+
+    with pytest.raises(CompanionError, match="capability.input.invalid"):
+        registry.invoke(SimpleNamespace(), "investment_context_update", arguments, actor="test")
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"operation": "confirm"},
+        {"operation": "continuity_revoke", "reason": "missing confirmation"},
+        {
+            "operation": "continuity_confirm",
+            "account_id": "acct_1",
+            "confirmed_at": "2025-01-01T00:00:00Z",
+            "reporting_commitment": True,
+        },
+        {"operation": "confirm", "entry_id": "led_1", "amount": "100"},
+    ],
+)
+def test_registry_rejects_missing_references_and_cross_operation_fields(arguments):
+    registry = investment_capability_registry(INVESTMENT_TOOLS)
+
+    with pytest.raises(CompanionError, match="capability.input.invalid"):
+        registry.invoke(SimpleNamespace(), "investment_transaction_update", arguments, actor="test")
 
 
 def test_platform_health_uses_an_injected_registry_without_interface_dependency(
@@ -263,15 +379,18 @@ def test_real_investment_mcp_profile_captures_home_production_health_drift(tmp_p
     positive = evaluate_investment_conformance(observation)
     negative = evaluate_investment_conformance(drift_observation)
 
-    assert positive == {
-        "passed": True,
-        "profile": "investment",
-        "checks": [
-            {"id": "mcp.initialize", "passed": True},
-            {"id": "mcp.tools-list.investment-home", "passed": True},
-            {"id": "investment_home.production_health.required/v1", "passed": True},
-        ],
-        "failures": [],
+    assert positive["passed"] is True
+    assert positive["profile"] == "investment"
+    assert positive["failures"] == []
+    assert all(check["passed"] for check in positive["checks"])
+    assert {check["id"] for check in positive["checks"]} >= {
+        "investment_context_update.draft_requires_confirmation/v1",
+        "portfolio_context.confirmed_ledger_only/v1",
+        "portfolio_context.truth_and_precision_explicit/v1",
+        "investment_transaction_update.confirmed_ledger_only_changes_portfolio/v1",
+        "investment_transaction_update.reconciliation_never_autofills/v1",
+        "investment_transaction_update.continuity_is_not_broker_sync/v1",
+        "mcp.required-confirmation-references.rejected/v1",
     }
     assert negative["passed"] is False
     assert negative["failures"] == [{
@@ -285,6 +404,20 @@ def test_real_investment_mcp_profile_captures_home_production_health_drift(tmp_p
         "capability_requirements",
         "compatibility_receipt",
     } & set(observation["tool_names"])
+    assert observation["ledger"]["pending_entry"]["status"] == "needs_confirmation"
+    assert observation["ledger"]["confirmed_entry"]["status"] == "confirmed"
+    assert observation["ledger"]["reversal_entry"]["entry_type"] == "reversal"
+    assert observation["reconciliation"]["mismatch"]["status"] == "needs_review"
+    assert observation["continuity"]["portfolio"]["precision_boundary"] == {
+        "current_broker_position_proven": False,
+        "ledger_position_continuity_supported": True,
+        "precise_position_advice_allowed": True,
+        "conditional_position_advice_allowed": True,
+        "market_revaluation_required": True,
+        "market_moves_do_not_invalidate_quantities": True,
+        "final_order_quantities_require_broker_preflight": True,
+        "required_when_stale": "refresh market prices and verify broker available cash/holdings before submitting the final order",
+    }
 
 
 def test_contract_digest_normalizes_set_like_array_order():

@@ -790,12 +790,27 @@ class JobEngine:
 
 def _validate_schema(value:Any,schema:dict[str,Any],path:str)->None:
     if not schema:return
+    if "oneOf" in schema:
+        matches=0
+        for candidate in schema["oneOf"]:
+            try:_validate_schema(value,candidate,path)
+            except CompanionError:continue
+            matches+=1
+        if matches!=1:raise CompanionError(f"{path} must match exactly one allowed variant")
+    if "const" in schema and value!=schema["const"]:raise CompanionError(f"{path} must equal {schema['const']!r}")
     expected=schema.get("type")
     checks={"object":dict,"array":list,"string":str,"integer":int,"number":(int,float),"boolean":bool,"null":type(None)}
-    if expected in checks and (not isinstance(value,checks[expected]) or expected in {"integer","number"} and isinstance(value,bool)):
-        raise CompanionError(f"{path} must be {expected}")
+    expected_types=expected if isinstance(expected,list) else [expected] if expected else []
+    if expected_types:
+        valid=any(
+            item in checks
+            and isinstance(value,checks[item])
+            and not (item in {"integer","number"} and isinstance(value,bool))
+            for item in expected_types
+        )
+        if not valid:raise CompanionError(f"{path} must be {' or '.join(expected_types)}")
     if "enum" in schema and value not in schema["enum"]:raise CompanionError(f"{path} is not in enum")
-    if expected=="object":
+    if isinstance(value,dict) and "object" in expected_types:
         required=set(schema.get("required",[]));missing=required-set(value)
         if missing:raise CompanionError(f"{path} missing required fields: {sorted(missing)}")
         properties=schema.get("properties",{})
@@ -807,5 +822,5 @@ def _validate_schema(value:Any,schema:dict[str,Any],path:str)->None:
             if key in value:_validate_schema(value[key],subschema,f"{path}.{key}")
         if isinstance(additional,dict):
             for key in extra:_validate_schema(value[key],additional,f"{path}.{key}")
-    if expected=="array" and "items" in schema:
+    if isinstance(value,list) and "array" in expected_types and "items" in schema:
         for index,item in enumerate(value):_validate_schema(item,schema["items"],f"{path}[{index}]")

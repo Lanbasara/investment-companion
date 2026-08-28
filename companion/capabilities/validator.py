@@ -30,6 +30,7 @@ KNOWN_SCHEMA_KEYS = {
     "minProperties",
     "minimum",
     "multipleOf",
+    "oneOf",
     "pattern",
     "properties",
     "required",
@@ -48,6 +49,21 @@ def _requirement_failures(name: str, requirement: Any) -> list[dict[str, Any]]:
         }]
     level = requirement.get("level")
     outputs = requirement.get("required_outputs")
+    required_operations = requirement.get("required_operations", {})
+    operations_valid = isinstance(required_operations, dict) and all(
+        isinstance(operation, str)
+        and bool(operation.strip())
+        and isinstance(operation_requirement, dict)
+        and isinstance(operation_requirement.get("required_outputs"), list)
+        and all(
+            isinstance(item, dict)
+            and isinstance(item.get("path"), str)
+            and bool(item["path"].strip())
+            and isinstance(item.get("schema"), dict)
+            for item in operation_requirement["required_outputs"]
+        )
+        for operation, operation_requirement in required_operations.items()
+    )
     fields_valid = {
         "level": level in DEPENDENCY_LEVELS,
         "workflows": isinstance(requirement.get("workflows"), list)
@@ -71,6 +87,7 @@ def _requirement_failures(name: str, requirement: Any) -> list[dict[str, Any]]:
         and all(isinstance(item, str) for item in requirement.get("errors", [])),
         "invariants": isinstance(requirement.get("invariants"), list)
         and all(isinstance(item, str) for item in requirement.get("invariants", [])),
+        "required_operations": operations_valid,
     }
     if level == "optional_enhancement":
         fields_valid["fallback"] = isinstance(requirement.get("fallback"), str) and bool(
@@ -181,6 +198,18 @@ def _additional_schema(value: Any) -> dict[str, Any] | None:
 
 def _schema_includes(superset: dict[str, Any], subset: dict[str, Any]) -> bool:
     """Return whether every value allowed by subset is also allowed by superset."""
+    if "oneOf" in superset or "oneOf" in subset:
+        def variants(schema: dict[str, Any]) -> list[dict[str, Any]]:
+            choices = schema.get("oneOf")
+            if choices is None:
+                return [schema]
+            base = {key: value for key, value in schema.items() if key != "oneOf"}
+            return [{**base, **choice} for choice in choices]
+
+        return all(
+            any(_schema_includes(accepted, required) for accepted in variants(superset))
+            for required in variants(subset)
+        )
     superset_types = _schema_types(superset)
     subset_types = _schema_types(subset)
     if not _types_include(superset_types, subset_types):
@@ -343,6 +372,37 @@ def validate_compatibility(
                     capability_failures.append({
                         **common, "code": "output_schema_not_covered", "path": path
                     })
+            provided_operations = capability.get("operations", {})
+            for operation, operation_requirement in sorted(
+                requirement.get("required_operations", {}).items()
+            ):
+                provided_operation = provided_operations.get(operation)
+                if not isinstance(provided_operation, dict):
+                    capability_failures.append({
+                        **common,
+                        "code": "missing_operation",
+                        "operation": operation,
+                    })
+                    continue
+                for output in operation_requirement.get("required_outputs", []):
+                    path = output.get("path", "")
+                    guaranteed = _required_output_schema(
+                        provided_operation.get("output_schema", {}), path
+                    )
+                    if guaranteed is None:
+                        capability_failures.append({
+                            **common,
+                            "code": "missing_operation_output",
+                            "operation": operation,
+                            "path": path,
+                        })
+                    elif not _schema_includes(output.get("schema", {}), guaranteed):
+                        capability_failures.append({
+                            **common,
+                            "code": "operation_output_schema_not_covered",
+                            "operation": operation,
+                            "path": path,
+                        })
             for error in sorted(
                 set(requirement.get("errors", [])) - set(capability.get("errors", []))
             ):
