@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .bootstrap import compose_services
+from .capabilities.registry import CapabilityRegistry, investment_capability_registry
 from .db import SCHEMA_VERSION, Database, row_dict, rows_dict
 from .foundation import CompanionError, canonical, digest, new_id
 from .platform.operations import SystemOperationsService
@@ -18,9 +19,17 @@ from .timeutil import iso, parse, utc_now
 
 
 class Companion(WorkflowService, OutboxService, ProductionHealthService, SystemOperationsService):
-    def __init__(self, root: str | Path, db_path: str | Path | None = None, *, gate_scope: str | None = None):
+    def __init__(
+        self,
+        root: str | Path,
+        db_path: str | Path | None = None,
+        *,
+        gate_scope: str | None = None,
+        capability_registry: CapabilityRegistry | None = None,
+    ):
         self.root = Path(root).expanduser().resolve()
         self.gate_scope = gate_scope or os.environ.get("COMPANION_GATE_SCOPE", "production")
+        self.capability_registry = capability_registry or investment_capability_registry()
         if self.gate_scope not in {"production", "test_fixture"}:
             raise CompanionError("COMPANION_GATE_SCOPE must be production or test_fixture")
         resolved_db = Path(db_path).expanduser().resolve() if db_path is not None else self.root / ".state" / "companion.db"

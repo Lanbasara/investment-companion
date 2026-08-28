@@ -25,8 +25,13 @@ class ProductionHealthService:
     """Read-only production identity, service and investment-pipeline checks."""
 
     def production_health(self) -> dict[str, Any]:
+        from ..capabilities.runtime import compatibility_summary
+
+        compatibility = compatibility_summary(
+            self.capability_registry, self.root, self.gate_scope
+        )
         if self.gate_scope != "production":
-            return {"ok": True, "applicable": False, "checks": {}, "incidents": []}
+            return {**compatibility, "checks": {}}
         pointer = self.root / ".state" / "runtime-code-root"
         runtime = Path(pointer.read_text(encoding="utf-8").strip()).resolve() if pointer.is_file() else None
         runtime_head = self._runtime_head(runtime)
@@ -56,12 +61,14 @@ class ProductionHealthService:
         research_work = self.research_work.summary(program_id=current_program["id"] if current_program else None)
         checks["latest_candidate_cohorts_have_research_work"] = self._latest_candidates_have_work(current_program["id"] if current_program else None)
         checks["research_work_not_overdue"] = research_work["overdue"] == 0
-        incidents = [
+        operational_incidents = [
             {"severity": "critical", "check": key}
             for key, passed in checks.items() if not passed
         ]
+        incidents = [*compatibility["incidents"], *operational_incidents]
         return {
-            "ok": not incidents, "applicable": True, "checked_at": iso(),
+            **compatibility,
+            "ok": compatibility["ok"] and not operational_incidents, "applicable": True, "checked_at": iso(),
             "runtime": {"pointer": str(runtime) if runtime else None, "commit": runtime_head, "g0_commit": gate.get("code_version") if gate else None},
             "checks": checks, "services": services, "pipelines": pipelines,
             "research_freshness": freshness,

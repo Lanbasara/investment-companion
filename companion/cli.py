@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .agent_config import validate_agent_config
 from .core import Companion, CompanionError
+from .interfaces.mcp_profiles import INVESTMENT_CAPABILITY_REGISTRY
 
 
 def emit(value):
@@ -69,7 +70,7 @@ def parser() -> argparse.ArgumentParser:
 
 
 def main(argv=None) -> int:
-    a=parser().parse_args(argv);c=Companion(Path(a.root))
+    a=parser().parse_args(argv);c=Companion(Path(a.root),capability_registry=INVESTMENT_CAPABILITY_REGISTRY)
     try:
         if a.command=="init":result=c.initialize()
         elif a.command=="migrate":result=c.migrate(a.backup_directory)

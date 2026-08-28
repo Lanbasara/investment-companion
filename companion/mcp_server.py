@@ -6,10 +6,10 @@ import sys
 from typing import Any, Callable
 
 from .core import Companion, CompanionError
-from .interfaces.mcp_profiles import INVESTMENT_TOOLS, RECONCILIATION_STATEMENT, active_tools, call_investment
+from .interfaces.mcp_profiles import INVESTMENT_CAPABILITY_REGISTRY, INVESTMENT_TOOLS, RECONCILIATION_STATEMENT, active_tools, call_investment
 
 ROOT=os.environ.get("COMPANION_ROOT","/home/ghk/investment-home")
-C=Companion(ROOT)
+C=Companion(ROOT, capability_registry=INVESTMENT_CAPABILITY_REGISTRY)
 
 def schema(properties:dict[str,Any]|None=None,required:list[str]|None=None)->dict[str,Any]:
     return {"type":"object","properties":properties or {},"required":required or [],"additionalProperties":False}
@@ -334,7 +334,7 @@ def call(name:str,a:dict[str,Any]):
     if name=="v5_scorecard_get":return C.operating.scorecard_get(a["scorecard_id"])
     if name=="v5_scorecard_list":return C.operating.scorecard_list(program_id=a.get("program_id"),limit=a.get("limit",50))
     if name=="system_status":return C.system_status()
-    if name=="system_doctor":return C.doctor()
+    if name=="system_doctor":return C.doctor_model_projection()
     raise CompanionError(f"unimplemented advertised tool: {name}")
 
 
@@ -346,7 +346,7 @@ def reply(request:dict[str,Any])->dict[str,Any]|None:
     elif method=="tools/call":
         p=request.get("params",{})
         try:
-            value=call(p["name"],p.get("arguments",{}));result={"content":[{"type":"text","text":json.dumps(value,ensure_ascii=False,indent=2)}],"structuredContent":{"result":value}}
+            value=call(p["name"],p.get("arguments",{}));fault=C.gate_scope=="test_fixture" and p.get("name")=="investment_home" and os.environ.get("COMPANION_CONFORMANCE_FAULT")=="omit_home_production_health";value={key:item for key,item in value.items() if key!="production_health"} if fault else value;result={"content":[{"type":"text","text":json.dumps(value,ensure_ascii=False,indent=2)}],"structuredContent":{"result":value}}
         except Exception as e:
             result={"content":[{"type":"text","text":str(e)}],"isError":True}
     elif method=="ping":result={}

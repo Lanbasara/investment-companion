@@ -77,12 +77,18 @@ def test_home_is_a_small_version_neutral_entrypoint(tmp_path):
         "workflow",
         "delivery",
         "claims",
+        "production_health",
     }
     assert home["schema"] == "investment-companion.investment-home/v1"
     assert home["state"] == "setup_required"
     assert home["claims"]["automatic_trading"] is False
     assert home["claims"]["manual_execution_only"] is True
     assert home["claims"]["research_cannot_trade"] is True
+    assert home["production_health"]["baseline"] == {
+        "status": "not_applicable",
+        "incidents": [],
+    }
+    assert home["production_health"]["provider_digest"].startswith("sha256:")
 
 
 def test_context_workbenches_compose_truth_owners_without_new_state(tmp_path):

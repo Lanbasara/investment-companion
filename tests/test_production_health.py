@@ -93,15 +93,21 @@ def test_production_doctor_detects_runtime_drift_and_latest_pipeline_failure(tmp
     assert result["ok"] is False
     assert result["checks"]["runtime_commit_matches_g0"] is False
     assert result["checks"]["critical_pipelines_latest_run_succeeded"] is False
-    assert {item["check"] for item in result["incidents"]} == {
+    assert {item["check"] for item in result["incidents"] if "check" in item} == {
         "runtime_commit_matches_g0", "critical_pipeline_roles_complete", "critical_pipelines_latest_run_succeeded"
     }
+    assert result["baseline"]["status"] == "unverified"
 
 
 def test_production_health_is_not_applicable_to_isolated_test_fixtures(tmp_path: Path):
     companion = Companion(tmp_path, gate_scope="test_fixture")
     companion.initialize()
-    assert companion.production_health() == {"ok": True, "applicable": False, "checks": {}, "incidents": []}
+    result = companion.production_health()
+    assert result["ok"] is True
+    assert result["applicable"] is False
+    assert result["checks"] == {}
+    assert result["baseline"] == {"status": "not_applicable", "incidents": []}
+    assert result["incidents"] == []
 
 
 def test_service_health_treats_running_oneshot_without_final_result_as_healthy(tmp_path: Path, monkeypatch):
@@ -186,7 +192,7 @@ def test_production_doctor_fails_when_successful_pipeline_outputs_are_stale(tmp_
     result = companion.production_health()
 
     assert result["ok"] is False
-    assert {item["check"] for item in result["incidents"]} == {
+    assert {item["check"] for item in result["incidents"] if "check" in item} == {
         "stock_market_data_sessions_complete", "etf_features_semantically_fresh"
     }
 

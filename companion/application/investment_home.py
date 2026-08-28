@@ -71,6 +71,7 @@ class InvestmentHomeService:
                 "manual_execution_only": True,
                 "research_cannot_trade": True,
             },
+            "production_health": self.c.production_health(),
         }
 
     def program_context(
@@ -124,7 +125,7 @@ class InvestmentHomeService:
         if view == "system_status":
             return self.c.system_status()
         if view == "doctor":
-            return self.c.doctor()
+            return self.c.doctor_model_projection()
         if view == "execution_strategies":
             return self.c.execution_strategy.list(status=status, limit=limit)
         if view == "execution_strategy":

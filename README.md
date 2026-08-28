@@ -46,6 +46,16 @@ python3 -m pytest -q
 
 修改 Custom Agent 或 MCP 配置后，运行 `./bin/companion-agent-smoke` 完成一次真实 Codex 派遣验收；该检查会产生模型调用，不放入普通单元测试。
 
+Capability Contract tracer 使用 Core 自带 CLI 验证候选 Plugin；验证和 Receipt 只使用临时数据库，不读取用户投资数据：
+
+```bash
+python3 -m companion.capabilities provider
+python3 -m companion.capabilities validate --requirements /path/to/plugin/.codex-plugin/capability-requirements.json
+python3 -m companion.capabilities receipt --requirements /path/to/requirements.json --state-dir /isolated/deployment-state --environment non_production --core-identity CORE_COMMIT --plugin-identity PLUGIN_COMMIT
+```
+
+Receipt CLI 会把 `CORE_COMMIT`、`PLUGIN_COMMIT` 与两个干净 checkout 的真实 HEAD 核对后再签发。生产运行时通过 `COMPANION_PLUGIN_REQUIREMENTS`、`COMPANION_CAPABILITY_RECEIPT_DIR`、`COMPANION_MCP_PROFILE=investment`、`COMPANION_CORE_IDENTITY` 和 `COMPANION_PLUGIN_IDENTITY` 比较当前摘要与 Receipt；缺少任一发布身份都会降级。它不会在 Home 或会话启动时重跑 conformance suite。完整 Receipt 仅由 CLI doctor 返回，Investment MCP doctor 只返回摘要。
+
 新 Codex 会话由项目级 `SessionStart` Hook 注入一个有界 `session-brief`。它只包含数据库健康、Context 初始化状态和活跃对象计数；具体投资材料仍由 Lifecycle Skill 按问题创建 Recovery Package 后加载。
 
 项目不连接券商、不自动交易、不维持常驻 Subagent。

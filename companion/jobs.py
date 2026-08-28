@@ -799,10 +799,13 @@ def _validate_schema(value:Any,schema:dict[str,Any],path:str)->None:
         required=set(schema.get("required",[]));missing=required-set(value)
         if missing:raise CompanionError(f"{path} missing required fields: {sorted(missing)}")
         properties=schema.get("properties",{})
-        if schema.get("additionalProperties") is False:
-            extra=set(value)-set(properties)
+        extra=set(value)-set(properties)
+        additional=schema.get("additionalProperties")
+        if additional is False:
             if extra:raise CompanionError(f"{path} has unsupported fields: {sorted(extra)}")
         for key,subschema in properties.items():
             if key in value:_validate_schema(value[key],subschema,f"{path}.{key}")
+        if isinstance(additional,dict):
+            for key in extra:_validate_schema(value[key],additional,f"{path}.{key}")
     if expected=="array" and "items" in schema:
         for index,item in enumerate(value):_validate_schema(item,schema["items"],f"{path}[{index}]")

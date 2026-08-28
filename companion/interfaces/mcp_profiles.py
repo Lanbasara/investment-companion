@@ -3,6 +3,11 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from ..capabilities import (
+    HOME_DESCRIPTION,
+    HOME_INPUT_SCHEMA,
+    investment_capability_registry,
+)
 from ..foundation import CompanionError
 
 
@@ -44,7 +49,7 @@ RECONCILIATION_STATEMENT = {
 }
 
 INVESTMENT_TOOLS = {
-    "investment_home": ("读取今天的行动、异常、研究工作队列、绩效和交付总入口；未完成研究返回 review_required。", schema()),
+    "investment_home": (HOME_DESCRIPTION, HOME_INPUT_SCHEMA),
     "portfolio_context": (
         "读取确认账本重建的组合、现金、个人约束和投资政策。",
         schema({"account_id": S, "as_of": S, "prices": O}),
@@ -517,21 +522,26 @@ INVESTMENT_TOOLS = {
     ),
 }
 
+INVESTMENT_CAPABILITY_REGISTRY = investment_capability_registry(INVESTMENT_TOOLS)
+INVESTMENT_TOOL_PROJECTION = INVESTMENT_CAPABILITY_REGISTRY.discovery_tools()
+
 
 def active_tools(legacy_tools: dict[str, Any]) -> dict[str, Any]:
     profile = os.environ.get("COMPANION_MCP_PROFILE", "all")
     if profile == "investment":
-        return INVESTMENT_TOOLS
+        return INVESTMENT_TOOL_PROJECTION
     if profile == "admin":
         return legacy_tools
     if profile == "all":
-        return {**INVESTMENT_TOOLS, **legacy_tools}
+        return {**INVESTMENT_TOOL_PROJECTION, **legacy_tools}
     raise CompanionError("COMPANION_MCP_PROFILE must be investment, admin or all")
 
 
 def call_investment(companion, name: str, arguments: dict[str, Any], actor: str) -> Any:
-    if name == "investment_home":
-        return companion.investment.home()
+    if INVESTMENT_CAPABILITY_REGISTRY.handles(name):
+        return INVESTMENT_CAPABILITY_REGISTRY.invoke(
+            companion, name, arguments, actor=actor
+        )
     if name == "portfolio_context":
         return companion.investment.portfolio_context(**arguments)
     if name == "research_context":

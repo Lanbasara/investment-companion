@@ -102,4 +102,10 @@ class SystemOperationsService:
             checks["custom_agent_config"]=validate_agent_config(self.root)["ok"]
         production=self.production_health()
         checks["production_runtime_and_pipelines"]=production["ok"]
-        return {"ok":all(v for k,v in checks.items() if k not in {"investor_confirmed","mandate_confirmed","financial_facts_ready"}),"checks":checks,"warnings":[k for k,v in checks.items() if not v],"production":production,"status":status}
+        from ..capabilities.runtime import compatibility_diagnostics
+        compatibility=compatibility_diagnostics(self.capability_registry,self.root,self.gate_scope)
+        return {"ok":all(v for k,v in checks.items() if k not in {"investor_confirmed","mandate_confirmed","financial_facts_ready"}),"checks":checks,"warnings":[k for k,v in checks.items() if not v],"production":production,"compatibility":compatibility,"status":status}
+
+    def doctor_model_projection(self)->dict[str,Any]:
+        result=self.doctor();result["compatibility"]=result["compatibility"]["summary"]
+        return result
