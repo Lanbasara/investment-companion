@@ -29,10 +29,6 @@ A = {"type": "array", "items": S}
 RECONCILIATION_STATEMENT = RECONCILIATION_STATEMENT_SCHEMA
 
 UNCONTRACTED_INVESTMENT_TOOLS = {
-    "research_context": (
-        "读取某标的或 work_item_id 对应的候选范围、研究队列、ResearchRecord、Validation 与机会。",
-        schema({"subject_id": S, "work_item_id": S, "limit": I}),
-    ),
     "decision_context": (
         "读取当前建议、行动卡、失效原因和人工执行边界。",
         schema({"limit": I}),
@@ -86,86 +82,6 @@ UNCONTRACTED_INVESTMENT_TOOLS = {
                 "trial": {"type": "boolean"},
                 "supersedes_program_id": S,
                 "status": {"type": "string", "enum": ["active", "paused", "archived"]},
-            },
-            ["operation"],
-        ),
-    ),
-    "investment_opportunity_update": (
-        "维护研究闭环：work_claim 领取任务，triage_complete 逐项分流，research_complete 绑定正式研究结果；create/transition 维护机会。不能直接创建交易。",
-        schema(
-            {
-                "operation": {"type": "string", "enum": ["create", "transition", "work_claim", "triage_complete", "research_complete"]},
-                "subject": O,
-                "evidence_refs": A,
-                "reason": S,
-                "program_id": S,
-                "thesis_id": S,
-                "strategy_version_id": S,
-                "opportunity_id": S,
-                "expected_version": I,
-                "to_stage": S,
-                "to_status": S,
-                "qualification": O,
-                "decision_revision_id": S,
-                "idempotency_key": S,
-                "item_id": S,
-                "owner": S,
-                "lease_seconds": I,
-                "dispositions": {"type": "array", "items": {
-                    "type": "object",
-                    "properties": {
-                        "candidate_id": S,
-                        "outcome": {"type": "string", "enum": ["research", "reject", "monitor"]},
-                        "reason": S,
-                        "subject": O,
-                        "due_at": S,
-                        "next_check_at": S,
-                    },
-                    "required": ["candidate_id", "outcome", "reason"],
-                    "additionalProperties": False,
-                    "allOf": [
-                        {"if": {"properties": {"outcome": {"const": "monitor"}}, "required": ["outcome"]},
-                         "then": {"required": ["candidate_id", "outcome", "reason", "next_check_at"]}},
-                    ],
-                }},
-                "outcome": {"type": "string", "enum": ["promoted", "rejected", "monitoring"]},
-                "result_refs": A,
-                "next_check_at": S,
-            },
-            ["operation"],
-        ) | {"allOf": [
-            {"if": {"properties": {"operation": {"const": "work_claim"}}}, "then": {"required": ["operation", "item_id"]}},
-            {"if": {"properties": {"operation": {"const": "triage_complete"}}}, "then": {"required": ["operation", "item_id", "dispositions"]}},
-            {"if": {"properties": {"operation": {"const": "research_complete"}}}, "then": {"required": ["operation", "item_id", "outcome", "reason", "result_refs"]}},
-            {"if": {"properties": {"operation": {"const": "research_complete"}, "outcome": {"const": "promoted"}}, "required": ["operation", "outcome"]}, "then": {"required": ["opportunity_id"]}},
-            {"if": {"properties": {"operation": {"const": "research_complete"}, "outcome": {"const": "monitoring"}}, "required": ["operation", "outcome"]}, "then": {"required": ["next_check_at"]}},
-        ]},
-    ),
-    "investment_evidence_update": (
-        "冻结可追溯来源证据或登记决策使用的市场快照；不会形成建议或交易。",
-        schema(
-            {
-                "operation": {"type": "string", "enum": ["publish_source", "market_snapshot"]},
-                "subject": O,
-                "source": S,
-                "source_group": S,
-                "first_known_at": S,
-                "observed_at": S,
-                "published_at": S,
-                "url": S,
-                "claims": A,
-                "evidence_type": {
-                    "type": "string",
-                    "enum": ["observed_fact", "official_disclosure", "validated_analysis", "predictive_signal"],
-                },
-                "content": S,
-                "metadata": O,
-                "supersedes": S,
-                "asset_id": S,
-                "metric": S,
-                "value": {},
-                "quality": S,
-                "currency": S,
             },
             ["operation"],
         ),
@@ -311,19 +227,6 @@ UNCONTRACTED_INVESTMENT_TOOLS = {
             ["operation"],
         ),
     ),
-    "investment_research_publish": (
-        "把证据化研究冻结为不可变 Thesis，并可执行决策资格验证；不会自动形成 Decision 或交易。",
-        schema(
-            {
-                "subject": O,
-                "content": S,
-                "evidence_manifest_ids": A,
-                "knowledge_cutoff": S,
-                "validation_spec": O,
-            },
-            ["subject", "content", "evidence_manifest_ids", "knowledge_cutoff"],
-        ),
-    ),
     "investment_decision_publish": (
         "冻结当前组合、约束、已验证研究、替代方案和风险结果为正式 Decision；行动判断必须同时通过研究与风险闸门，不会成交。",
         schema(
@@ -462,8 +365,6 @@ def call_investment(companion, name: str, arguments: dict[str, Any], actor: str)
         return INVESTMENT_CAPABILITY_REGISTRY.invoke(
             companion, name, arguments, actor=actor
         )
-    if name == "research_context":
-        return companion.investment.research_context(**arguments)
     if name == "decision_context":
         return companion.investment.decision_context(**arguments)
     if name == "evaluation_context":
@@ -478,19 +379,6 @@ def call_investment(companion, name: str, arguments: dict[str, Any], actor: str)
         return commands.program_update(
             operation=operation,
             actor=actor,
-            **{key: value for key, value in arguments.items() if key != "operation"},
-        )
-    if name == "investment_opportunity_update":
-        operation = arguments["operation"]
-        return commands.opportunity_update(
-            operation=operation,
-            actor=actor,
-            **{key: value for key, value in arguments.items() if key != "operation"},
-        )
-    if name == "investment_evidence_update":
-        operation = arguments["operation"]
-        return commands.evidence_update(
-            operation=operation,
             **{key: value for key, value in arguments.items() if key != "operation"},
         )
     if name == "investment_action_update":
@@ -520,8 +408,6 @@ def call_investment(companion, name: str, arguments: dict[str, Any], actor: str)
             operation=operation,
             **{key: value for key, value in arguments.items() if key != "operation"},
         )
-    if name == "investment_research_publish":
-        return commands.research_publish(**arguments)
     if name == "investment_decision_publish":
         return commands.decision_publish(**arguments)
     if name == "investment_action_plan":

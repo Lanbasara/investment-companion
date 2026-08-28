@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
+import re
 from typing import Any
 
 from .registry import PROVIDER_FORMAT, canonical_json, content_digest
@@ -296,7 +298,10 @@ def _add_scope_result(
 
 
 def validate_compatibility(
-    provider: dict[str, Any], requirements: dict[str, Any]
+    provider: dict[str, Any],
+    requirements: dict[str, Any],
+    *,
+    usage_sources: list[str | Path] | None = None,
 ) -> dict[str, Any]:
     """Compare a consumer's minimum needs against provider guarantees."""
     failures: list[dict[str, Any]] = []
@@ -435,6 +440,56 @@ def validate_compatibility(
             scopes["baseline"]["failures"].extend(requirement_failures)
             scopes["baseline"]["status"] = "degraded"
 
+    usage_audit = None
+    if usage_sources is not None:
+        declared = set(required)
+        contracted = {
+            name
+            for name, capability in provided.items()
+            if isinstance(capability, dict) and capability.get("status") == "contracted"
+        }
+        uses: dict[str, list[str]] = {}
+        source_failures: list[dict[str, Any]] = []
+        for source in usage_sources:
+            path = Path(source).expanduser().resolve()
+            try:
+                prose = path.read_text(encoding="utf-8")
+            except OSError as exc:
+                source_failures.append({
+                    "code": "capability_usage_source_unreadable",
+                    "capability": "capability_usage_audit",
+                    "scope": "baseline",
+                    "source": str(path),
+                    "error": str(exc),
+                })
+                continue
+            for name in sorted(contracted):
+                if re.search(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", prose):
+                    uses.setdefault(name, []).append(str(path))
+        undeclared = [
+            {
+                "code": "undeclared_capability_usage",
+                "capability": name,
+                "scope": "baseline",
+                "sources": sources,
+            }
+            for name, sources in sorted(uses.items())
+            if name not in declared
+        ]
+        usage_failures = [*source_failures, *undeclared]
+        failures.extend(usage_failures)
+        if usage_failures:
+            scopes["baseline"]["failures"].extend(usage_failures)
+            scopes["baseline"]["status"] = "degraded"
+        usage_audit = {
+            "ok": not usage_failures,
+            "sources": [str(Path(item).expanduser().resolve()) for item in usage_sources],
+            "used_contracted_capabilities": {
+                name: sources for name, sources in sorted(uses.items())
+            },
+            "failures": usage_failures,
+        }
+
     format_failures = [item for item in failures if item.get("capability") is None]
     if format_failures:
         scopes["baseline"]["failures"].extend(format_failures)
@@ -443,10 +498,13 @@ def validate_compatibility(
         item for item in failures
         if item.get("scope") in {"baseline", "workflows"}
     ]
-    return {
+    result = {
         "compatible": not blocking,
         "provider_digest": content_digest(provider),
         "requirements_digest": content_digest(requirements),
         "scopes": scopes,
         "failures": failures,
     }
+    if usage_audit is not None:
+        result["usage_audit"] = usage_audit
+    return result

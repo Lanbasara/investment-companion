@@ -24,7 +24,7 @@ from companion.core import Companion, CompanionError
 from companion.interfaces.mcp_profiles import INVESTMENT_TOOLS
 
 
-def test_provider_manifest_contracts_personal_finance_and_marks_remaining_tools_uncontracted():
+def test_provider_manifest_contracts_personal_finance_and_research_workflows():
     registry = investment_capability_registry(INVESTMENT_TOOLS)
 
     first = registry.provider_manifest()
@@ -50,6 +50,10 @@ def test_provider_manifest_contracts_personal_finance_and_marks_remaining_tools_
         "portfolio_context",
         "investment_context_update",
         "investment_transaction_update",
+        "research_context",
+        "investment_opportunity_update",
+        "investment_evidence_update",
+        "investment_research_publish",
     }
     assert {
         name for name, capability in first.document["capabilities"].items()
@@ -81,6 +85,26 @@ def test_provider_manifest_contracts_personal_finance_and_marks_remaining_tools_
     }
     assert first.document["capabilities"]["portfolio_context"]["handler"] == (
         "investment.portfolio_context"
+    )
+    research_context = first.document["capabilities"]["research_context"]
+    assert research_context["handler"] == "investment.research_context"
+    assert research_context["invariants"] == [
+        "research.evidence_validation_thesis_never_auto_action/v1"
+    ]
+    opportunity = first.document["capabilities"]["investment_opportunity_update"]
+    assert opportunity["handler"] == "investment_commands.opportunity_update"
+    assert set(opportunity["operations"]) == {
+        "create", "transition", "work_claim", "triage_complete", "research_complete"
+    }
+    assert len([
+        variant
+        for variant in opportunity["input_schema"]["oneOf"]
+        if variant["properties"]["operation"]["const"] == "research_complete"
+    ]) == 3
+    evidence = first.document["capabilities"]["investment_evidence_update"]
+    assert set(evidence["operations"]) == {"publish_source", "market_snapshot"}
+    assert first.document["capabilities"]["investment_research_publish"]["handler"] == (
+        "investment_commands.research_publish"
     )
 
 
@@ -192,6 +216,30 @@ def test_validator_rejects_requirement_without_usage_evidence(field: str, value)
     assert {
         (failure["code"], failure.get("field")) for failure in result["failures"]
     } >= {("invalid_requirement", field)}
+
+
+def test_plugin_usage_audit_reports_contracted_research_capability_missing_from_requirements(
+    tmp_path,
+):
+    prose = tmp_path / "SKILL.md"
+    prose.write_text(
+        "Use `research_context` and `investment_research_publish` for research.",
+        encoding="utf-8",
+    )
+
+    result = validate_compatibility(
+        investment_capability_registry(INVESTMENT_TOOLS).provider_manifest().document,
+        baseline_requirements(),
+        usage_sources=[prose],
+    )
+
+    assert result["compatible"] is False
+    assert result["usage_audit"]["ok"] is False
+    assert {
+        failure["capability"]
+        for failure in result["usage_audit"]["failures"]
+        if failure["code"] == "undeclared_capability_usage"
+    } == {"research_context", "investment_research_publish"}
 
 
 @pytest.mark.parametrize(
@@ -350,6 +398,49 @@ def test_registry_rejects_missing_references_and_cross_operation_fields(argument
         registry.invoke(SimpleNamespace(), "investment_transaction_update", arguments, actor="test")
 
 
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"operation": "create", "subject": {"asset_id": "fixture"}, "reason": "missing refs"},
+        {"operation": "work_claim", "owner": "researcher"},
+        {
+            "operation": "triage_complete",
+            "item_id": "researchwork_1",
+            "dispositions": [
+                {
+                    "candidate_id": "fixture",
+                    "outcome": "monitor",
+                    "reason": "missing next check",
+                }
+            ],
+        },
+        {
+            "operation": "research_complete",
+            "item_id": "researchwork_1",
+            "outcome": "promoted",
+            "reason": "missing formal references",
+        },
+        {
+            "operation": "research_complete",
+            "item_id": "researchwork_1",
+            "outcome": "rejected",
+            "reason": "cross-variant field",
+            "next_check_at": "2030-01-01T00:00:00Z",
+        },
+    ],
+)
+def test_registry_rejects_ambiguous_or_incomplete_research_operation_variants(arguments):
+    registry = investment_capability_registry(INVESTMENT_TOOLS)
+
+    with pytest.raises(CompanionError, match="capability.input.invalid"):
+        registry.invoke(
+            SimpleNamespace(),
+            "investment_opportunity_update",
+            arguments,
+            actor="test",
+        )
+
+
 def test_platform_health_uses_an_injected_registry_without_interface_dependency(
     tmp_path,
 ):
@@ -390,6 +481,10 @@ def test_real_investment_mcp_profile_captures_home_production_health_drift(tmp_p
         "investment_transaction_update.confirmed_ledger_only_changes_portfolio/v1",
         "investment_transaction_update.reconciliation_never_autofills/v1",
         "investment_transaction_update.continuity_is_not_broker_sync/v1",
+        "investment_opportunity_update.explicit_candidate_disposition/v1",
+        "research.evidence_validation_thesis_never_auto_action/v1",
+        "mcp.research-work.outcomes/v1",
+        "mcp.research-negative-cases.rejected/v1",
         "mcp.required-confirmation-references.rejected/v1",
     }
     assert negative["passed"] is False
@@ -404,6 +499,10 @@ def test_real_investment_mcp_profile_captures_home_production_health_drift(tmp_p
         "capability_requirements",
         "compatibility_receipt",
     } & set(observation["tool_names"])
+    assert all(
+        set(tool) == {"name", "description", "inputSchema"}
+        for tool in observation["tools"].values()
+    )
     assert observation["ledger"]["pending_entry"]["status"] == "needs_confirmation"
     assert observation["ledger"]["confirmed_entry"]["status"] == "confirmed"
     assert observation["ledger"]["reversal_entry"]["entry_type"] == "reversal"
@@ -417,6 +516,17 @@ def test_real_investment_mcp_profile_captures_home_production_health_drift(tmp_p
         "market_moves_do_not_invalidate_quantities": True,
         "final_order_quantities_require_broker_preflight": True,
         "required_when_stale": "refresh market prices and verify broker available cash/holdings before submitting the final order",
+    }
+    assert observation["research"]["promoted_research"]["validation"]["status"] == (
+        "eligible_for_decision"
+    )
+    assert {
+        name: item["status"]
+        for name, item in observation["research"]["outcomes"].items()
+    } == {
+        "promoted": "completed",
+        "rejected": "rejected",
+        "monitoring": "monitoring",
     }
 
 

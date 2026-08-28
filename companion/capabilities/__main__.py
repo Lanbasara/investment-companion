@@ -72,6 +72,12 @@ def _parser() -> argparse.ArgumentParser:
     sub.add_parser("provider")
     validate = sub.add_parser("validate")
     validate.add_argument("--requirements", required=True)
+    validate.add_argument(
+        "--usage-source",
+        action="append",
+        default=[],
+        help="Plugin prose file to audit for contracted capability usage",
+    )
     receipt = sub.add_parser("receipt")
     receipt.add_argument("--requirements", required=True)
     receipt.add_argument("--state-dir", required=True)
@@ -93,7 +99,13 @@ def main(argv: list[str] | None = None) -> int:
             result = {"digest": provider.digest, "manifest": provider.document}
         else:
             requirements = _load(args.requirements)
-            validation = validate_compatibility(provider.document, requirements)
+            validation = validate_compatibility(
+                provider.document,
+                requirements,
+                usage_sources=(args.usage_source or None)
+                if args.command == "validate"
+                else None,
+            )
             if args.command == "validate":
                 result = validation
             else:

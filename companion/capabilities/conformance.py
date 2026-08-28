@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import timedelta
 from pathlib import Path
 import subprocess
 import sys
@@ -15,8 +16,115 @@ from .registry import (
     PORTFOLIO_LEDGER_INVARIANT,
     PORTFOLIO_TRUTH_INVARIANT,
     RECONCILIATION_INVARIANT,
+    RESEARCH_BOUNDARY_INVARIANT,
+    RESEARCH_WORK_INVARIANT,
     TRANSACTION_CONFIRMATION_INVARIANT,
 )
+
+
+def _seed_research_fixture(root: Path) -> dict[str, Any]:
+    """Create only isolated synthetic facts that the MCP workflow must consume."""
+    from ..core import Companion
+    from ..governance import GATE_CHECKLISTS
+    from ..timeutil import iso, utc_now
+
+    companion = Companion(root, gate_scope="test_fixture")
+    companion.initialize()
+    gate_artifact = companion.data.manifest_publish(
+        kind="synthetic_conformance_gate",
+        schema_version="synthetic/v1",
+        manifest={"gate": "G0", "user_data": False},
+    )
+    gate_evidence = companion.gates.evidence_publish(
+        "G0",
+        checks={key: True for key in GATE_CHECKLISTS["G0"]},
+        artifacts=[gate_artifact["id"]],
+        unknowns=[],
+        counterevidence=[],
+        counterevidence_disposition={},
+        code_version="test-fixture",
+        scope="test_fixture",
+    )
+    companion.gates.assessment_record(
+        gate="G0",
+        status="go",
+        evidence_manifest_id=gate_evidence["id"],
+        code_version="test-fixture",
+        assessed_by="capability-conformance",
+        scope="test_fixture",
+    )
+    companion.jobs.feature_set(
+        "v5_operating_system", True, reason="isolated research conformance"
+    )
+    account = companion.financial.account_create(
+        "Synthetic research account", "CNY"
+    )
+    contexts = {}
+    for context_type, content in (
+        ("investor", {"objective": "synthetic research conformance"}),
+        ("mandate", {"maximum_loss": "synthetic only"}),
+        ("attention", {"timezone": "Asia/Shanghai"}),
+    ):
+        draft = companion.cognition.context_create(
+            context_type, content, reason="isolated research conformance"
+        )
+        contexts[f"{context_type}_revision_id"] = companion.cognition.context_confirm(
+            draft["id"]
+        )["id"]
+    program = companion.operating.program_create(
+        name="Synthetic research conformance program",
+        content={
+            "objective": "exercise research contracts without user facts",
+            "success_criteria": ["all research states remain separated"],
+            "benchmark": {"name": "synthetic benchmark"},
+            "risk_budget": {"mode": "no real action"},
+            "universe": {"kind": "synthetic assets"},
+            "horizons": {"research": "fixture"},
+            "operating_cadence": {"mode": "one shot"},
+            "stop_conditions": ["conformance completed"],
+            "account_ids": [account["id"]],
+        },
+        context_refs=contexts,
+        reason="isolated research conformance",
+    )
+    program = companion.operating.program_confirm(
+        program["revisions"][0]["id"],
+        user_approval_ref="synthetic:capability-conformance",
+    )
+    assets = [
+        companion.financial.asset_upsert(
+            asset_type="stock",
+            name=f"Synthetic Research Asset {index}",
+            currency="CNY",
+            identifiers={"synthetic_id": f"RESEARCH-{index}"},
+        )
+        for index in range(1, 4)
+    ]
+    candidate_manifest = companion.data.manifest_publish(
+        kind="v6_stock_research_candidates",
+        schema_version="synthetic/v1",
+        manifest={
+            "program_id": program["id"],
+            "as_of": iso(),
+            "status": "ready",
+            "candidates": [{"asset_id": item["id"]} for item in assets],
+            "research_only": True,
+            "not_a_recommendation": True,
+            "synthetic": True,
+        },
+    )
+    triage = companion.research_work.enqueue_candidate_manifest(
+        candidate_manifest["id"], actor="capability-conformance"
+    )["item"]
+    return {
+        "account_id": account["id"],
+        "program_id": program["id"],
+        "asset_ids": [item["id"] for item in assets],
+        "candidate_manifest_id": candidate_manifest["id"],
+        "triage_item_id": triage["id"],
+        "cutoff": iso(),
+        "next_check_at": iso(utc_now() + timedelta(days=2)),
+    }
 
 
 def _call_result(response: dict[str, Any]) -> Any:
@@ -37,9 +145,11 @@ def probe_investment_mcp(
     if fault not in {None, "omit_home_production_health"}:
         raise CompanionError(f"unsupported conformance fault: {fault}")
     project_root = Path(__file__).resolve().parents[2]
+    fixture_root = Path(root).resolve()
+    research_fixture = _seed_research_fixture(fixture_root)
     environment = {
         **os.environ,
-        "COMPANION_ROOT": str(Path(root).resolve()),
+        "COMPANION_ROOT": str(fixture_root),
         "COMPANION_GATE_SCOPE": "test_fixture",
         "COMPANION_MCP_PROFILE": "investment",
     }
@@ -94,6 +204,299 @@ def probe_investment_mcp(
         tools_response = request("tools/list", {}).get("result", {})
         tools = tools_response.get("tools", [])
         home_call = call("investment_home", {})
+
+        research_before_decision_call = call("decision_context", {})
+        research_before_portfolio_call = call(
+            "portfolio_context", {"account_id": research_fixture["account_id"]}
+        )
+        research_context_initial_call = call(
+            "research_context",
+            {
+                "work_item_id": research_fixture["triage_item_id"],
+                "limit": 10,
+            },
+        )
+        triage_claim_call = call(
+            "investment_opportunity_update",
+            {
+                "operation": "work_claim",
+                "item_id": research_fixture["triage_item_id"],
+                "owner": "synthetic-researcher",
+            },
+        )
+        asset_ids = research_fixture["asset_ids"]
+        incomplete_triage_call = call(
+            "investment_opportunity_update",
+            {
+                "operation": "triage_complete",
+                "item_id": research_fixture["triage_item_id"],
+                "owner": "synthetic-researcher",
+                "dispositions": [
+                    {
+                        "candidate_id": asset_ids[0],
+                        "outcome": "research",
+                        "reason": "synthetic promoted path",
+                    },
+                    {
+                        "candidate_id": asset_ids[1],
+                        "outcome": "research",
+                        "reason": "synthetic rejected path",
+                    },
+                ],
+            },
+        )
+        triage_complete_call = call(
+            "investment_opportunity_update",
+            {
+                "operation": "triage_complete",
+                "item_id": research_fixture["triage_item_id"],
+                "owner": "synthetic-researcher",
+                "dispositions": [
+                    {
+                        "candidate_id": asset_ids[0],
+                        "outcome": "research",
+                        "reason": "synthetic promoted path",
+                    },
+                    {
+                        "candidate_id": asset_ids[1],
+                        "outcome": "research",
+                        "reason": "synthetic rejected path",
+                    },
+                    {
+                        "candidate_id": asset_ids[2],
+                        "outcome": "research",
+                        "reason": "synthetic monitoring path",
+                    },
+                ],
+            },
+        )
+        triage_complete = _call_result(triage_complete_call)
+        children = triage_complete["children"]
+
+        invalid_evidence_call = call(
+            "investment_evidence_update",
+            {
+                "operation": "publish_source",
+                "subject": {"asset_id": asset_ids[0]},
+                "source": "synthetic missing-claims source",
+                "source_group": "synthetic-invalid",
+                "first_known_at": research_fixture["cutoff"],
+                "observed_at": research_fixture["cutoff"],
+                "evidence_type": "official_disclosure",
+            },
+        )
+
+        def publish_source(
+            asset_id: str, source: str, group: str, evidence_type: str
+        ) -> dict[str, Any]:
+            return call(
+                "investment_evidence_update",
+                {
+                    "operation": "publish_source",
+                    "subject": {"asset_id": asset_id},
+                    "source": source,
+                    "source_group": group,
+                    "first_known_at": research_fixture["cutoff"],
+                    "observed_at": research_fixture["cutoff"],
+                    "claims": [f"{source} synthetic claim"],
+                    "evidence_type": evidence_type,
+                    "metadata": {"synthetic": True},
+                },
+            )
+
+        source_one_call = publish_source(
+            asset_ids[0], "synthetic issuer filing", "synthetic-issuer", "official_disclosure"
+        )
+        source_two_call = publish_source(
+            asset_ids[0], "synthetic exchange notice", "synthetic-exchange", "official_disclosure"
+        )
+        predictive_source_call = publish_source(
+            asset_ids[2], "synthetic predictive scan", "synthetic-signal", "predictive_signal"
+        )
+        source_one = _call_result(source_one_call)
+        source_two = _call_result(source_two_call)
+        predictive_source = _call_result(predictive_source_call)
+        market_snapshot_call = call(
+            "investment_evidence_update",
+            {
+                "operation": "market_snapshot",
+                "asset_id": asset_ids[0],
+                "metric": "close",
+                "value": "10",
+                "observed_at": research_fixture["cutoff"],
+                "source": "synthetic market",
+                "quality": "healthy",
+                "currency": "CNY",
+            },
+        )
+
+        invalid_reference_call = call(
+            "investment_research_publish",
+            {
+                "subject": {"asset_id": asset_ids[0]},
+                "content": "# Synthetic invalid reference thesis",
+                "evidence_manifest_ids": ["manifest_" + "0" * 64],
+                "knowledge_cutoff": research_fixture["cutoff"],
+            },
+        )
+        validation_spec = {
+            "falsifiers": ["the synthetic driver reverses"],
+            "counterevidence": {
+                "searched": ["synthetic issuer", "synthetic exchange"],
+                "findings": [],
+            },
+            "applicability": {
+                "horizon": "synthetic month",
+                "conditions": ["synthetic normal liquidity"],
+                "excluded_conditions": ["synthetic suspension"],
+            },
+            "cost_assumptions": {
+                "commission": "synthetic commission",
+                "tax": "synthetic tax",
+                "slippage": "synthetic slippage",
+            },
+            "max_evidence_age_days": 30,
+        }
+        promoted_research_call = call(
+            "investment_research_publish",
+            {
+                "subject": {"asset_id": asset_ids[0]},
+                "content": "# Synthetic promoted Thesis\n\nA falsifiable research-only claim.",
+                "evidence_manifest_ids": [source_one["id"], source_two["id"]],
+                "knowledge_cutoff": research_fixture["cutoff"],
+                "validation_spec": validation_spec,
+            },
+        )
+        promoted_research = _call_result(promoted_research_call)
+        rejected_research_call = call(
+            "investment_research_publish",
+            {
+                "subject": {"asset_id": asset_ids[1]},
+                "content": "# Synthetic rejected Thesis\n\nA claim that remains unvalidated.",
+                "evidence_manifest_ids": [source_one["id"]],
+                "knowledge_cutoff": research_fixture["cutoff"],
+            },
+        )
+        rejected_research = _call_result(rejected_research_call)
+        promoted_opportunity_call = call(
+            "investment_opportunity_update",
+            {
+                "operation": "create",
+                "subject": {"asset_id": asset_ids[0]},
+                "evidence_refs": [source_one["id"]],
+                "reason": "synthetic validated research question",
+                "program_id": research_fixture["program_id"],
+                "thesis_id": promoted_research["thesis"]["id"],
+            },
+        )
+        promoted_opportunity = _call_result(promoted_opportunity_call)
+        opportunity_transition_call = call(
+            "investment_opportunity_update",
+            {
+                "operation": "transition",
+                "opportunity_id": promoted_opportunity["id"],
+                "expected_version": promoted_opportunity["version"],
+                "to_stage": "researching",
+                "to_status": "active",
+                "evidence_refs": [source_one["id"], source_two["id"]],
+                "reason": "synthetic evidence collection started",
+            },
+        )
+        rejected_opportunity_call = call(
+            "investment_opportunity_update",
+            {
+                "operation": "create",
+                "subject": {"asset_id": asset_ids[1]},
+                "evidence_refs": [source_one["id"]],
+                "reason": "synthetic unvalidated research question",
+                "program_id": research_fixture["program_id"],
+                "thesis_id": rejected_research["thesis"]["id"],
+            },
+        )
+        rejected_opportunity = _call_result(rejected_opportunity_call)
+
+        promoted_claim_call = call(
+            "investment_opportunity_update",
+            {
+                "operation": "work_claim",
+                "item_id": children[0]["id"],
+                "owner": "synthetic-researcher",
+            },
+        )
+        missing_validation_call = call(
+            "investment_opportunity_update",
+            {
+                "operation": "research_complete",
+                "item_id": children[0]["id"],
+                "owner": "synthetic-researcher",
+                "outcome": "promoted",
+                "reason": "synthetic missing formal validation",
+                "result_refs": [research_fixture["candidate_manifest_id"]],
+                "opportunity_id": promoted_opportunity["id"],
+            },
+        )
+        promoted_complete_call = call(
+            "investment_opportunity_update",
+            {
+                "operation": "research_complete",
+                "item_id": children[0]["id"],
+                "owner": "synthetic-researcher",
+                "outcome": "promoted",
+                "reason": "synthetic eligible formal validation",
+                "result_refs": [
+                    research_fixture["candidate_manifest_id"],
+                    promoted_research["validation"]["calculation_id"],
+                ],
+                "opportunity_id": promoted_opportunity["id"],
+            },
+        )
+        rejected_claim_call = call(
+            "investment_opportunity_update",
+            {
+                "operation": "work_claim",
+                "item_id": children[1]["id"],
+                "owner": "synthetic-researcher",
+            },
+        )
+        rejected_complete_call = call(
+            "investment_opportunity_update",
+            {
+                "operation": "research_complete",
+                "item_id": children[1]["id"],
+                "owner": "synthetic-researcher",
+                "outcome": "rejected",
+                "reason": "synthetic counterevidence failed the Thesis",
+                "result_refs": [research_fixture["candidate_manifest_id"]],
+            },
+        )
+        monitoring_claim_call = call(
+            "investment_opportunity_update",
+            {
+                "operation": "work_claim",
+                "item_id": children[2]["id"],
+                "owner": "synthetic-researcher",
+            },
+        )
+        monitoring_complete_call = call(
+            "investment_opportunity_update",
+            {
+                "operation": "research_complete",
+                "item_id": children[2]["id"],
+                "owner": "synthetic-researcher",
+                "outcome": "monitoring",
+                "reason": "synthetic event has not occurred",
+                "result_refs": [
+                    research_fixture["candidate_manifest_id"],
+                    predictive_source["id"],
+                ],
+                "next_check_at": research_fixture["next_check_at"],
+            },
+        )
+        research_context_final_call = call("research_context", {"limit": 20})
+        research_after_decision_call = call("decision_context", {})
+        research_after_portfolio_call = call(
+            "portfolio_context", {"account_id": research_fixture["account_id"]}
+        )
 
         context_draft_call = call(
             "investment_context_update",
@@ -267,6 +670,48 @@ def probe_investment_mcp(
         "tools": tools_by_name,
         "home_result": _call_result(home_call),
         "home_call_error": _call_error(home_call),
+        "research": {
+            "fixture": research_fixture,
+            "context_initial": _call_result(research_context_initial_call),
+            "triage_claim": _call_result(triage_claim_call),
+            "incomplete_triage_error": _call_error(incomplete_triage_call),
+            "triage_complete": triage_complete,
+            "invalid_evidence_error": _call_error(invalid_evidence_call),
+            "evidence": {
+                "source_one": source_one,
+                "source_two": source_two,
+                "predictive_source": predictive_source,
+                "market_snapshot": _call_result(market_snapshot_call),
+            },
+            "invalid_reference_error": _call_error(invalid_reference_call),
+            "promoted_research": promoted_research,
+            "rejected_research": rejected_research,
+            "opportunities": {
+                "promoted": promoted_opportunity,
+                "transitioned": _call_result(opportunity_transition_call),
+                "rejected": rejected_opportunity,
+            },
+            "claims": {
+                "promoted": _call_result(promoted_claim_call),
+                "rejected": _call_result(rejected_claim_call),
+                "monitoring": _call_result(monitoring_claim_call),
+            },
+            "missing_validation_error": _call_error(missing_validation_call),
+            "outcomes": {
+                "promoted": _call_result(promoted_complete_call),
+                "rejected": _call_result(rejected_complete_call),
+                "monitoring": _call_result(monitoring_complete_call),
+            },
+            "context_final": _call_result(research_context_final_call),
+            "boundary_before": {
+                "decision": _call_result(research_before_decision_call),
+                "portfolio": _call_result(research_before_portfolio_call),
+            },
+            "boundary_after": {
+                "decision": _call_result(research_after_decision_call),
+                "portfolio": _call_result(research_after_portfolio_call),
+            },
+        },
         "context": {
             "draft": context_draft,
             "confirm": _call_result(context_confirm_call),
@@ -369,6 +814,79 @@ def evaluate_investment_conformance(observation: dict[str, Any]) -> dict[str, An
             "capability": "investment_transaction_update",
         },
     )
+    research_context_schema = (tools.get("research_context") or {}).get(
+        "inputSchema", {}
+    )
+    check(
+        "mcp.tools-list.research-context",
+        research_context_schema.get("additionalProperties") is False
+        and set(research_context_schema.get("properties", {}))
+        == {"subject_id", "work_item_id", "limit"},
+        {"code": "missing_or_drifted_tool", "capability": "research_context"},
+    )
+    opportunity_variants = (
+        (tools.get("investment_opportunity_update") or {})
+        .get("inputSchema", {})
+        .get("oneOf", [])
+    )
+    opportunity_operations = [
+        item.get("properties", {}).get("operation", {}).get("const")
+        for item in opportunity_variants
+    ]
+    research_complete_variants = [
+        item
+        for item in opportunity_variants
+        if item.get("properties", {}).get("operation", {}).get("const")
+        == "research_complete"
+    ]
+    research_complete_required = {
+        item.get("properties", {}).get("outcome", {}).get("const"): set(
+            item.get("required", [])
+        )
+        for item in research_complete_variants
+    }
+    check(
+        "mcp.tools-list.opportunity-update-variants",
+        set(opportunity_operations)
+        == {"create", "transition", "work_claim", "triage_complete", "research_complete"}
+        and opportunity_operations.count("research_complete") == 3
+        and {
+            "item_id", "outcome", "reason", "result_refs", "opportunity_id"
+        }
+        <= research_complete_required.get("promoted", set())
+        and {"item_id", "outcome", "reason"}
+        <= research_complete_required.get("rejected", set())
+        and {"item_id", "outcome", "reason", "next_check_at"}
+        <= research_complete_required.get("monitoring", set()),
+        {
+            "code": "missing_or_drifted_tool",
+            "capability": "investment_opportunity_update",
+        },
+    )
+    check(
+        "mcp.tools-list.evidence-update-variants",
+        operations("investment_evidence_update")
+        == {"publish_source", "market_snapshot"},
+        {
+            "code": "missing_or_drifted_tool",
+            "capability": "investment_evidence_update",
+        },
+    )
+    research_publish_schema = (
+        tools.get("investment_research_publish") or {}
+    ).get("inputSchema", {})
+    check(
+        "mcp.tools-list.research-publish",
+        research_publish_schema.get("additionalProperties") is False
+        and {
+            "subject", "content", "evidence_manifest_ids", "knowledge_cutoff"
+        }
+        <= set(research_publish_schema.get("required", [])),
+        {
+            "code": "missing_or_drifted_tool",
+            "capability": "investment_research_publish",
+        },
+    )
 
     home = observation.get("home_result")
     health = home.get("production_health") if isinstance(home, dict) else None
@@ -381,6 +899,114 @@ def evaluate_investment_conformance(observation: dict[str, Any]) -> dict[str, An
             "capability": "investment_home",
             "invariant": HOME_INVARIANT,
             "counterexample": "tools/call succeeded without required production_health",
+        },
+    )
+
+    research = observation.get("research", {})
+    initial_research_context = research.get("context_initial") or {}
+    triage = research.get("triage_complete") or {}
+    triage_item = triage.get("item") or {}
+    triage_children = triage.get("children") or []
+    check(
+        RESEARCH_WORK_INVARIANT,
+        len(
+            (initial_research_context.get("work_queue", {}).get("selected") or {}).get(
+                "candidate_scope", []
+            )
+        )
+        == 3
+        and isinstance(research.get("incomplete_triage_error"), str)
+        and "explicitly cover every candidate" in research["incomplete_triage_error"]
+        and triage_item.get("status") == "completed"
+        and len(triage_children) == 3,
+        {
+            "code": "invariant_violation",
+            "capability": "investment_opportunity_update",
+            "invariant": RESEARCH_WORK_INVARIANT,
+            "counterexample": "candidate triage completed without explicit disposition of the frozen scope",
+        },
+    )
+
+    research_outcomes = research.get("outcomes", {})
+    promoted_outcome = research_outcomes.get("promoted") or {}
+    rejected_outcome = research_outcomes.get("rejected") or {}
+    monitoring_outcome = research_outcomes.get("monitoring") or {}
+    check(
+        "mcp.research-work.outcomes/v1",
+        promoted_outcome.get("status") == "completed"
+        and promoted_outcome.get("disposition", {}).get("outcome") == "promoted"
+        and isinstance(promoted_outcome.get("opportunity_id"), str)
+        and rejected_outcome.get("status") == "rejected"
+        and rejected_outcome.get("disposition", {}).get("outcome") == "rejected"
+        and monitoring_outcome.get("status") == "monitoring"
+        and monitoring_outcome.get("disposition", {}).get("outcome") == "monitoring"
+        and monitoring_outcome.get("next_check_at")
+        == (research.get("fixture") or {}).get("next_check_at"),
+        {
+            "code": "research_outcome_drift",
+            "capability": "investment_opportunity_update",
+        },
+    )
+    negative_errors = [
+        research.get("invalid_evidence_error"),
+        research.get("invalid_reference_error"),
+        research.get("missing_validation_error"),
+    ]
+    check(
+        "mcp.research-negative-cases.rejected/v1",
+        isinstance(negative_errors[0], str)
+        and negative_errors[0].startswith("capability.input.invalid:")
+        and isinstance(negative_errors[1], str)
+        and "manifest" in negative_errors[1]
+        and "not found" in negative_errors[1]
+        and isinstance(negative_errors[2], str)
+        and "eligible formal Thesis Validation" in negative_errors[2],
+        {
+            "code": "missing_negative_rejection",
+            "capability": "research_workflow",
+        },
+    )
+
+    promoted_research = research.get("promoted_research") or {}
+    validation = promoted_research.get("validation") or {}
+    thesis_metadata = (promoted_research.get("revision") or {}).get("metadata", {})
+    predictive_manifest = (
+        research.get("evidence", {}).get("predictive_source") or {}
+    ).get("manifest", {}).get("manifest", {})
+    before_decision = research.get("boundary_before", {}).get("decision") or {}
+    after_decision = research.get("boundary_after", {}).get("decision") or {}
+    before_portfolio = research.get("boundary_before", {}).get("portfolio") or {}
+    after_portfolio = research.get("boundary_after", {}).get("portfolio") or {}
+
+    def no_decision_or_action(value: dict[str, Any]) -> bool:
+        return all(
+            value.get(field) == []
+            for field in ("queue", "action_cards", "recent_decisions", "executions")
+        )
+
+    check(
+        RESEARCH_BOUNDARY_INVARIANT,
+        validation.get("status") == "eligible_for_decision"
+        and validation.get("automatic_decision_or_execution") is False
+        and thesis_metadata.get("research_only") is True
+        and thesis_metadata.get("automatic_decision_or_execution") is False
+        and predictive_manifest.get("evidence_type") == "predictive_signal"
+        and no_decision_or_action(before_decision)
+        and no_decision_or_action(after_decision)
+        and all(
+            (before_portfolio.get("portfolio") or {}).get(field)
+            == (after_portfolio.get("portfolio") or {}).get(field)
+            for field in ("cash", "positions", "total_by_currency")
+        )
+        and before_portfolio.get("pending_transactions")
+        == after_portfolio.get("pending_transactions")
+        and before_portfolio.get("truth") == "confirmed_ledger_replay"
+        and after_portfolio.get("truth") == "confirmed_ledger_replay",
+        {
+            "code": "invariant_violation",
+            "capability": "research_workflow",
+            "invariant": RESEARCH_BOUNDARY_INVARIANT,
+            "counterexample": "Evidence, prediction, Validation or Thesis created a Decision, Action Card, Execution or Ledger fact",
         },
     )
 

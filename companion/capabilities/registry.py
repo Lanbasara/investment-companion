@@ -16,6 +16,12 @@ TRANSACTION_CONFIRMATION_INVARIANT = (
 )
 RECONCILIATION_INVARIANT = "investment_transaction_update.reconciliation_never_autofills/v1"
 CONTINUITY_INVARIANT = "investment_transaction_update.continuity_is_not_broker_sync/v1"
+RESEARCH_BOUNDARY_INVARIANT = (
+    "research.evidence_validation_thesis_never_auto_action/v1"
+)
+RESEARCH_WORK_INVARIANT = (
+    "investment_opportunity_update.explicit_candidate_disposition/v1"
+)
 
 HOME_DESCRIPTION = (
     "读取今天的行动、异常、研究工作队列、绩效和交付总入口；未完成研究返回 review_required。"
@@ -29,6 +35,18 @@ CONTEXT_UPDATE_DESCRIPTION = (
 TRANSACTION_UPDATE_DESCRIPTION = (
     "登记账户和资产身份，记录、确认、冲销及对账金融事实，或管理人工账本连续性；"
     "只有 confirmed Ledger Entry 改变组合。"
+)
+RESEARCH_CONTEXT_DESCRIPTION = (
+    "读取某标的或 work_item_id 对应的 ResearchRecord、Validation、研究义务、资格状态与下次检查。"
+)
+OPPORTUNITY_UPDATE_DESCRIPTION = (
+    "领取并完成研究义务，逐项分流候选，或创建和推进 Opportunity；研究结果不会自动成为 Decision 或交易。"
+)
+EVIDENCE_UPDATE_DESCRIPTION = (
+    "冻结带来源、时点和类型的 Evidence，或登记决策时点市场快照；不会自动形成建议或交易。"
+)
+RESEARCH_PUBLISH_DESCRIPTION = (
+    "把 Evidence 冻结为不可变 Investment Thesis，并可执行 Research Validation；资格不会自动形成 Decision 或交易。"
 )
 
 SET_LIKE_ARRAY_KEYS = {
@@ -103,7 +121,11 @@ def operation_schema(
 
 
 def operation_union(operations: Mapping[str, dict[str, Any]]) -> dict[str, Any]:
-    return {"oneOf": [operations[name]["input_schema"] for name in sorted(operations)]}
+    variants: list[dict[str, Any]] = []
+    for name in sorted(operations):
+        schema = operations[name]["input_schema"]
+        variants.extend(schema.get("oneOf", [schema]))
+    return {"oneOf": variants}
 
 
 S = {"type": "string"}
@@ -111,6 +133,7 @@ I = {"type": "integer"}
 B = {"type": "boolean"}
 O = {"type": "object", "additionalProperties": True}
 A = {"type": "array"}
+SA = {"type": "array", "items": S}
 DECIMAL_MAP = {"type": "object", "additionalProperties": {}}
 
 HOME_INPUT_SCHEMA = object_schema()
@@ -638,6 +661,547 @@ TRANSACTION_UPDATE_OUTPUT_SCHEMA = {
 }
 
 
+NULLABLE_STRING = {"type": ["string", "null"]}
+NULLABLE_OBJECT = {"type": ["object", "null"], "additionalProperties": True}
+
+OPPORTUNITY_SUMMARY_SCHEMA = object_schema(
+    {
+        "id": S,
+        "program_id": S,
+        "subject": O,
+        "stage": {"type": "string", "enum": ["observed", "researching", "qualified", "actionable"]},
+        "status": {"type": "string", "enum": ["active", "rejected", "expired", "closed"]},
+        "thesis_id": NULLABLE_STRING,
+        "strategy_version_id": NULLABLE_STRING,
+        "decision_revision_id": NULLABLE_STRING,
+        "qualification": O,
+        "version": I,
+        "created_at": S,
+        "updated_at": S,
+        "closed_at": NULLABLE_STRING,
+    },
+    [
+        "id", "program_id", "subject", "stage", "status", "thesis_id",
+        "strategy_version_id", "decision_revision_id", "qualification", "version",
+        "created_at", "updated_at", "closed_at",
+    ],
+    additional_properties=True,
+)
+OPPORTUNITY_SCHEMA = object_schema(
+    {
+        **OPPORTUNITY_SUMMARY_SCHEMA["properties"],
+        "transitions": {"type": "array", "items": O},
+        "research_validation": NULLABLE_OBJECT,
+        "evidence_band": S,
+    },
+    [
+        *OPPORTUNITY_SUMMARY_SCHEMA["required"],
+        "transitions", "research_validation", "evidence_band",
+    ],
+    additional_properties=True,
+)
+
+RESEARCH_WORK_ITEM_SCHEMA = object_schema(
+    {
+        "id": S,
+        "program_id": S,
+        "work_type": {"type": "string", "enum": ["candidate_triage", "full_research"]},
+        "status": {
+            "type": "string",
+            "enum": ["queued", "leased", "waiting", "monitoring", "completed", "rejected", "failed", "expired"],
+        },
+        "priority": I,
+        "source_manifest_id": S,
+        "parent_id": NULLABLE_STRING,
+        "subject": O,
+        "candidate_scope": SA,
+        "requirements": O,
+        "result_refs": SA,
+        "disposition": {"type": ["object", "array"], "additionalProperties": True},
+        "opportunity_id": NULLABLE_STRING,
+        "due_at": S,
+        "next_check_at": NULLABLE_STRING,
+        "lease_owner": NULLABLE_STRING,
+        "lease_until": NULLABLE_STRING,
+        "attempt_count": I,
+        "idempotency_key": S,
+        "version": I,
+        "last_error": NULLABLE_STRING,
+        "created_at": S,
+        "updated_at": S,
+        "finished_at": NULLABLE_STRING,
+    },
+    [
+        "id", "program_id", "work_type", "status", "priority", "source_manifest_id",
+        "parent_id", "subject", "candidate_scope", "requirements", "result_refs",
+        "disposition", "opportunity_id", "due_at", "next_check_at", "lease_owner",
+        "lease_until", "attempt_count", "idempotency_key", "version", "last_error",
+        "created_at", "updated_at", "finished_at",
+    ],
+    additional_properties=True,
+)
+RESEARCH_WORK_SUMMARY_SCHEMA = object_schema(
+    {
+        "counts": {"type": "object", "additionalProperties": I},
+        "open": I,
+        "overdue": I,
+        "next": {"type": "array", "items": RESEARCH_WORK_ITEM_SCHEMA},
+    },
+    ["counts", "open", "overdue", "next"],
+)
+
+RESEARCH_RECORD_SCHEMA = object_schema(
+    {
+        "schema": {"type": "string", "const": "investment-companion.research-record/v1"},
+        "record_id": S,
+        "record_type": S,
+        "created_at": NULLABLE_STRING,
+        "as_of": NULLABLE_STRING,
+        "method": object_schema(
+            {
+                "method_id": S,
+                "registered_strategy_versions": A,
+                "unregistered_strategy_labels": SA,
+                "identity_status": {
+                    "type": "string",
+                    "enum": ["formal_strategy_version", "research_method_only"],
+                },
+            },
+            ["method_id", "registered_strategy_versions", "unregistered_strategy_labels", "identity_status"],
+            additional_properties=True,
+        ),
+        "items": A,
+        "source_refs": SA,
+        "validation": O,
+    },
+    ["schema", "record_id", "record_type", "created_at", "as_of", "method", "items", "source_refs", "validation"],
+    additional_properties=True,
+)
+VALIDATION_CALCULATION_SCHEMA = object_schema(
+    {
+        "id": S,
+        "kind": {"type": "string", "enum": ["thesis_validation", "strategy_validation"]},
+        "purpose": S,
+        "engine_version": S,
+        "as_of": S,
+        "inputs": O,
+        "assumptions": O,
+        "formulas": O,
+        "outputs": object_schema(
+            {
+                "status": {
+                    "type": "string",
+                    "enum": ["research_only", "eligible_for_bounded_action", "eligible_for_shadow", "eligible_for_decision"],
+                },
+                "automatic_decision_or_execution": {"type": "boolean", "const": False},
+            },
+            ["status", "automatic_decision_or_execution"],
+            additional_properties=True,
+        ),
+        "warnings": A,
+        "reproducibility_hash": S,
+        "created_at": S,
+    },
+    [
+        "id", "kind", "purpose", "engine_version", "as_of", "inputs", "assumptions",
+        "formulas", "outputs", "warnings", "reproducibility_hash", "created_at",
+    ],
+    additional_properties=True,
+)
+RESEARCH_CONTEXT_INPUT_SCHEMA = object_schema(
+    {
+        "subject_id": S,
+        "work_item_id": S,
+        "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+    }
+)
+RESEARCH_CONTEXT_OUTPUT_SCHEMA = object_schema(
+    {
+        "schema": {"type": "string", "const": "investment-companion.research-context/v1"},
+        "as_of": S,
+        "subject_id": NULLABLE_STRING,
+        "opportunities": {"type": "array", "items": OPPORTUNITY_SUMMARY_SCHEMA},
+        "strategies": A,
+        "records": {"type": "array", "items": RESEARCH_RECORD_SCHEMA},
+        "validations": {"type": "array", "items": VALIDATION_CALCULATION_SCHEMA},
+        "work_queue": object_schema(
+            {
+                "summary": RESEARCH_WORK_SUMMARY_SCHEMA,
+                "selected": {**RESEARCH_WORK_ITEM_SCHEMA, "type": ["object", "null"]},
+                "items": {"type": "array", "items": RESEARCH_WORK_ITEM_SCHEMA},
+            },
+            ["summary", "selected", "items"],
+        ),
+        "boundary": object_schema(
+            {
+                "research_only_unless_validated": {"type": "boolean", "const": True},
+                "formal_strategy_requires_registry_entry": {"type": "boolean", "const": True},
+                "decision_requires_eligible_validation": {"type": "boolean", "const": True},
+                "automatic_decision_or_execution": {"type": "boolean", "const": False},
+                "may_produce": SA,
+                "may_not_produce": SA,
+                "action_requires": O,
+            },
+            [
+                "research_only_unless_validated", "formal_strategy_requires_registry_entry",
+                "decision_requires_eligible_validation", "automatic_decision_or_execution",
+                "may_produce", "may_not_produce", "action_requires",
+            ],
+            additional_properties=True,
+        ),
+    },
+    [
+        "schema", "as_of", "subject_id", "opportunities", "strategies", "records",
+        "validations", "work_queue", "boundary",
+    ],
+)
+
+TRIAGE_RESEARCH_DISPOSITION = object_schema(
+    {
+        "candidate_id": S,
+        "outcome": {"type": "string", "const": "research"},
+        "reason": S,
+        "subject": O,
+        "due_at": S,
+    },
+    ["candidate_id", "outcome", "reason"],
+)
+TRIAGE_REJECT_DISPOSITION = object_schema(
+    {
+        "candidate_id": S,
+        "outcome": {"type": "string", "const": "reject"},
+        "reason": S,
+    },
+    ["candidate_id", "outcome", "reason"],
+)
+TRIAGE_MONITOR_DISPOSITION = object_schema(
+    {
+        "candidate_id": S,
+        "outcome": {"type": "string", "const": "monitor"},
+        "reason": S,
+        "subject": O,
+        "due_at": S,
+        "next_check_at": S,
+    },
+    ["candidate_id", "outcome", "reason", "next_check_at"],
+)
+TRIAGE_DISPOSITION_SCHEMA = {
+    "oneOf": [
+        TRIAGE_RESEARCH_DISPOSITION,
+        TRIAGE_REJECT_DISPOSITION,
+        TRIAGE_MONITOR_DISPOSITION,
+    ]
+}
+RESEARCH_COMPLETE_INPUT_SCHEMA = {
+    "oneOf": [
+        operation_schema(
+            "research_complete",
+            {
+                "item_id": S, "outcome": {"type": "string", "const": "promoted"},
+                "reason": S, "result_refs": SA, "opportunity_id": S, "owner": S,
+            },
+            ["item_id", "outcome", "reason", "result_refs", "opportunity_id"],
+        ),
+        operation_schema(
+            "research_complete",
+            {
+                "item_id": S, "outcome": {"type": "string", "const": "rejected"},
+                "reason": S, "result_refs": SA, "owner": S,
+            },
+            ["item_id", "outcome", "reason"],
+        ),
+        operation_schema(
+            "research_complete",
+            {
+                "item_id": S, "outcome": {"type": "string", "const": "monitoring"},
+                "reason": S, "result_refs": SA, "next_check_at": S, "owner": S,
+            },
+            ["item_id", "outcome", "reason", "next_check_at"],
+        ),
+    ]
+}
+RESEARCH_COMPLETION_WORK_ITEM_SCHEMA = object_schema(
+    {
+        **RESEARCH_WORK_ITEM_SCHEMA["properties"],
+        "status": {"type": "string", "enum": ["completed", "rejected", "monitoring"]},
+        "disposition": object_schema(
+            {
+                "outcome": {
+                    "type": "string",
+                    "enum": ["promoted", "rejected", "monitoring"],
+                },
+                "reason": S,
+            },
+            ["outcome", "reason"],
+            additional_properties=True,
+        ),
+    },
+    RESEARCH_WORK_ITEM_SCHEMA["required"],
+    additional_properties=True,
+)
+CREATED_OPPORTUNITY_SCHEMA = object_schema(
+    {
+        **OPPORTUNITY_SCHEMA["properties"],
+        "stage": {"type": "string", "const": "observed"},
+        "status": {"type": "string", "const": "active"},
+    },
+    OPPORTUNITY_SCHEMA["required"],
+    additional_properties=True,
+)
+CLAIMED_RESEARCH_WORK_ITEM_SCHEMA = object_schema(
+    {
+        **RESEARCH_WORK_ITEM_SCHEMA["properties"],
+        "status": {"type": "string", "const": "leased"},
+        "lease_owner": S,
+        "lease_until": S,
+    },
+    RESEARCH_WORK_ITEM_SCHEMA["required"],
+    additional_properties=True,
+)
+COMPLETED_TRIAGE_ITEM_SCHEMA = object_schema(
+    {
+        **RESEARCH_WORK_ITEM_SCHEMA["properties"],
+        "status": {"type": "string", "const": "completed"},
+        "disposition": A,
+    },
+    RESEARCH_WORK_ITEM_SCHEMA["required"],
+    additional_properties=True,
+)
+OPPORTUNITY_OPERATIONS = {
+    "create": {
+        "input_schema": operation_schema(
+            "create",
+            {
+                "subject": O, "evidence_refs": SA, "reason": S, "program_id": S,
+                "thesis_id": S, "strategy_version_id": S,
+            },
+            ["subject", "evidence_refs", "reason"],
+        ),
+        "output_schema": CREATED_OPPORTUNITY_SCHEMA,
+    },
+    "transition": {
+        "input_schema": operation_schema(
+            "transition",
+            {
+                "opportunity_id": S, "expected_version": I,
+                "to_stage": {"type": "string", "enum": ["observed", "researching", "qualified", "actionable"]},
+                "to_status": {"type": "string", "enum": ["active", "rejected", "expired", "closed"]},
+                "evidence_refs": SA, "reason": S, "qualification": O,
+                "decision_revision_id": S, "idempotency_key": S,
+            },
+            ["opportunity_id", "expected_version", "to_stage", "to_status", "evidence_refs", "reason"],
+        ),
+        "output_schema": OPPORTUNITY_SCHEMA,
+    },
+    "work_claim": {
+        "input_schema": operation_schema(
+            "work_claim",
+            {"item_id": S, "owner": S, "lease_seconds": {"type": "integer", "minimum": 60, "maximum": 7200}},
+            ["item_id"],
+        ),
+        "output_schema": CLAIMED_RESEARCH_WORK_ITEM_SCHEMA,
+    },
+    "triage_complete": {
+        "input_schema": operation_schema(
+            "triage_complete",
+            {
+                "item_id": S,
+                "owner": S,
+                "dispositions": {"type": "array", "items": TRIAGE_DISPOSITION_SCHEMA},
+            },
+            ["item_id", "dispositions"],
+        ),
+        "output_schema": object_schema(
+            {
+                "item": COMPLETED_TRIAGE_ITEM_SCHEMA,
+                "children": {"type": "array", "items": RESEARCH_WORK_ITEM_SCHEMA},
+            },
+            ["item", "children"],
+        ),
+    },
+    "research_complete": {
+        "input_schema": RESEARCH_COMPLETE_INPUT_SCHEMA,
+        "output_schema": RESEARCH_COMPLETION_WORK_ITEM_SCHEMA,
+    },
+}
+OPPORTUNITY_UPDATE_INPUT_SCHEMA = operation_union(OPPORTUNITY_OPERATIONS)
+OPPORTUNITY_UPDATE_OUTPUT_SCHEMA = {
+    "oneOf": [
+        OPPORTUNITY_SCHEMA,
+        RESEARCH_WORK_ITEM_SCHEMA,
+        OPPORTUNITY_OPERATIONS["triage_complete"]["output_schema"],
+    ]
+}
+
+EVIDENCE_MANIFEST_SCHEMA = object_schema(
+    {
+        "id": S,
+        "kind": {"type": "string", "const": "investment_evidence"},
+        "schema_version": {"type": "string", "const": "investment-companion.evidence/v1"},
+        "manifest": object_schema(
+            {
+                "kind": {"type": "string", "const": "investment_evidence"},
+                "schema_version": {"type": "string", "const": "investment-companion.evidence/v1"},
+                "manifest": O,
+                "supersedes": NULLABLE_STRING,
+            },
+            ["kind", "schema_version", "manifest", "supersedes"],
+            additional_properties=True,
+        ),
+        "content_hash": S,
+        "supersedes": NULLABLE_STRING,
+        "status": {"type": "string", "enum": ["ready", "superseded"]},
+        "created_at": S,
+    },
+    ["id", "kind", "schema_version", "manifest", "content_hash", "supersedes", "status", "created_at"],
+    additional_properties=True,
+)
+MARKET_SNAPSHOT_SCHEMA = object_schema(
+    {
+        "id": S,
+        "asset_id": S,
+        "metric": S,
+        "value_text": S,
+        "currency": NULLABLE_STRING,
+        "observed_at": S,
+        "source": S,
+        "quality": {
+            "type": "string",
+            "enum": ["healthy", "stale", "partial", "conflicting", "unauthorized", "failed", "unknown"],
+        },
+        "metadata": O,
+        "fingerprint": S,
+        "created_at": S,
+    },
+    ["id", "asset_id", "metric", "value_text", "currency", "observed_at", "source", "quality", "metadata", "fingerprint", "created_at"],
+    additional_properties=True,
+)
+EVIDENCE_OPERATIONS = {
+    "publish_source": {
+        "input_schema": operation_schema(
+            "publish_source",
+            {
+                "subject": O, "source": S, "source_group": S, "first_known_at": S,
+                "observed_at": S, "published_at": S, "url": S, "claims": SA,
+                "evidence_type": {
+                    "type": "string",
+                    "enum": ["observed_fact", "official_disclosure", "validated_analysis", "predictive_signal"],
+                },
+                "content": S, "metadata": O, "supersedes": S,
+            },
+            ["subject", "source", "source_group", "first_known_at", "observed_at", "claims", "evidence_type"],
+        ),
+        "output_schema": EVIDENCE_MANIFEST_SCHEMA,
+    },
+    "market_snapshot": {
+        "input_schema": operation_schema(
+            "market_snapshot",
+            {
+                "asset_id": S, "metric": S, "value": {}, "observed_at": S, "source": S,
+                "quality": {
+                    "type": "string",
+                    "enum": ["healthy", "stale", "partial", "conflicting", "unauthorized", "failed", "unknown"],
+                },
+                "currency": S, "metadata": O,
+            },
+            ["asset_id", "metric", "value", "observed_at", "source"],
+        ),
+        "output_schema": MARKET_SNAPSHOT_SCHEMA,
+    },
+}
+EVIDENCE_UPDATE_INPUT_SCHEMA = operation_union(EVIDENCE_OPERATIONS)
+EVIDENCE_UPDATE_OUTPUT_SCHEMA = {
+    "oneOf": [EVIDENCE_MANIFEST_SCHEMA, MARKET_SNAPSHOT_SCHEMA]
+}
+
+THESIS_SCHEMA = object_schema(
+    {
+        "id": S,
+        "object_type": {"type": "string", "const": "thesis"},
+        "subject": O,
+        "status": {"type": "string", "const": "active"},
+        "current_revision_id": S,
+        "created_at": S,
+        "updated_at": S,
+    },
+    ["id", "object_type", "subject", "status", "current_revision_id", "created_at", "updated_at"],
+    additional_properties=True,
+)
+THESIS_REVISION_SCHEMA = object_schema(
+    {
+        "id": S,
+        "object_id": S,
+        "revision": I,
+        "status": {"type": "string", "const": "published"},
+        "path": S,
+        "content_hash": S,
+        "parent_id": NULLABLE_STRING,
+        "knowledge_cutoff": S,
+        "context_refs": O,
+        "calculation_ids": SA,
+        "metadata": object_schema(
+            {
+                "research_contract_version": {"type": "integer", "const": 1},
+                "evidence_manifest_ids": SA,
+                "research_only": {"type": "boolean", "const": True},
+                "automatic_decision_or_execution": {"type": "boolean", "const": False},
+            },
+            ["research_contract_version", "evidence_manifest_ids", "research_only", "automatic_decision_or_execution"],
+            additional_properties=True,
+        ),
+        "created_at": S,
+    },
+    [
+        "id", "object_id", "revision", "status", "path", "content_hash", "parent_id",
+        "knowledge_cutoff", "context_refs", "calculation_ids", "metadata", "created_at",
+    ],
+    additional_properties=True,
+)
+THESIS_VALIDATION_SCHEMA = object_schema(
+    {
+        "status": {
+            "type": "string",
+            "enum": ["research_only", "eligible_for_bounded_action", "eligible_for_decision"],
+        },
+        "validation_type": {"type": "string", "const": "thesis"},
+        "subject": O,
+        "thesis_revision_id": S,
+        "evidence_manifest_ids": SA,
+        "independent_source_count": I,
+        "non_predictive_evidence_count": I,
+        "checks": O,
+        "failures": SA,
+        "eligible_for_bounded_action": B,
+        "automatic_decision_or_execution": {"type": "boolean", "const": False},
+        "calculation_id": S,
+    },
+    [
+        "status", "validation_type", "subject", "thesis_revision_id", "evidence_manifest_ids",
+        "independent_source_count", "non_predictive_evidence_count", "checks", "failures",
+        "eligible_for_bounded_action", "automatic_decision_or_execution", "calculation_id",
+    ],
+    additional_properties=True,
+)
+RESEARCH_PUBLISH_INPUT_SCHEMA = object_schema(
+    {
+        "subject": O,
+        "content": S,
+        "evidence_manifest_ids": {"type": "array", "items": S, "minItems": 1, "uniqueItems": True},
+        "knowledge_cutoff": S,
+        "validation_spec": O,
+    },
+    ["subject", "content", "evidence_manifest_ids", "knowledge_cutoff"],
+)
+RESEARCH_PUBLISH_OUTPUT_SCHEMA = object_schema(
+    {
+        "thesis": THESIS_SCHEMA,
+        "revision": THESIS_REVISION_SCHEMA,
+        "validation": {**THESIS_VALIDATION_SCHEMA, "type": ["object", "null"]},
+    },
+    ["thesis", "revision", "validation"],
+)
+
+
 @dataclass(frozen=True)
 class CapabilityContract:
     description: str
@@ -647,6 +1211,7 @@ class CapabilityContract:
     errors: tuple[str, ...]
     invariants: tuple[str, ...]
     operations: Mapping[str, dict[str, Any]] | None = None
+    actor_aware: bool = False
 
 
 CAPABILITY_CONTRACTS: dict[str, CapabilityContract] = {
@@ -683,6 +1248,41 @@ CAPABILITY_CONTRACTS: dict[str, CapabilityContract] = {
         ("capability.input.invalid", "capability.output.invalid"),
         (TRANSACTION_CONFIRMATION_INVARIANT, RECONCILIATION_INVARIANT, CONTINUITY_INVARIANT),
         TRANSACTION_OPERATIONS,
+    ),
+    "research_context": CapabilityContract(
+        RESEARCH_CONTEXT_DESCRIPTION,
+        "investment.research_context",
+        RESEARCH_CONTEXT_INPUT_SCHEMA,
+        RESEARCH_CONTEXT_OUTPUT_SCHEMA,
+        ("capability.input.invalid", "capability.output.invalid"),
+        (RESEARCH_BOUNDARY_INVARIANT,),
+    ),
+    "investment_opportunity_update": CapabilityContract(
+        OPPORTUNITY_UPDATE_DESCRIPTION,
+        "investment_commands.opportunity_update",
+        OPPORTUNITY_UPDATE_INPUT_SCHEMA,
+        OPPORTUNITY_UPDATE_OUTPUT_SCHEMA,
+        ("capability.input.invalid", "capability.output.invalid"),
+        (RESEARCH_BOUNDARY_INVARIANT, RESEARCH_WORK_INVARIANT),
+        OPPORTUNITY_OPERATIONS,
+        actor_aware=True,
+    ),
+    "investment_evidence_update": CapabilityContract(
+        EVIDENCE_UPDATE_DESCRIPTION,
+        "investment_commands.evidence_update",
+        EVIDENCE_UPDATE_INPUT_SCHEMA,
+        EVIDENCE_UPDATE_OUTPUT_SCHEMA,
+        ("capability.input.invalid", "capability.output.invalid"),
+        (RESEARCH_BOUNDARY_INVARIANT,),
+        EVIDENCE_OPERATIONS,
+    ),
+    "investment_research_publish": CapabilityContract(
+        RESEARCH_PUBLISH_DESCRIPTION,
+        "investment_commands.research_publish",
+        RESEARCH_PUBLISH_INPUT_SCHEMA,
+        RESEARCH_PUBLISH_OUTPUT_SCHEMA,
+        ("capability.input.invalid", "capability.output.invalid"),
+        (RESEARCH_BOUNDARY_INVARIANT,),
     ),
 }
 CONTRACTED_CAPABILITY_NAMES = frozenset(CAPABILITY_CONTRACTS)
@@ -725,7 +1325,6 @@ class CapabilityRegistry:
         *,
         actor: str,
     ) -> Any:
-        del actor
         contract = CAPABILITY_CONTRACTS.get(name)
         if contract is None:
             from ..foundation import CompanionError
@@ -741,7 +1340,11 @@ class CapabilityRegistry:
         handler: Any = companion
         for segment in contract.handler.split("."):
             handler = getattr(handler, segment)
-        result = handler(**arguments)
+        result = (
+            handler(**arguments, actor=actor)
+            if contract.actor_aware
+            else handler(**arguments)
+        )
         output_schema = contract.output_schema
         if contract.operations is not None:
             operation = arguments.get("operation")
