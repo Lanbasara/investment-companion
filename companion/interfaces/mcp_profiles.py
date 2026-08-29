@@ -33,10 +33,6 @@ UNCONTRACTED_INVESTMENT_TOOLS = {
         "读取客观绩效、复盘和待验证的变更提案。",
         schema({"limit": I}),
     ),
-    "investment_program_context": (
-        "读取当前或历史投资计划及其不可变版本。",
-        schema({"program_id": S, "status": S}),
-    ),
     "investment_workflow_context": (
         "读取主动日历、运行历史和结果交付状态。",
         schema(
@@ -57,29 +53,6 @@ UNCONTRACTED_INVESTMENT_TOOLS = {
                 "limit": I,
             },
             ["view"],
-        ),
-    ),
-    "investment_program_update": (
-        "创建、修订、确认、暂停、恢复或归档投资计划；确认需要用户批准引用。",
-        schema(
-            {
-                "operation": {
-                    "type": "string", "enum": ["create", "revise", "confirm", "status"]
-                },
-                "name": S,
-                "content": O,
-                "context_refs": O,
-                "reason": S,
-                "expires_at": S,
-                "program_id": S,
-                "expected_version": I,
-                "revision_id": S,
-                "user_approval_ref": S,
-                "trial": {"type": "boolean"},
-                "supersedes_program_id": S,
-                "status": {"type": "string", "enum": ["active", "paused", "archived"]},
-            },
-            ["operation"],
         ),
     ),
     "investment_execution_update": (
@@ -240,33 +213,6 @@ UNCONTRACTED_INVESTMENT_TOOLS = {
             ["subject", "content", "conclusion", "calculation_ids", "source_refs"],
         ),
     ),
-    "investment_brief_update": (
-        "发布日周月简报、记录实际呈现，并计算过程指标或发布可追溯记分卡。",
-        schema(
-            {
-                "operation": {
-                    "type": "string",
-                    "enum": ["publish", "presented", "metrics_calculate", "scorecard_publish"],
-                },
-                "brief_type": S,
-                "period_key": S,
-                "as_of": S,
-                "conclusion": S,
-                "payload": O,
-                "source_refs": A,
-                "idempotency_key": S,
-                "program_id": S,
-                "brief_id": S,
-                "attention_decision_id": S,
-                "period_start": S,
-                "period_end": S,
-                "metrics": {"type": "array", "items": O},
-                "comparisons": {"type": "array", "items": O},
-                "caveats": A,
-            },
-            ["operation"],
-        ),
-    ),
 }
 
 INVESTMENT_CAPABILITY_REGISTRY = investment_capability_registry(
@@ -294,18 +240,9 @@ def call_investment(companion, name: str, arguments: dict[str, Any], actor: str)
         )
     if name == "evaluation_context":
         return companion.investment.evaluation_context(**arguments)
-    if name == "investment_program_context":
-        return companion.investment.program_context(**arguments)
     if name == "investment_workflow_context":
         return companion.investment.workflow_context(**arguments)
     commands = companion.investment_commands
-    if name == "investment_program_update":
-        operation = arguments["operation"]
-        return commands.program_update(
-            operation=operation,
-            actor=actor,
-            **{key: value for key, value in arguments.items() if key != "operation"},
-        )
     if name == "investment_execution_update":
         operation = arguments["operation"]
         return commands.execution_update(
@@ -330,11 +267,4 @@ def call_investment(companion, name: str, arguments: dict[str, Any], actor: str)
         return commands.performance_calculate(**arguments)
     if name == "investment_review_publish":
         return commands.review_publish(**arguments)
-    if name == "investment_brief_update":
-        operation = arguments["operation"]
-        return commands.brief_update(
-            operation=operation,
-            actor=actor,
-            **{key: value for key, value in arguments.items() if key != "operation"},
-        )
     raise CompanionError(f"unimplemented investment tool: {name}")

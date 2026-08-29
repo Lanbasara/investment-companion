@@ -69,8 +69,8 @@ class InvestmentCommandService:
                 {"revision_id", "user_approval_ref", "trial", "supersedes_program_id"},
             ),
             "status": (
-                {"program_id", "status", "reason"},
-                {"program_id", "status", "reason"},
+                {"program_id", "expected_version", "status", "reason"},
+                {"program_id", "expected_version", "status", "reason"},
             ),
         }
         if operation not in contracts:

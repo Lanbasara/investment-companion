@@ -98,7 +98,10 @@ class InvestmentOperatingSystem(PortfolioDecisionService):
             if item["state"] in {"ready", "presented", "snoozed", "accepted"}
         ]
         if conclusion == "no_action" and (queue_items or active_queue):
-            raise CompanionError("no_action brief conflicts with an active DecisionQueue item")
+            raise CompanionError(
+                "investment_brief.unresolved_obligations: no_action brief conflicts "
+                "with an active DecisionQueue item"
+            )
         if conclusion != "action" and queue_items:
             raise CompanionError("only an action brief may reference DecisionQueue items")
         execution_snapshot = self.c.briefing.freeze_for_brief(program_id=program["id"], brief_type=brief_type, as_of=as_of)
@@ -138,14 +141,20 @@ class InvestmentOperatingSystem(PortfolioDecisionService):
                     (program["id"], iso()),
                 ).fetchone()
                 if conflict:
-                    raise CompanionError("no_action brief conflicts with an active DecisionQueue item")
+                    raise CompanionError(
+                        "investment_brief.unresolved_obligations: no_action brief "
+                        "conflicts with an active DecisionQueue item"
+                    )
                 unfinished = con.execute(
                     "SELECT id FROM research_work_items WHERE program_id=? "
                     "AND status IN ('queued','leased','waiting','monitoring') LIMIT 1",
                     (program["id"],),
                 ).fetchone()
                 if unfinished:
-                    raise CompanionError("no_action brief conflicts with unfinished research work")
+                    raise CompanionError(
+                        "investment_brief.unresolved_obligations: no_action brief "
+                        "conflicts with unfinished research work"
+                    )
             if conclusion == "action":
                 for queue_item in queue_items:
                     current = con.execute(
@@ -257,7 +266,10 @@ class InvestmentOperatingSystem(PortfolioDecisionService):
     @staticmethod
     def _resolve_output_path(outputs: Any, path: str) -> Any:
         if not isinstance(path, str) or not path.startswith("outputs."):
-            raise CompanionError("scorecard output_path must start with outputs.")
+            raise CompanionError(
+                "investment_brief.calculation_lineage_required: scorecard "
+                "output_path must start with outputs."
+            )
         value = outputs
         for part in path.split(".")[1:]:
             if isinstance(value, dict) and part in value:
@@ -265,9 +277,15 @@ class InvestmentOperatingSystem(PortfolioDecisionService):
             elif isinstance(value, list) and part.isdigit() and int(part) < len(value):
                 value = value[int(part)]
             else:
-                raise CompanionError(f"scorecard output_path not found: {path}")
+                raise CompanionError(
+                    "investment_brief.calculation_lineage_required: scorecard "
+                    f"output_path not found: {path}"
+                )
         if isinstance(value, (dict, list)):
-            raise CompanionError("scorecard metric must resolve to a scalar Calculation output")
+            raise CompanionError(
+                "investment_brief.calculation_lineage_required: scorecard metric "
+                "must resolve to a scalar Calculation output"
+            )
         return value
 
     @staticmethod
@@ -498,7 +516,15 @@ class InvestmentOperatingSystem(PortfolioDecisionService):
             if name in names:
                 raise CompanionError("scorecard metric names must be unique")
             names.add(name)
-            calculation = self.c.financial.calculation_get(metric["calculation_id"])
+            try:
+                calculation = self.c.financial.calculation_get(
+                    metric["calculation_id"]
+                )
+            except CompanionError as error:
+                raise CompanionError(
+                    "investment_brief.calculation_lineage_required: scorecard "
+                    f"Calculation is unavailable: {error}"
+                ) from error
             calculation_as_of = parse(calculation["as_of"])
             if calculation_as_of < start or calculation_as_of > end:
                 raise CompanionError("scorecard Calculation as_of must fall within the scorecard period")
