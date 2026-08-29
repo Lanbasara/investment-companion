@@ -74,6 +74,7 @@ def test_home_is_a_small_version_neutral_entrypoint(tmp_path):
         "execution",
         "research",
         "evaluation",
+        "portfolio_qualification",
         "workflow",
         "delivery",
         "claims",
@@ -89,6 +90,7 @@ def test_home_is_a_small_version_neutral_entrypoint(tmp_path):
         "incidents": [],
     }
     assert home["production_health"]["provider_digest"].startswith("sha256:")
+    assert home["portfolio_qualification"] is None
 
 
 def test_context_workbenches_compose_truth_owners_without_new_state(tmp_path):

@@ -855,6 +855,135 @@ def test_execution_lifecycle_separates_acceptance_order_report_and_confirmed_fil
     ] is False
 
 
+def test_public_ordered_execution_caps_only_its_account_portfolio_qualification(
+    tmp_path: Path,
+):
+    companion, fixture = setup_operating_system(tmp_path)
+    built = build_actionable_opportunity(companion, fixture)
+    queue = accept_action_card(companion, built)
+    checked_at = iso()
+    companion.financial.reconcile(
+        fixture["account"]["id"],
+        checked_at,
+        {
+            "cash": {"CNY": "100000"},
+            "positions": {},
+            "position_values": {},
+            "position_total_by_currency": {"CNY": "0"},
+            "total_by_currency": {"CNY": "100000"},
+        },
+        "portfolio-qualification-primary-statement",
+    )
+    execution = companion.investment_commands.execution_update(
+        operation="prepare",
+        queue_id=queue["id"],
+        idempotency_key="portfolio-qualification-open-execution",
+    )
+    companion.investment_commands.execution_update(
+        operation="order",
+        execution_id=execution["id"],
+        broker_order_ref="portfolio-qualification-broker-order",
+        ordered_at=checked_at,
+    )
+    other = companion.financial.account_create("Other account", "CNY")
+    other_opening = companion.financial.ledger_add(
+        account_id=other["id"],
+        entry_type="opening_balance",
+        occurred_at=iso(utc_now() - timedelta(days=1)),
+        amount="500",
+        currency="CNY",
+        source="portfolio-qualification-other-fixture",
+    )
+    companion.financial.ledger_confirm(other_opening["id"])
+    companion.financial.reconcile(
+        other["id"],
+        checked_at,
+        {
+            "cash": {"CNY": "500"},
+            "positions": {},
+            "position_values": {},
+            "position_total_by_currency": {"CNY": "0"},
+            "total_by_currency": {"CNY": "500"},
+        },
+        "portfolio-qualification-other-statement",
+    )
+
+    primary = companion.investment.portfolio_context(
+        account_id=fixture["account"]["id"], as_of=checked_at
+    )
+    isolated = companion.investment.portfolio_context(
+        account_id=other["id"], as_of=checked_at
+    )
+
+    assert primary["portfolio_qualification"]["level"] == "range_ready"
+    assert primary["portfolio_qualification"]["reason_codes"] == ["open_executions"]
+    assert primary["truth_freshness"]["open_execution_count"] == 1
+    assert primary["truth_freshness"]["status"] == "open_execution_preflight_required"
+    assert primary["precision_boundary"]["precise_position_advice_allowed"] is False
+    assert isolated["portfolio_qualification"]["level"] == "preflight_ready"
+    assert isolated["truth_freshness"]["open_execution_count"] == 0
+
+
+def test_active_broker_strategy_caps_account_portfolio_qualification(tmp_path: Path):
+    companion, fixture = setup_operating_system(tmp_path)
+    builder = lambda account_id, asset_id: {
+        "plan_type": "priced_buy",
+        "spec": _plan_spec("priced_buy", account_id, asset_id),
+    }
+    built = build_actionable_opportunity(companion, fixture, builder)
+    queue = accept_action_card(companion, built)
+    checked_at = iso()
+    companion.financial.reconcile(
+        fixture["account"]["id"],
+        checked_at,
+        {
+            "cash": {"CNY": "100000"},
+            "positions": {},
+            "position_values": {},
+            "position_total_by_currency": {"CNY": "0"},
+            "total_by_currency": {"CNY": "100000"},
+        },
+        "portfolio-qualification-broker-strategy-statement",
+    )
+    spec = _plan_spec(
+        "priced_buy", fixture["account"]["id"], built["asset"]["id"]
+    )
+    plan = companion.investment_commands.execution_update(
+        operation="strategy_create",
+        queue_id=queue["id"],
+        plan_type="priced_buy",
+        spec=spec,
+        valid_until=built["valid_until"],
+        idempotency_key="portfolio-qualification-broker-strategy",
+    )
+    companion.investment_commands.execution_update(
+        operation="strategy_configured",
+        plan_id=plan["id"],
+        broker_condition_ref="portfolio-qualification-condition",
+        configured_at=checked_at,
+        broker_validity_sessions=spec["validity_sessions"],
+        broker_valid_until=built["valid_until"],
+    )
+    companion.investment_commands.execution_update(
+        operation="strategy_activate",
+        plan_id=plan["id"],
+        occurred_at=checked_at,
+    )
+
+    context = companion.investment.portfolio_context(
+        account_id=fixture["account"]["id"], as_of=checked_at
+    )
+
+    assert context["portfolio_qualification"]["level"] == "range_ready"
+    assert context["portfolio_qualification"]["reason_codes"] == [
+        "active_broker_strategies"
+    ]
+    assert context["truth_freshness"]["active_broker_strategy_count"] == 1
+    assert context["truth_freshness"]["status"] == (
+        "open_execution_preflight_required"
+    )
+
+
 def test_execution_lifecycle_records_real_fill_but_marks_price_deviation(tmp_path: Path):
     companion, fixture = setup_operating_system(tmp_path)
     built = build_actionable_opportunity(companion, fixture)

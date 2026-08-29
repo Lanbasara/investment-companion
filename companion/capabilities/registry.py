@@ -70,10 +70,10 @@ WORKFLOW_WAKE_LEASE_INVARIANT = (
 DELIVERY_STATE_INVARIANT = "investment_delivery.status_is_transport_receipt/v1"
 
 HOME_DESCRIPTION = (
-    "读取今天的行动、异常、研究工作队列、绩效和交付总入口；未完成研究返回 review_required。"
+    "读取今天的行动、异常、账户基线资格、研究工作队列、绩效和交付总入口；未完成研究返回 review_required。"
 )
 PORTFOLIO_CONTEXT_DESCRIPTION = (
-    "读取 confirmed Ledger 重建的组合、待确认流水、当前个人约束、truth freshness 与精度边界。"
+    "读取 confirmed Ledger 重建的组合、账户基线 Portfolio Qualification、待确认流水和当前个人约束。"
 )
 CONTEXT_UPDATE_DESCRIPTION = (
     "草拟或确认个人事实、投资约束和注意力策略；draft 不会自动生效。"
@@ -300,6 +300,120 @@ PRODUCTION_HEALTH_SCHEMA = object_schema(
     ],
     additional_properties=True,
 )
+PORTFOLIO_QUALIFICATION_LEVEL_SCHEMA = {
+    "type": "string",
+    "enum": [
+        "unavailable",
+        "directional_only",
+        "range_ready",
+        "preflight_ready",
+    ],
+}
+PORTFOLIO_QUALIFICATION_BLOCKER_SCHEMA = object_schema(
+    {"code": S, "summary": S}, ["code", "summary"]
+)
+PORTFOLIO_QUALIFICATION_ACTION_SCHEMA = object_schema(
+    {"code": S, "summary": S}, ["code", "summary"]
+)
+PORTFOLIO_QUALIFICATION_VALIDITY_SCHEMA = object_schema(
+    {
+        "status": {"type": "string", "const": "current_at_as_of"},
+        "recalculate_on": {
+            "type": "array",
+            "items": {
+                "type": "string",
+                "enum": [
+                    "confirmed_ledger_change",
+                    "reconciliation_change",
+                    "account_continuity_change",
+                    "pending_ledger_change",
+                    "open_execution_change",
+                    "broker_strategy_change",
+                ],
+            },
+        },
+        "broker_realtime_proven": {"type": "boolean", "const": False},
+        "final_broker_preflight_required": {"type": "boolean", "const": True},
+    },
+    [
+        "status",
+        "recalculate_on",
+        "broker_realtime_proven",
+        "final_broker_preflight_required",
+    ],
+)
+PORTFOLIO_QUALIFICATION_COMMON_PROPERTIES = {
+    "calculation_id": S,
+    "level": PORTFOLIO_QUALIFICATION_LEVEL_SCHEMA,
+    "allowed_uses": SA,
+    "blockers": {
+        "type": "array",
+        "items": PORTFOLIO_QUALIFICATION_BLOCKER_SCHEMA,
+    },
+    "reason_codes": SA,
+    "required_actions": {
+        "type": "array",
+        "items": PORTFOLIO_QUALIFICATION_ACTION_SCHEMA,
+    },
+    "as_of": S,
+    "validity": PORTFOLIO_QUALIFICATION_VALIDITY_SCHEMA,
+}
+PORTFOLIO_QUALIFICATION_COMMON_REQUIRED = list(
+    PORTFOLIO_QUALIFICATION_COMMON_PROPERTIES
+)
+PORTFOLIO_QUALIFICATION_COMPACT_SCHEMA = object_schema(
+    PORTFOLIO_QUALIFICATION_COMMON_PROPERTIES,
+    PORTFOLIO_QUALIFICATION_COMMON_REQUIRED,
+)
+PORTFOLIO_QUALIFICATION_FACTS_SCHEMA = object_schema(
+    {
+        "confirmed_ledger_entry_count": I,
+        "latest_confirmed_ledger_at": {"type": ["string", "null"]},
+        "latest_reconciliation_as_of": {"type": ["string", "null"]},
+        "latest_reconciliation_status": {"type": ["string", "null"]},
+        "latest_reconciliation_full_scope_matched": B,
+        "full_scope_match_ever_established": B,
+        "reconciliation_stale": B,
+        "pending_ledger_entry_count": I,
+        "open_execution_count": I,
+        "active_broker_strategy_count": I,
+        "account_continuity_present": B,
+        "account_continuity_valid": B,
+        "broker_realtime_proven": {"type": "boolean", "const": False},
+    },
+    [
+        "confirmed_ledger_entry_count",
+        "latest_confirmed_ledger_at",
+        "latest_reconciliation_as_of",
+        "latest_reconciliation_status",
+        "latest_reconciliation_full_scope_matched",
+        "full_scope_match_ever_established",
+        "reconciliation_stale",
+        "pending_ledger_entry_count",
+        "open_execution_count",
+        "active_broker_strategy_count",
+        "account_continuity_present",
+        "account_continuity_valid",
+        "broker_realtime_proven",
+    ],
+)
+PORTFOLIO_QUALIFICATION_DETAIL_SCHEMA = object_schema(
+    {
+        **PORTFOLIO_QUALIFICATION_COMMON_PROPERTIES,
+        "account_id": S,
+        "policy_version": {
+            "type": "string",
+            "const": "portfolio-qualification-policy/v1",
+        },
+        "facts": PORTFOLIO_QUALIFICATION_FACTS_SCHEMA,
+    },
+    [
+        *PORTFOLIO_QUALIFICATION_COMMON_REQUIRED,
+        "account_id",
+        "policy_version",
+        "facts",
+    ],
+)
 HOME_OUTPUT_SCHEMA = object_schema(
     {
         "schema": S,
@@ -312,6 +426,12 @@ HOME_OUTPUT_SCHEMA = object_schema(
         "execution": {},
         "research": O,
         "evaluation": {},
+        "portfolio_qualification": {
+            "anyOf": [
+                PORTFOLIO_QUALIFICATION_COMPACT_SCHEMA,
+                {"type": "null"},
+            ]
+        },
         "workflow": O,
         "delivery": O,
         "claims": O,
@@ -328,6 +448,7 @@ HOME_OUTPUT_SCHEMA = object_schema(
         "execution",
         "research",
         "evaluation",
+        "portfolio_qualification",
         "workflow",
         "delivery",
         "claims",
@@ -526,6 +647,7 @@ PORTFOLIO_CONTEXT_OUTPUT_SCHEMA = object_schema(
         "mandate": {"type": ["object", "null"]},
         "policy": {"type": ["object", "null"]},
         "truth": {"type": "string", "const": "confirmed_ledger_replay"},
+        "portfolio_qualification": PORTFOLIO_QUALIFICATION_DETAIL_SCHEMA,
         "truth_freshness": TRUTH_FRESHNESS_SCHEMA,
         "precision_boundary": PRECISION_BOUNDARY_SCHEMA,
     },
@@ -540,6 +662,7 @@ PORTFOLIO_CONTEXT_OUTPUT_SCHEMA = object_schema(
         "mandate",
         "policy",
         "truth",
+        "portfolio_qualification",
         "truth_freshness",
         "precision_boundary",
     ],

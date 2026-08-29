@@ -203,6 +203,33 @@ def test_application_facade_composes_truth_owners_without_owning_truth():
     assert "human_manual_only" in source
 
 
+def test_portfolio_qualification_is_the_only_account_precision_fact_assembler():
+    home = (PACKAGE / "application" / "investment_home.py").read_text(
+        encoding="utf-8"
+    )
+    qualification = (PACKAGE / "portfolio_qualification.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "def _portfolio_truth_freshness(" not in home
+    assert "SELECT * FROM reconciliations" not in home
+    assert "SELECT * FROM executions" not in home
+    assert "PortfolioQualificationService" in qualification
+    for mutation in (
+        "INSERT INTO ledger_entries",
+        "UPDATE ledger_entries",
+        "INSERT INTO reconciliations",
+        "UPDATE reconciliations",
+        "INSERT INTO account_continuity_confirmations",
+        "UPDATE account_continuity_confirmations",
+        "INSERT INTO executions",
+        "UPDATE executions",
+        "INSERT INTO broker_execution_plans",
+        "UPDATE broker_execution_plans",
+    ):
+        assert mutation not in qualification
+
+
 def test_investment_program_lifecycle_is_not_hosted_by_operating_projection():
     operating = (PACKAGE / "operating.py").read_text(encoding="utf-8")
     programs = (PACKAGE / "application" / "programs.py").read_text(encoding="utf-8")

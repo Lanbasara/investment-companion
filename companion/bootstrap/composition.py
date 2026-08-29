@@ -22,6 +22,7 @@ from ..jobs import JobEngine
 from ..market_calendar import MarketCalendar
 from ..operating import InvestmentOperatingSystem
 from ..performance import PerformanceEngine
+from ..portfolio_qualification import PortfolioQualificationService
 from ..platform.job_handlers import DeterministicJobHandlers
 from ..platform.legacy_research import PredictiveResearchAdapter
 from ..quant_runtime import NativeQuantRuntime
@@ -59,6 +60,7 @@ def compose_services(companion) -> None:
     companion.actionability = ActionabilityService(companion)
     companion.execution = ExecutionLifecycleService(companion)
     companion.execution_strategy = BrokerExecutionStrategyService(companion)
+    companion.portfolio_qualification = PortfolioQualificationService(companion)
     companion.program_evaluation = ProgramEvaluationCoverage(companion)
     companion.operating = InvestmentOperatingSystem(companion)
     companion.briefing = InvestmentBriefingService(companion)
