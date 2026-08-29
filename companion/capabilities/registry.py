@@ -31,6 +31,12 @@ RISK_GATE_BOUNDARY_INVARIANT = (
 ACTION_ACCEPTANCE_INVARIANT = (
     "action_card.acceptance_never_changes_portfolio/v1"
 )
+EXECUTION_CONFIRMATION_INVARIANT = (
+    "investment_execution_update.confirmed_ledger_only_changes_portfolio/v1"
+)
+EXECUTION_RECONCILIATION_INVARIANT = (
+    "investment_execution_update.full_scope_reconciliation_required/v1"
+)
 PROGRAM_CONFIRMATION_INVARIANT = (
     "investment_program.confirmation_and_versioning_required/v1"
 )
@@ -99,6 +105,10 @@ PROGRAM_UPDATE_DESCRIPTION = (
 )
 BRIEF_UPDATE_DESCRIPTION = (
     "发布日周月 Brief、记录实际呈现、冻结过程指标或发布引用 Calculation 的 Scorecard；不会复制投资事实。"
+)
+EXECUTION_UPDATE_DESCRIPTION = (
+    "记录人工 Execution、用户报告的券商订单与成交，或管理用户在券商 App 配置的条件策略；"
+    "报告事实不会自动改变 Portfolio Ledger，只有用户确认的 Ledger Entry 会。"
 )
 WORKFLOW_CONTEXT_DESCRIPTION = (
     "读取主动 Schedule、Run、Wake 关联的 Delivery，以及通用系统与诊断状态。"
@@ -2281,6 +2291,635 @@ BRIEF_UPDATE_OUTPUT_SCHEMA = {
     ]
 }
 
+DECIMAL_INPUT_SCHEMA = {"type": ["string", "integer", "number"]}
+NULLABLE_DECIMAL_INPUT_SCHEMA = {
+    "type": ["string", "integer", "number", "null"]
+}
+MONITORING_WINDOW_INPUT_SCHEMA = {
+    "oneOf": [
+        {"type": "null"},
+        object_schema(
+            {
+                "weekdays": {
+                    "type": "array",
+                    "items": {"type": "integer", "minimum": 1, "maximum": 7},
+                    "minItems": 1,
+                    "maxItems": 7,
+                    "uniqueItems": True,
+                },
+                "start": S,
+                "end": S,
+            },
+            ["weekdays", "start", "end"],
+        ),
+    ]
+}
+CONDITION_TRIGGER_INPUT_SCHEMA = object_schema(
+    {
+        "direction": {"type": "string", "enum": ["cross_up", "cross_down"]},
+        "monitor_price": DECIMAL_INPUT_SCHEMA,
+    },
+    ["direction", "monitor_price"],
+)
+CONDITION_ORDER_INPUT_SCHEMA = object_schema(
+    {
+        "price_type": {"type": "string", "enum": ["limit", "market"]},
+        "price_instruction": {
+            "type": "string",
+            "enum": [
+                "custom", "instant", "buy_1", "buy_2", "buy_3", "buy_4",
+                "buy_5", "sell_1", "sell_2", "sell_3", "sell_4", "sell_5",
+                "exchange_market_option",
+            ],
+        },
+        "custom_price": NULLABLE_DECIMAL_INPUT_SCHEMA,
+    },
+    ["price_type", "price_instruction", "custom_price"],
+)
+HOLDING_FRACTION_INPUT_SCHEMA = object_schema(
+    {
+        "mode": {"type": "string", "const": "holding_fraction"},
+        "fraction": {"type": "string", "enum": ["1", "1/2", "1/3", "1/4"]},
+        "resolved_quantity": DECIMAL_INPUT_SCHEMA,
+        "holding_quantity_at_configuration": DECIMAL_INPUT_SCHEMA,
+    },
+    [
+        "mode", "fraction", "resolved_quantity",
+        "holding_quantity_at_configuration",
+    ],
+)
+SELL_QUANTITY_INPUT_SCHEMA = {
+    "oneOf": [DECIMAL_INPUT_SCHEMA, HOLDING_FRACTION_INPUT_SCHEMA]
+}
+DELAY_CONFIRMATION_INPUT_SCHEMA = object_schema(
+    {
+        "mode": {"type": "string", "enum": ["consecutive", "cumulative"]},
+        "count": {"type": "integer", "minimum": 2, "maximum": 20},
+    },
+    ["mode", "count"],
+)
+BRACKET_DELAY_CONFIRMATION_INPUT_SCHEMA = object_schema(
+    {
+        **DELAY_CONFIRMATION_INPUT_SCHEMA["properties"],
+        "separate_take_profit_stop_loss_counters": {
+            "type": "boolean",
+            "const": True,
+        },
+    },
+    ["mode", "count", "separate_take_profit_stop_loss_counters"],
+)
+BOUNDARY_INPUT_SCHEMA = object_schema(
+    {
+        "mode": {"type": "string", "enum": ["price", "percentage"]},
+        "value": DECIMAL_INPUT_SCHEMA,
+    },
+    ["mode", "value"],
+)
+GRID_PRICE_RANGE_INPUT_SCHEMA = object_schema(
+    {
+        "lower": DECIMAL_INPUT_SCHEMA,
+        "upper": DECIMAL_INPUT_SCHEMA,
+        "out_of_range_behavior": {
+            "type": "string",
+            "enum": ["sleep", "terminate_and_liquidate"],
+        },
+    },
+    ["lower", "upper", "out_of_range_behavior"],
+)
+GRID_POSITION_RANGE_INPUT_SCHEMA = object_schema(
+    {
+        "max_net_buy": DECIMAL_INPUT_SCHEMA,
+        "max_net_sell": DECIMAL_INPUT_SCHEMA,
+    },
+    ["max_net_buy", "max_net_sell"],
+)
+STRATEGY_COMMON_SPEC_PROPERTIES = {
+    "account_id": S,
+    "asset_id": S,
+    "validity_sessions": {
+        "type": "integer",
+        "enum": [5, 20, 60, 180],
+    },
+    "monitoring_window": MONITORING_WINDOW_INPUT_SCHEMA,
+}
+STRATEGY_COMMON_SPEC_REQUIRED = [
+    "account_id", "asset_id", "validity_sessions", "monitoring_window",
+]
+
+
+def priced_strategy_spec_input_schema(*, allow_fraction: bool) -> dict[str, Any]:
+    return object_schema(
+        {
+            **STRATEGY_COMMON_SPEC_PROPERTIES,
+            "trigger": CONDITION_TRIGGER_INPUT_SCHEMA,
+            "order": CONDITION_ORDER_INPUT_SCHEMA,
+            "quantity": (
+                SELL_QUANTITY_INPUT_SCHEMA
+                if allow_fraction
+                else DECIMAL_INPUT_SCHEMA
+            ),
+            "effective_trigger_band_pct": DECIMAL_INPUT_SCHEMA,
+            "delay_confirmation": DELAY_CONFIRMATION_INPUT_SCHEMA,
+        },
+        [*STRATEGY_COMMON_SPEC_REQUIRED, "trigger", "order", "quantity"],
+    )
+
+
+BRACKET_STRATEGY_SPEC_INPUT_SCHEMA = object_schema(
+    {
+        **STRATEGY_COMMON_SPEC_PROPERTIES,
+        "base_price": DECIMAL_INPUT_SCHEMA,
+        "take_profit": BOUNDARY_INPUT_SCHEMA,
+        "stop_loss": BOUNDARY_INPUT_SCHEMA,
+        "order": CONDITION_ORDER_INPUT_SCHEMA,
+        "quantity": SELL_QUANTITY_INPUT_SCHEMA,
+        "effective_trigger_band_pct": DECIMAL_INPUT_SCHEMA,
+        "delay_confirmation": BRACKET_DELAY_CONFIRMATION_INPUT_SCHEMA,
+    },
+    [
+        *STRATEGY_COMMON_SPEC_REQUIRED, "base_price", "take_profit",
+        "stop_loss", "order", "quantity",
+    ],
+)
+GRID_STRATEGY_SPEC_INPUT_SCHEMA = object_schema(
+    {
+        **STRATEGY_COMMON_SPEC_PROPERTIES,
+        "initial_reference_price": DECIMAL_INPUT_SCHEMA,
+        "spacing_type": {"type": "string", "enum": ["difference", "percentage"]},
+        "rise_sell_spacing": DECIMAL_INPUT_SCHEMA,
+        "fall_buy_spacing": DECIMAL_INPUT_SCHEMA,
+        "sell_order": CONDITION_ORDER_INPUT_SCHEMA,
+        "buy_order": CONDITION_ORDER_INPUT_SCHEMA,
+        "sell_quantity": DECIMAL_INPUT_SCHEMA,
+        "buy_quantity": DECIMAL_INPUT_SCHEMA,
+        "price_range": GRID_PRICE_RANGE_INPUT_SCHEMA,
+        "position_range": GRID_POSITION_RANGE_INPUT_SCHEMA,
+        "multiple_grid_order": B,
+    },
+    [
+        *STRATEGY_COMMON_SPEC_REQUIRED, "initial_reference_price",
+        "spacing_type", "rise_sell_spacing", "fall_buy_spacing", "sell_order",
+        "buy_order", "sell_quantity", "buy_quantity", "price_range",
+        "position_range", "multiple_grid_order",
+    ],
+)
+STRATEGY_SPEC_INPUT_SCHEMAS = {
+    "priced_buy": priced_strategy_spec_input_schema(allow_fraction=False),
+    "priced_sell": priced_strategy_spec_input_schema(allow_fraction=True),
+    "bracket_exit": BRACKET_STRATEGY_SPEC_INPUT_SCHEMA,
+    "moving_grid": GRID_STRATEGY_SPEC_INPUT_SCHEMA,
+}
+
+EXECUTION_SCHEMA = object_schema(
+    {
+        "id": S,
+        "decision_id": {"type": ["string", "null"]},
+        "decision_revision_id": {"type": ["string", "null"]},
+        "status": {
+            "type": "string",
+            "enum": [
+                "proposed", "presented", "accepted", "rejected", "ordered",
+                "partially_filled", "filled", "cancelled", "expired",
+                "superseded", "deviated",
+            ],
+        },
+        "details": O,
+        "ledger_entry_ids": SA,
+        "idempotency_key": {"type": ["string", "null"]},
+        "status_reason": {"type": ["string", "null"]},
+        "created_at": S,
+        "updated_at": S,
+    },
+    [
+        "id", "status", "details", "ledger_entry_ids", "idempotency_key",
+        "created_at", "updated_at",
+    ],
+    additional_properties=True,
+)
+REPORTED_FILL_OUTPUT_SCHEMA = object_schema(
+    {
+        "execution": EXECUTION_SCHEMA,
+        "pending_ledger_entry": PENDING_LEDGER_ENTRY_SCHEMA,
+        "portfolio_changed": {"type": "boolean", "const": False},
+        "requires_confirmation": {"type": "boolean", "const": True},
+    },
+    [
+        "execution", "pending_ledger_entry", "portfolio_changed",
+        "requires_confirmation",
+    ],
+)
+CONFIRMED_FILL_OUTPUT_SCHEMA = object_schema(
+    {
+        "execution": EXECUTION_SCHEMA,
+        "confirmed_ledger_entry": CONFIRMED_LEDGER_ENTRY_SCHEMA,
+        "portfolio": PORTFOLIO_STATE_SCHEMA,
+        "portfolio_changed": {"type": "boolean", "const": True},
+        "truth": {"type": "string", "const": "confirmed_ledger_replay"},
+    },
+    [
+        "execution", "confirmed_ledger_entry", "portfolio",
+        "portfolio_changed", "truth",
+    ],
+)
+
+PLAN_STATUS_SCHEMA = {
+    "type": "string",
+    "enum": [
+        "draft", "presented", "accepted", "configured", "active", "sleeping",
+        "termination_pending", "terminated", "reconciled", "exception",
+        "expired", "cancelled",
+    ],
+}
+ORDER_STATUS_SCHEMA = {
+    "type": "string",
+    "enum": [
+        "triggered", "submitted", "partially_filled", "filled", "cancelled",
+        "rejected", "unknown",
+    ],
+}
+BROKER_VALIDITY_OUTPUT_SCHEMA = object_schema(
+    {
+        "sessions": {"type": "integer", "enum": [5, 20, 60, 180]},
+        "valid_until": S,
+        "broker_condition_ref": NULLABLE_STRING,
+        "configured_at": NULLABLE_STRING,
+    },
+    ["sessions", "valid_until", "broker_condition_ref", "configured_at"],
+)
+BROKER_ORDER_SCHEMA = object_schema(
+    {
+        "id": S,
+        "plan_id": S,
+        "broker_order_ref": S,
+        "execution_id": NULLABLE_STRING,
+        "condition_leg": {"type": ["string", "null"]},
+        "execution_link_state": {
+            "type": "string",
+            "enum": ["pending", "linked", "not_applicable"],
+        },
+        "side": {"type": "string", "enum": ["buy", "sell"]},
+        "status": ORDER_STATUS_SCHEMA,
+        "quantity_text": S,
+        "submitted_quantity_text": S,
+        "cancelled_quantity_text": S,
+        "trigger_price_text": NULLABLE_STRING,
+        "reference_price_before_text": NULLABLE_STRING,
+        "reference_price_after_text": NULLABLE_STRING,
+        "reference_update_reason": NULLABLE_STRING,
+        "triggered_at": S,
+        "updated_at": S,
+    },
+    [
+        "id", "plan_id", "broker_order_ref", "execution_id", "condition_leg",
+        "execution_link_state", "side", "status", "quantity_text",
+        "submitted_quantity_text", "cancelled_quantity_text",
+        "trigger_price_text", "reference_price_before_text",
+        "reference_price_after_text", "reference_update_reason", "triggered_at",
+        "updated_at",
+    ],
+    additional_properties=True,
+)
+BROKER_EVENT_SCHEMA = object_schema(
+    {
+        "id": S,
+        "plan_id": S,
+        "order_id": NULLABLE_STRING,
+        "event_type": {
+            "type": "string",
+            "enum": [
+                "configured", "activated", "sleep_entered", "sleep_exited",
+                "triggered", "order_status", "reference_updated",
+                "termination_requested", "terminated", "corporate_action",
+                "reconciled", "exception", "correction",
+            ],
+        },
+        "occurred_at": S,
+        "payload": O,
+        "idempotency_key": S,
+        "created_at": S,
+    },
+    [
+        "id", "plan_id", "order_id", "event_type", "occurred_at", "payload",
+        "idempotency_key", "created_at",
+    ],
+    additional_properties=True,
+)
+NET_QUANTITIES_SCHEMA = object_schema(
+    {
+        "submitted_buy_less_cancelled_buy": S,
+        "submitted_sell_less_cancelled_sell": S,
+        "net_buy": S,
+        "net_sell": S,
+        "portfolio_truth": {
+            "type": "string",
+            "const": "confirmed Ledger fills only",
+        },
+    },
+    [
+        "submitted_buy_less_cancelled_buy",
+        "submitted_sell_less_cancelled_sell",
+        "net_buy",
+        "net_sell",
+        "portfolio_truth",
+    ],
+)
+RECONCILIATION_REFERENCE_SCHEMA = {
+    "type": ["object", "null"],
+    "properties": {"reconciliation_id": S, "occurred_at": S},
+    "required": ["reconciliation_id", "occurred_at"],
+    "additionalProperties": False,
+}
+BROKER_PLAN_PROPERTIES = {
+    "id": S,
+    "program_id": S,
+    "queue_id": S,
+    "decision_revision_id": S,
+    "broker": {"type": "string", "const": "cicc_wealth"},
+    "plan_type": {
+        "type": "string",
+        "enum": ["priced_buy", "priced_sell", "bracket_exit", "moving_grid"],
+    },
+    "account_id": S,
+    "asset_id": S,
+    "spec": O,
+    "semantics_version": S,
+    "status": PLAN_STATUS_SCHEMA,
+    "broker_condition_ref": NULLABLE_STRING,
+    "valid_until": S,
+    "content_hash": S,
+    "idempotency_key": S,
+    "status_reason": NULLABLE_STRING,
+    "configured_at": NULLABLE_STRING,
+    "terminated_at": NULLABLE_STRING,
+    "current_reference_price_text": NULLABLE_STRING,
+    "buy_direction_state": {"type": "string", "enum": ["active", "sleeping"]},
+    "sell_direction_state": {"type": "string", "enum": ["active", "sleeping"]},
+    "created_at": S,
+    "updated_at": S,
+    "broker_validity": BROKER_VALIDITY_OUTPUT_SCHEMA,
+}
+BROKER_PLAN_REQUIRED = list(BROKER_PLAN_PROPERTIES)
+BROKER_PLAN_SUMMARY_SCHEMA = object_schema(
+    BROKER_PLAN_PROPERTIES,
+    BROKER_PLAN_REQUIRED,
+    additional_properties=True,
+)
+BROKER_PLAN_DETAIL_SCHEMA = object_schema(
+    {
+        **BROKER_PLAN_PROPERTIES,
+        "orders": {"type": "array", "items": BROKER_ORDER_SCHEMA},
+        "events": {"type": "array", "items": BROKER_EVENT_SCHEMA},
+        "net_quantities": NET_QUANTITIES_SCHEMA,
+        "outstanding_orders": {"type": "array", "items": BROKER_ORDER_SCHEMA},
+        "reported_execution_ids": {
+            "type": "array",
+            "items": S,
+            "uniqueItems": True,
+        },
+        "reconciliation": RECONCILIATION_REFERENCE_SCHEMA,
+    },
+    [
+        *BROKER_PLAN_REQUIRED, "orders", "events", "net_quantities",
+        "outstanding_orders", "reported_execution_ids", "reconciliation",
+    ],
+    additional_properties=True,
+)
+BROKER_ORDER_REPORT_OUTPUT_SCHEMA = object_schema(
+    {
+        **BROKER_PLAN_DETAIL_SCHEMA["properties"],
+        "reported_order_execution_id": NULLABLE_STRING,
+    },
+    [*BROKER_PLAN_DETAIL_SCHEMA["required"], "reported_order_execution_id"],
+    additional_properties=True,
+)
+RECONCILED_BROKER_PLAN_OUTPUT_SCHEMA = object_schema(
+    {
+        **BROKER_PLAN_DETAIL_SCHEMA["properties"],
+        "status": {"type": "string", "const": "reconciled"},
+        "reconciliation": object_schema(
+            {"reconciliation_id": S, "occurred_at": S},
+            ["reconciliation_id", "occurred_at"],
+        ),
+    },
+    BROKER_PLAN_DETAIL_SCHEMA["required"],
+    additional_properties=True,
+)
+
+
+def strategy_create_input_schema(plan_type: str) -> dict[str, Any]:
+    return operation_schema(
+        "strategy_create",
+        {
+            "queue_id": S,
+            "plan_type": {"type": "string", "const": plan_type},
+            "spec": STRATEGY_SPEC_INPUT_SCHEMAS[plan_type],
+            "valid_until": S,
+            "idempotency_key": S,
+        },
+        ["queue_id", "plan_type", "spec", "valid_until", "idempotency_key"],
+    )
+
+
+STRATEGY_ORDER_COMMON_PROPERTIES = {
+    "plan_id": S,
+    "broker_order_ref": S,
+    "side": {"type": "string", "enum": ["buy", "sell"]},
+    "quantity": DECIMAL_INPUT_SCHEMA,
+    "triggered_at": S,
+    "trigger_price": DECIMAL_INPUT_SCHEMA,
+    "reference_price_before": DECIMAL_INPUT_SCHEMA,
+    "reference_price_after": DECIMAL_INPUT_SCHEMA,
+    "rejection_reason": S,
+    "cancelled_quantity": DECIMAL_INPUT_SCHEMA,
+    "condition_leg": {
+        "type": "string",
+        "enum": ["take_profit", "stop_loss"],
+    },
+}
+
+
+def strategy_order_input_schema(status: str) -> dict[str, Any]:
+    required = [
+        "plan_id", "broker_order_ref", "side", "quantity", "status",
+        "triggered_at",
+    ]
+    if status in {"partially_filled", "cancelled"}:
+        required.append("cancelled_quantity")
+    if status == "rejected":
+        required.append("rejection_reason")
+    return operation_schema(
+        "strategy_order_report",
+        {
+            **STRATEGY_ORDER_COMMON_PROPERTIES,
+            "status": {"type": "string", "const": status},
+        },
+        required,
+    )
+
+
+EXECUTION_OPERATIONS = {
+    "prepare": {
+        "input_schema": operation_schema(
+            "prepare", {"queue_id": S, "idempotency_key": S},
+            ["queue_id", "idempotency_key"],
+        ),
+        "output_schema": EXECUTION_SCHEMA,
+    },
+    "order": {
+        "input_schema": operation_schema(
+            "order",
+            {"execution_id": S, "broker_order_ref": S, "ordered_at": S},
+            ["execution_id", "broker_order_ref", "ordered_at"],
+        ),
+        "output_schema": EXECUTION_SCHEMA,
+    },
+    "report_fill": {
+        "input_schema": operation_schema(
+            "report_fill",
+            {
+                "execution_id": S,
+                "occurred_at": S,
+                "quantity": DECIMAL_INPUT_SCHEMA,
+                "price": DECIMAL_INPUT_SCHEMA,
+                "fee": DECIMAL_INPUT_SCHEMA,
+                "source": S,
+                "external_id": S,
+                "settled_at": S,
+                "final": B,
+            },
+            ["execution_id", "occurred_at", "quantity", "price", "fee", "source"],
+        ),
+        "output_schema": REPORTED_FILL_OUTPUT_SCHEMA,
+    },
+    "confirm_fill": {
+        "input_schema": operation_schema(
+            "confirm_fill",
+            {"execution_id": S, "entry_id": S, "final": B},
+            ["execution_id", "entry_id", "final"],
+        ),
+        "output_schema": CONFIRMED_FILL_OUTPUT_SCHEMA,
+    },
+    "cancel": {
+        "input_schema": operation_schema(
+            "cancel", {"execution_id": S, "reason": S},
+            ["execution_id", "reason"],
+        ),
+        "output_schema": EXECUTION_SCHEMA,
+    },
+    "strategy_create": {
+        "input_schema": {
+            "oneOf": [
+                strategy_create_input_schema(plan_type)
+                for plan_type in sorted(STRATEGY_SPEC_INPUT_SCHEMAS)
+            ]
+        },
+        "output_schema": BROKER_PLAN_DETAIL_SCHEMA,
+    },
+    "strategy_configured": {
+        "input_schema": operation_schema(
+            "strategy_configured",
+            {
+                "plan_id": S,
+                "broker_condition_ref": S,
+                "configured_at": S,
+                "broker_validity_sessions": {
+                    "type": "integer",
+                    "enum": [5, 20, 60, 180],
+                },
+                "broker_valid_until": S,
+            },
+            [
+                "plan_id", "broker_condition_ref", "configured_at",
+                "broker_validity_sessions", "broker_valid_until",
+            ],
+        ),
+        "output_schema": BROKER_PLAN_DETAIL_SCHEMA,
+    },
+    "strategy_activate": {
+        "input_schema": operation_schema(
+            "strategy_activate", {"plan_id": S, "occurred_at": S},
+            ["plan_id", "occurred_at"],
+        ),
+        "output_schema": BROKER_PLAN_DETAIL_SCHEMA,
+    },
+    "strategy_order_report": {
+        "input_schema": {
+            "oneOf": [
+                strategy_order_input_schema(status)
+                for status in (
+                    "triggered", "submitted", "partially_filled", "filled",
+                    "cancelled", "rejected", "unknown",
+                )
+            ]
+        },
+        "output_schema": BROKER_ORDER_REPORT_OUTPUT_SCHEMA,
+    },
+    "strategy_terminate_request": {
+        "input_schema": operation_schema(
+            "strategy_terminate_request",
+            {"plan_id": S, "occurred_at": S, "reason": S},
+            ["plan_id", "occurred_at", "reason"],
+        ),
+        "output_schema": BROKER_PLAN_DETAIL_SCHEMA,
+    },
+    "strategy_terminated": {
+        "input_schema": operation_schema(
+            "strategy_terminated",
+            {"plan_id": S, "occurred_at": S, "reason": S},
+            ["plan_id", "occurred_at", "reason"],
+        ),
+        "output_schema": BROKER_PLAN_DETAIL_SCHEMA,
+    },
+    "strategy_etf_dividend": {
+        "input_schema": operation_schema(
+            "strategy_etf_dividend",
+            {"plan_id": S, "occurred_at": S, "corporate_action_ref": S},
+            ["plan_id", "occurred_at", "corporate_action_ref"],
+        ),
+        "output_schema": BROKER_PLAN_DETAIL_SCHEMA,
+    },
+    "strategy_sleep": {
+        "input_schema": operation_schema(
+            "strategy_sleep",
+            {
+                "plan_id": S,
+                "direction": {"type": "string", "enum": ["buy", "sell"]},
+                "sleeping": B,
+                "occurred_at": S,
+                "reason": S,
+            },
+            ["plan_id", "direction", "sleeping", "occurred_at", "reason"],
+        ),
+        "output_schema": BROKER_PLAN_DETAIL_SCHEMA,
+    },
+    "strategy_exception": {
+        "input_schema": operation_schema(
+            "strategy_exception",
+            {"plan_id": S, "occurred_at": S, "reason": S},
+            ["plan_id", "occurred_at", "reason"],
+        ),
+        "output_schema": BROKER_PLAN_DETAIL_SCHEMA,
+    },
+    "strategy_reconcile": {
+        "input_schema": operation_schema(
+            "strategy_reconcile",
+            {"plan_id": S, "occurred_at": S, "reconciliation_id": S},
+            ["plan_id", "occurred_at", "reconciliation_id"],
+        ),
+        "output_schema": RECONCILED_BROKER_PLAN_OUTPUT_SCHEMA,
+    },
+}
+EXECUTION_UPDATE_INPUT_SCHEMA = operation_union(EXECUTION_OPERATIONS)
+EXECUTION_UPDATE_OUTPUT_SCHEMA = {
+    "oneOf": [
+        EXECUTION_SCHEMA,
+        REPORTED_FILL_OUTPUT_SCHEMA,
+        CONFIRMED_FILL_OUTPUT_SCHEMA,
+        BROKER_PLAN_DETAIL_SCHEMA,
+        BROKER_ORDER_REPORT_OUTPUT_SCHEMA,
+    ]
+}
+
 SCHEDULE_SCHEMA = object_schema(
     {
         "id": S,
@@ -2608,6 +3247,23 @@ WORKFLOW_CONTEXT_OPERATIONS = {
     "doctor": {
         "input_schema": variant_schema("view", "doctor", {}, []),
         "output_schema": DOCTOR_SCHEMA,
+    },
+    "execution_strategies": {
+        "input_schema": variant_schema(
+            "view", "execution_strategies",
+            {
+                "status": PLAN_STATUS_SCHEMA,
+                "limit": {"type": "integer", "minimum": 1, "maximum": 500},
+            },
+            [],
+        ),
+        "output_schema": {"type": "array", "items": BROKER_PLAN_SUMMARY_SCHEMA},
+    },
+    "execution_strategy": {
+        "input_schema": variant_schema(
+            "view", "execution_strategy", {"plan_id": S}, ["plan_id"]
+        ),
+        "output_schema": BROKER_PLAN_DETAIL_SCHEMA,
     },
 }
 WORKFLOW_CONTEXT_INPUT_SCHEMA = operation_union(WORKFLOW_CONTEXT_OPERATIONS)
@@ -3100,6 +3756,26 @@ CAPABILITY_CONTRACTS: dict[str, CapabilityContract] = {
         BRIEF_OPERATIONS,
         actor_aware=True,
     ),
+    "investment_execution_update": CapabilityContract(
+        EXECUTION_UPDATE_DESCRIPTION,
+        "investment_commands.execution_update",
+        EXECUTION_UPDATE_INPUT_SCHEMA,
+        EXECUTION_UPDATE_OUTPUT_SCHEMA,
+        (
+            "capability.input.invalid",
+            "capability.output.invalid",
+            "investment_execution.state_conflict",
+            "investment_execution.idempotency_conflict",
+            "investment_execution.reconciliation_required",
+        ),
+        (
+            ACTION_ACCEPTANCE_INVARIANT,
+            EXECUTION_CONFIRMATION_INVARIANT,
+            EXECUTION_RECONCILIATION_INVARIANT,
+        ),
+        EXECUTION_OPERATIONS,
+        actor_aware=True,
+    ),
     "investment_workflow_context": CapabilityContract(
         WORKFLOW_CONTEXT_DESCRIPTION,
         "investment.workflow_context",
@@ -3109,9 +3785,6 @@ CAPABILITY_CONTRACTS: dict[str, CapabilityContract] = {
         (WORKFLOW_RUN_DELIVERY_INVARIANT, DELIVERY_STATE_INVARIANT),
         WORKFLOW_CONTEXT_OPERATIONS,
         variant_selectors=("view",),
-        pending_variants={
-            "view": ("execution_strategies", "execution_strategy"),
-        },
     ),
     "investment_workflow_update": CapabilityContract(
         WORKFLOW_UPDATE_DESCRIPTION,

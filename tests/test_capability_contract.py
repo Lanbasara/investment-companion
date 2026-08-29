@@ -24,7 +24,7 @@ from companion.core import Companion, CompanionError
 from companion.interfaces.mcp_profiles import INVESTMENT_TOOLS
 
 
-def test_provider_manifest_contracts_personal_finance_research_decision_and_program_workflows():
+def test_provider_manifest_contracts_personal_finance_research_decision_program_and_execution_workflows():
     registry = investment_capability_registry(INVESTMENT_TOOLS)
 
     first = registry.provider_manifest()
@@ -61,6 +61,7 @@ def test_provider_manifest_contracts_personal_finance_research_decision_and_prog
         "investment_program_context",
         "investment_program_update",
         "investment_brief_update",
+        "investment_execution_update",
         "investment_workflow_context",
         "investment_workflow_update",
         "investment_delivery_update",
@@ -191,19 +192,52 @@ def test_provider_manifest_contracts_personal_finance_research_decision_and_prog
         for variant in brief_update["input_schema"]["oneOf"]
         if variant["properties"]["operation"]["const"] == "publish"
     } == {"daily", "weekly", "monthly"}
+    execution_update = first.document["capabilities"]["investment_execution_update"]
+    assert execution_update["handler"] == "investment_commands.execution_update"
+    assert set(execution_update["operations"]) == {
+        "prepare", "order", "report_fill", "confirm_fill", "cancel",
+        "strategy_create", "strategy_configured", "strategy_activate",
+        "strategy_order_report", "strategy_terminate_request",
+        "strategy_terminated", "strategy_etf_dividend", "strategy_sleep",
+        "strategy_exception", "strategy_reconcile",
+    }
+    execution_variants = execution_update["input_schema"]["oneOf"]
+    assert {
+        variant["properties"]["operation"]["const"]
+        for variant in execution_variants
+    } == set(execution_update["operations"])
+    assert {
+        variant["properties"]["plan_type"]["const"]
+        for variant in execution_variants
+        if variant["properties"]["operation"]["const"] == "strategy_create"
+    } == {"priced_buy", "priced_sell", "bracket_exit", "moving_grid"}
+    assert all(
+        variant["additionalProperties"] is False
+        for variant in execution_variants
+    )
+    assert {
+        "investment_execution_update.confirmed_ledger_only_changes_portfolio/v1",
+        "investment_execution_update.full_scope_reconciliation_required/v1",
+    } <= set(execution_update["invariants"])
     workflow_context = first.document["capabilities"]["investment_workflow_context"]
     assert workflow_context["handler"] == "investment.workflow_context"
     assert set(workflow_context["operations"]) == {
         "schedules", "schedule", "schedule_history", "runs", "run",
         "deliveries", "delivery", "delivery_status", "system_status", "doctor",
+        "execution_strategies", "execution_strategy",
     }
-    assert workflow_context["pending_variants"] == {
-        "view": ["execution_strategies", "execution_strategy"]
-    }
+    assert "pending_variants" not in workflow_context
     assert {
         variant["properties"]["view"]["const"]
         for variant in workflow_context["input_schema"]["oneOf"]
     } == set(workflow_context["operations"])
+    execution_strategy_view = workflow_context["operations"]["execution_strategy"]
+    assert execution_strategy_view["input_schema"]["required"] == ["view", "plan_id"]
+    assert "run_id" not in execution_strategy_view["input_schema"]["properties"]
+    assert {
+        "plan_type", "broker_validity", "outstanding_orders",
+        "reported_execution_ids", "reconciliation",
+    } <= set(execution_strategy_view["output_schema"]["required"])
     workflow_update = first.document["capabilities"]["investment_workflow_update"]
     assert workflow_update["handler"] == "investment_commands.workflow_update"
     assert set(workflow_update["operations"]) == {
@@ -745,6 +779,7 @@ def test_registry_rejects_incomplete_program_and_brief_variants(
             "investment_workflow_context",
             {"view": "execution_strategy", "run_id": "plan_1"},
         ),
+        ("investment_workflow_context", {"view": "execution_strategy"}),
         (
             "investment_workflow_update",
             {
@@ -810,6 +845,73 @@ def test_registry_rejects_incomplete_workflow_and_delivery_variants(
         registry.invoke(SimpleNamespace(), capability, arguments, actor="test")
 
 
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"operation": "prepare", "queue_id": "queue_1"},
+        {
+            "operation": "report_fill",
+            "execution_id": "exe_1",
+            "occurred_at": "2026-08-29T00:00:00Z",
+            "quantity": "40",
+            "price": "10",
+            "fee": "1",
+        },
+        {
+            "operation": "confirm_fill",
+            "execution_id": "exe_1",
+            "entry_id": "ledger_1",
+        },
+        {
+            "operation": "strategy_create",
+            "queue_id": "queue_1",
+            "plan_type": "future_plan",
+            "spec": {},
+            "valid_until": "2026-09-29T00:00:00Z",
+            "idempotency_key": "plan-key",
+        },
+        {
+            "operation": "strategy_configured",
+            "plan_id": "plan_1",
+            "broker_condition_ref": "broker_1",
+            "configured_at": "2026-08-29T00:00:00Z",
+            "broker_validity_sessions": 10,
+            "broker_valid_until": "2026-09-29T00:00:00Z",
+        },
+        {
+            "operation": "strategy_sleep",
+            "plan_id": "plan_1",
+            "direction": "both",
+            "sleeping": True,
+            "occurred_at": "2026-08-29T00:00:00Z",
+            "reason": "invalid whole-plan sleep",
+        },
+        {
+            "operation": "strategy_reconcile",
+            "plan_id": "plan_1",
+            "occurred_at": "2026-08-29T00:00:00Z",
+        },
+        {
+            "operation": "order",
+            "execution_id": "exe_1",
+            "broker_order_ref": "broker_1",
+            "ordered_at": "2026-08-29T00:00:00Z",
+            "plan_id": "cross-variant-field",
+        },
+    ],
+)
+def test_registry_rejects_incomplete_or_ambiguous_execution_variants(arguments):
+    registry = investment_capability_registry(INVESTMENT_TOOLS)
+
+    with pytest.raises(CompanionError, match="capability.input.invalid"):
+        registry.invoke(
+            SimpleNamespace(),
+            "investment_execution_update",
+            arguments,
+            actor="test",
+        )
+
+
 def test_platform_health_uses_an_injected_registry_without_interface_dependency(
     tmp_path,
 ):
@@ -858,6 +960,10 @@ def test_real_investment_mcp_profile_captures_home_production_health_drift(tmp_p
         "decision.research_validation_is_not_decision/v1",
         "investment_action_plan.risk_gate_is_veto_not_thesis/v1",
         "action_card.acceptance_never_changes_portfolio/v1",
+        "investment_execution_update.confirmed_ledger_only_changes_portfolio/v1",
+        "investment_execution_update.full_scope_reconciliation_required/v1",
+        "mcp.execution-strategy.grid-reports/v1",
+        "mcp.tools-list.execution-update-variants",
         "mcp.tools-list.decision-publish-variants",
         "mcp.tools-list.action-plan-variants",
         "mcp.tools-list.action-update-variants",
@@ -1083,6 +1189,20 @@ def test_runtime_health_scopes_workflow_requirement_drift_to_affected_workflow(
                 "errors": [],
                 "invariants": [],
             },
+            "investment_execution_update": {
+                "level": "workflow_required",
+                "workflows": ["manage-investment-lifecycle"],
+                "rationale": "The lifecycle workflow records manual Execution facts.",
+                "input_schema": deepcopy(
+                    provider.document["capabilities"]["investment_execution_update"][
+                        "input_schema"
+                    ]
+                ),
+                "required_outputs": [],
+                "required_operations": {},
+                "errors": [],
+                "invariants": [],
+            },
         },
     }
     validation = validate_compatibility(provider.document, requirements)
@@ -1104,9 +1224,9 @@ def test_runtime_health_scopes_workflow_requirement_drift_to_affected_workflow(
         plugin_identity="plugin-test",
     )
     drifted = deepcopy(requirements)
-    drifted["capabilities"]["investment_workflow_update"][
+    drifted["capabilities"]["investment_execution_update"][
         "required_operations"
-    ] = {"future_schedule_replace": {"required_outputs": []}}
+    ] = {"future_execution_replace": {"required_outputs": []}}
     requirements_path = tmp_path / "requirements.json"
     requirements_path.write_text(json.dumps(drifted), encoding="utf-8")
     monkeypatch.setenv("COMPANION_PLUGIN_REQUIREMENTS", str(requirements_path))
@@ -1117,13 +1237,16 @@ def test_runtime_health_scopes_workflow_requirement_drift_to_affected_workflow(
 
     assert summary["ok"] is False
     assert summary["baseline"]["status"] == "degraded"
-    assert summary["workflows"]["manage-investment-companion"]["status"] == (
+    assert summary["workflows"]["manage-investment-lifecycle"]["status"] == (
         "degraded"
+    )
+    assert summary["workflows"]["manage-investment-companion"]["status"] == (
+        "compatible"
     )
     assert summary["workflows"]["research-investment"]["status"] == "compatible"
     assert {
         incident["code"]
-        for incident in summary["workflows"]["manage-investment-companion"][
+        for incident in summary["workflows"]["manage-investment-lifecycle"][
             "incidents"
         ]
     } == {"missing_operation"}
