@@ -61,6 +61,9 @@ def test_provider_manifest_contracts_personal_finance_research_decision_and_prog
         "investment_program_context",
         "investment_program_update",
         "investment_brief_update",
+        "investment_workflow_context",
+        "investment_workflow_update",
+        "investment_delivery_update",
     }
     assert {
         name for name, capability in first.document["capabilities"].items()
@@ -188,6 +191,43 @@ def test_provider_manifest_contracts_personal_finance_research_decision_and_prog
         for variant in brief_update["input_schema"]["oneOf"]
         if variant["properties"]["operation"]["const"] == "publish"
     } == {"daily", "weekly", "monthly"}
+    workflow_context = first.document["capabilities"]["investment_workflow_context"]
+    assert workflow_context["handler"] == "investment.workflow_context"
+    assert set(workflow_context["operations"]) == {
+        "schedules", "schedule", "schedule_history", "runs", "run",
+        "deliveries", "delivery", "delivery_status", "system_status", "doctor",
+    }
+    assert workflow_context["pending_variants"] == {
+        "view": ["execution_strategies", "execution_strategy"]
+    }
+    assert {
+        variant["properties"]["view"]["const"]
+        for variant in workflow_context["input_schema"]["oneOf"]
+    } == set(workflow_context["operations"])
+    workflow_update = first.document["capabilities"]["investment_workflow_update"]
+    assert workflow_update["handler"] == "investment_commands.workflow_update"
+    assert set(workflow_update["operations"]) == {
+        "schedule_create", "schedule_patch", "schedule_status",
+        "schedule_run_now", "run_complete", "run_cancel", "wake_claim",
+        "wake_complete",
+    }
+    workflow_variants = workflow_update["input_schema"]["oneOf"]
+    assert {
+        variant["properties"]["status"]["const"]
+        for variant in workflow_variants
+        if variant["properties"]["operation"]["const"] == "schedule_status"
+    } == {"active", "paused", "archived"}
+    assert all(
+        "expected_version" in variant["required"]
+        for variant in workflow_variants
+        if variant["properties"]["operation"]["const"] == "schedule_status"
+    )
+    delivery_update = first.document["capabilities"]["investment_delivery_update"]
+    assert delivery_update["handler"] == "investment_commands.delivery_update"
+    assert set(delivery_update["operations"]) == {
+        "prepare", "digest_send", "attention_decide", "attention_delivered",
+        "attention_feedback",
+    }
     for capability_name in (
         "decision_context",
         "investment_decision_publish",
@@ -697,6 +737,79 @@ def test_registry_rejects_incomplete_program_and_brief_variants(
         registry.invoke(SimpleNamespace(), capability, arguments, actor="test")
 
 
+@pytest.mark.parametrize(
+    ("capability", "arguments"),
+    [
+        ("investment_workflow_context", {"view": "schedule"}),
+        (
+            "investment_workflow_context",
+            {"view": "execution_strategy", "run_id": "plan_1"},
+        ),
+        (
+            "investment_workflow_update",
+            {
+                "operation": "schedule_status",
+                "schedule_id": "schedule_1",
+                "status": "paused",
+            },
+        ),
+        (
+            "investment_workflow_update",
+            {"operation": "wake_claim", "owner": "worker", "lease_seconds": 30},
+        ),
+        (
+            "investment_workflow_update",
+            {"operation": "run_complete", "run_id": "run_1", "success": False},
+        ),
+        (
+            "investment_workflow_update",
+            {
+                "operation": "wake_complete",
+                "outbox_id": "outbox_1",
+                "owner": "worker",
+                "success": False,
+            },
+        ),
+        (
+            "investment_delivery_update",
+            {
+                "operation": "prepare",
+                "delivery_id": "delivery_1",
+                "conclusion": "no_action",
+                "summary": "missing next step",
+                "key_evidence": [],
+            },
+        ),
+        (
+            "investment_delivery_update",
+            {
+                "operation": "digest_send",
+                "delivery_ids": ["delivery_1", "delivery_1"],
+                "conclusion": "no_action",
+                "summary": "duplicate records",
+                "key_evidence": [],
+                "next_step": "wait",
+            },
+        ),
+        (
+            "investment_delivery_update",
+            {
+                "operation": "attention_feedback",
+                "attention_decision_id": "attention_1",
+                "feedback": "silently_change_policy",
+            },
+        ),
+    ],
+)
+def test_registry_rejects_incomplete_workflow_and_delivery_variants(
+    capability, arguments
+):
+    registry = investment_capability_registry(INVESTMENT_TOOLS)
+
+    with pytest.raises(CompanionError, match="capability.input.invalid"):
+        registry.invoke(SimpleNamespace(), capability, arguments, actor="test")
+
+
 def test_platform_health_uses_an_injected_registry_without_interface_dependency(
     tmp_path,
 ):
@@ -756,6 +869,13 @@ def test_real_investment_mcp_profile_captures_home_production_health_drift(tmp_p
         "mcp.tools-list.program-context",
         "mcp.tools-list.program-update-variants",
         "mcp.tools-list.brief-update-variants",
+        "mcp.tools-list.workflow-context-variants",
+        "mcp.tools-list.workflow-update-variants",
+        "mcp.tools-list.delivery-update-variants",
+        "investment_workflow.schedule_mutations_require_current_version/v1",
+        "investment_workflow.wake_lease_is_exclusive/v1",
+        "investment_workflow.run_success_is_not_delivery/v1",
+        "investment_delivery.status_is_transport_receipt/v1",
     }
     assert negative["passed"] is False
     assert negative["failures"] == [{
@@ -843,6 +963,15 @@ def test_real_investment_mcp_profile_captures_home_production_health_drift(tmp_p
     assert program_brief["brief"]["scorecard"]["metrics"][0][
         "calculation_id"
     ] == program_brief["brief"]["metrics"]["calculation_id"]
+    workflow = observation["workflow_delivery"]
+    assert workflow["schedule"]["resumed"]["version"] == 4
+    assert workflow["required"]["completed"]["status"] == "succeeded"
+    assert workflow["required"]["delivery_after_run"]["status"] == "pending_send"
+    assert workflow["recoverable"]["run_after_failure"]["status"] == "recoverable"
+    assert workflow["digest"]["prepared"]["status"] == "queued_digest"
+    assert workflow["digest"]["sent"][0]["status"] == "pending_send"
+    assert workflow["terminal_runs"]["failed"]["status"] == "failed"
+    assert workflow["terminal_runs"]["cancelled"]["status"] == "cancelled"
 
 
 def test_contract_digest_normalizes_set_like_array_order():
@@ -915,6 +1044,89 @@ def test_optional_enhancement_failure_does_not_degrade_required_scopes(
     assert summary["workflows"]["investment_home"]["status"] == "compatible"
     assert summary["optional_enhancements"]["missing_optional"]["status"] == "degraded"
     assert summary["receipt_digest"] == receipt["digest"]
+
+
+def test_runtime_health_scopes_workflow_requirement_drift_to_affected_workflow(
+    tmp_path, monkeypatch
+):
+    registry = investment_capability_registry(INVESTMENT_TOOLS)
+    provider = registry.provider_manifest()
+    requirements = {
+        "format": "investment-companion.capability-requirements/v1",
+        "consumer": "investment-companion-plugin",
+        "capabilities": {
+            "investment_workflow_update": {
+                "level": "workflow_required",
+                "workflows": ["manage-investment-companion"],
+                "rationale": "The companion workflow mutates versioned schedules.",
+                "input_schema": deepcopy(
+                    provider.document["capabilities"]["investment_workflow_update"][
+                        "input_schema"
+                    ]
+                ),
+                "required_outputs": [],
+                "required_operations": {},
+                "errors": [],
+                "invariants": [],
+            },
+            "research_context": {
+                "level": "workflow_required",
+                "workflows": ["research-investment"],
+                "rationale": "Research remains independently readable.",
+                "input_schema": deepcopy(
+                    provider.document["capabilities"]["research_context"][
+                        "input_schema"
+                    ]
+                ),
+                "required_outputs": [],
+                "required_operations": {},
+                "errors": [],
+                "invariants": [],
+            },
+        },
+    }
+    validation = validate_compatibility(provider.document, requirements)
+    state_dir = tmp_path / ".state" / "capability-contract"
+    issue_compatibility_receipt(
+        state_dir=state_dir,
+        environment="non_production",
+        provider=provider.document,
+        requirements=requirements,
+        validation=validation,
+        conformance={
+            "passed": True,
+            "profile": "investment",
+            "checks": [],
+            "failures": [],
+        },
+        mcp_profile="investment",
+        core_identity="core-test",
+        plugin_identity="plugin-test",
+    )
+    drifted = deepcopy(requirements)
+    drifted["capabilities"]["investment_workflow_update"][
+        "required_operations"
+    ] = {"future_schedule_replace": {"required_outputs": []}}
+    requirements_path = tmp_path / "requirements.json"
+    requirements_path.write_text(json.dumps(drifted), encoding="utf-8")
+    monkeypatch.setenv("COMPANION_PLUGIN_REQUIREMENTS", str(requirements_path))
+    monkeypatch.setenv("COMPANION_CAPABILITY_RECEIPT_DIR", str(state_dir))
+    monkeypatch.setenv("COMPANION_MCP_PROFILE", "investment")
+
+    summary = compatibility_summary(registry, tmp_path, "test_fixture")
+
+    assert summary["ok"] is False
+    assert summary["baseline"]["status"] == "degraded"
+    assert summary["workflows"]["manage-investment-companion"]["status"] == (
+        "degraded"
+    )
+    assert summary["workflows"]["research-investment"]["status"] == "compatible"
+    assert {
+        incident["code"]
+        for incident in summary["workflows"]["manage-investment-companion"][
+            "incidents"
+        ]
+    } == {"missing_operation"}
 
 
 def test_non_production_receipt_is_content_addressed_and_production_is_blocked(tmp_path):

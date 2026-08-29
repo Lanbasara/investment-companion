@@ -330,8 +330,8 @@ class InvestmentCommandService:
                 {"schedule_id", "expected_version", "changes", "reason"},
             ),
             "schedule_status": (
-                {"schedule_id", "status"},
-                {"schedule_id", "status", "reason"},
+                {"schedule_id", "expected_version", "status"},
+                {"schedule_id", "expected_version", "status", "reason"},
             ),
             "schedule_run_now": ({"schedule_id"}, {"schedule_id"}),
             "run_complete": ({"run_id", "success"}, {"run_id", "success", "error"}),
@@ -360,7 +360,8 @@ class InvestmentCommandService:
             if payload["status"] not in {"active", "paused", "archived"}:
                 raise CompanionError("schedule status must be active, paused or archived")
             return self.c.schedule_set_status(
-                payload["schedule_id"], payload["status"], actor, payload.get("reason")
+                payload["schedule_id"], payload["status"], actor, payload.get("reason"),
+                expected_version=payload["expected_version"],
             )
         if operation == "schedule_run_now":
             return self.c.schedule_run_now(payload["schedule_id"], actor)

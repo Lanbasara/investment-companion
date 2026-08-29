@@ -33,28 +33,6 @@ UNCONTRACTED_INVESTMENT_TOOLS = {
         "读取客观绩效、复盘和待验证的变更提案。",
         schema({"limit": I}),
     ),
-    "investment_workflow_context": (
-        "读取主动日历、运行历史和结果交付状态。",
-        schema(
-            {
-                "view": {
-                    "type": "string",
-                    "enum": [
-                        "schedules", "schedule", "schedule_history", "runs", "run",
-                        "deliveries", "delivery", "delivery_status", "system_status", "doctor",
-                    ],
-                },
-                "schedule_id": S,
-                "run_id": S,
-                "delivery_id": S,
-                "status": S,
-                "kind": S,
-                "mode": S,
-                "limit": I,
-            },
-            ["view"],
-        ),
-    ),
     "investment_execution_update": (
         "管理人工执行和券商托管条件单：一次性委托、定价买卖、止盈止损与网格均需用户在券商配置并回报状态，不会自动改变组合。",
         schema(
@@ -100,79 +78,6 @@ UNCONTRACTED_INVESTMENT_TOOLS = {
                 "direction": {"type":"string","enum":["buy","sell"]},
                 "reconciliation_id": S,
                 "corrected_event_ref": S,
-            },
-            ["operation"],
-        ),
-    ),
-    "investment_workflow_update": (
-        "创建或修改主动日历、完成运行，并安全领取或结束唤醒信封。",
-        schema(
-            {
-                "operation": {
-                    "type": "string",
-                    "enum": [
-                        "schedule_create", "schedule_patch", "schedule_status",
-                        "schedule_run_now", "run_complete", "run_cancel", "wake_claim",
-                        "wake_complete",
-                    ],
-                },
-                "name": S,
-                "kind": S,
-                "mission": S,
-                "cadence": O,
-                "scope": O,
-                "policy": O,
-                "origin": O,
-                "timezone": S,
-                "dispatch_type": S,
-                "job_definition_id": S,
-                "schedule_id": S,
-                "expected_version": I,
-                "changes": O,
-                "status": S,
-                "reason": S,
-                "run_id": S,
-                "success": {"type": "boolean"},
-                "error": S,
-                "owner": S,
-                "lease_seconds": I,
-                "outbox_id": S,
-            },
-            ["operation"],
-        ),
-    ),
-    "investment_delivery_update": (
-        "冻结或摘要发送任务结果，并记录通知门控、送达和反馈。",
-        schema(
-            {
-                "operation": {
-                    "type": "string",
-                    "enum": [
-                        "prepare", "digest_send", "attention_decide",
-                        "attention_delivered", "attention_feedback",
-                    ],
-                },
-                "delivery_id": S,
-                "delivery_ids": A,
-                "conclusion": {
-                    "type": "string",
-                    "enum": ["no_action", "action", "risk_action", "review_required", "insufficient_evidence", "system_degraded"],
-                },
-                "summary": S,
-                "key_evidence": A,
-                "next_step": S,
-                "next_check_at": S,
-                "source_refs": A,
-                "topic": S,
-                "materiality": S,
-                "confidence": S,
-                "reason": S,
-                "event_id": S,
-                "evidence": {"type": "array"},
-                "requested_action": S,
-                "attention_decision_id": S,
-                "feedback": S,
-                "note": S,
             },
             ["operation"],
         ),
@@ -240,27 +145,12 @@ def call_investment(companion, name: str, arguments: dict[str, Any], actor: str)
         )
     if name == "evaluation_context":
         return companion.investment.evaluation_context(**arguments)
-    if name == "investment_workflow_context":
-        return companion.investment.workflow_context(**arguments)
     commands = companion.investment_commands
     if name == "investment_execution_update":
         operation = arguments["operation"]
         return commands.execution_update(
             operation=operation,
             actor=actor,
-            **{key: value for key, value in arguments.items() if key != "operation"},
-        )
-    if name == "investment_workflow_update":
-        operation = arguments["operation"]
-        return commands.workflow_update(
-            operation=operation,
-            actor=actor,
-            **{key: value for key, value in arguments.items() if key != "operation"},
-        )
-    if name == "investment_delivery_update":
-        operation = arguments["operation"]
-        return commands.delivery_update(
-            operation=operation,
             **{key: value for key, value in arguments.items() if key != "operation"},
         )
     if name == "investment_performance_calculate":

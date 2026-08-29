@@ -43,6 +43,16 @@ BRIEF_NO_ACTION_INVARIANT = (
 BRIEF_PROJECTION_INVARIANT = (
     "investment_brief.references_calculations_without_owning_truth/v1"
 )
+WORKFLOW_RUN_DELIVERY_INVARIANT = (
+    "investment_workflow.run_success_is_not_delivery/v1"
+)
+WORKFLOW_VERSION_INVARIANT = (
+    "investment_workflow.schedule_mutations_require_current_version/v1"
+)
+WORKFLOW_WAKE_LEASE_INVARIANT = (
+    "investment_workflow.wake_lease_is_exclusive/v1"
+)
+DELIVERY_STATE_INVARIANT = "investment_delivery.status_is_transport_receipt/v1"
 
 HOME_DESCRIPTION = (
     "读取今天的行动、异常、研究工作队列、绩效和交付总入口；未完成研究返回 review_required。"
@@ -89,6 +99,15 @@ PROGRAM_UPDATE_DESCRIPTION = (
 )
 BRIEF_UPDATE_DESCRIPTION = (
     "发布日周月 Brief、记录实际呈现、冻结过程指标或发布引用 Calculation 的 Scorecard；不会复制投资事实。"
+)
+WORKFLOW_CONTEXT_DESCRIPTION = (
+    "读取主动 Schedule、Run、Wake 关联的 Delivery，以及通用系统与诊断状态。"
+)
+WORKFLOW_UPDATE_DESCRIPTION = (
+    "创建或按当前版本修改 Schedule，立即运行或结束 Run，并以独占租约领取和完成 Wake。"
+)
+DELIVERY_UPDATE_DESCRIPTION = (
+    "冻结必报结果或摘要并记录 Attention 决定、实际送达与用户反馈；Run 成功不代表已送达。"
 )
 
 SET_LIKE_ARRAY_KEYS = {
@@ -168,6 +187,21 @@ def operation_union(operations: Mapping[str, dict[str, Any]]) -> dict[str, Any]:
         schema = operations[name]["input_schema"]
         variants.extend(schema.get("oneOf", [schema]))
     return {"oneOf": variants}
+
+
+def variant_schema(
+    selector: str,
+    value: str,
+    properties: dict[str, Any],
+    required: list[str],
+) -> dict[str, Any]:
+    return object_schema(
+        {
+            selector: {"type": "string", "const": value},
+            **properties,
+        },
+        [selector, *required],
+    )
 
 
 S = {"type": "string"}
@@ -2247,6 +2281,651 @@ BRIEF_UPDATE_OUTPUT_SCHEMA = {
     ]
 }
 
+SCHEDULE_SCHEMA = object_schema(
+    {
+        "id": S,
+        "name": S,
+        "kind": {
+            "type": "string",
+            "enum": ["patrol", "review", "maintenance", "one_shot"],
+        },
+        "status": {
+            "type": "string",
+            "enum": ["active", "paused", "archived", "expired"],
+        },
+        "mission": S,
+        "scope": O,
+        "cadence": O,
+        "policy": O,
+        "origin": O,
+        "timezone": S,
+        "next_run_at": NULLABLE_STRING,
+        "last_run_at": NULLABLE_STRING,
+        "last_success_at": NULLABLE_STRING,
+        "last_error": NULLABLE_STRING,
+        "version": I,
+        "created_at": S,
+        "updated_at": S,
+        "dispatch_type": {
+            "type": "string",
+            "enum": ["codex_turn", "deterministic_pipeline"],
+        },
+        "job_definition_id": NULLABLE_STRING,
+    },
+    [
+        "id", "name", "kind", "status", "mission", "scope", "cadence",
+        "policy", "origin", "timezone", "next_run_at", "version",
+        "created_at", "updated_at", "dispatch_type", "job_definition_id",
+    ],
+    additional_properties=True,
+)
+RUN_SCHEMA = object_schema(
+    {
+        "id": S,
+        "schedule_id": NULLABLE_STRING,
+        "kind": S,
+        "status": {
+            "type": "string",
+            "enum": [
+                "queued", "leased", "succeeded", "failed", "cancelled",
+                "recoverable",
+            ],
+        },
+        "due_at": S,
+        "idempotency_key": S,
+        "payload": O,
+        "attempt": I,
+        "lease_owner": NULLABLE_STRING,
+        "lease_until": NULLABLE_STRING,
+        "started_at": NULLABLE_STRING,
+        "finished_at": NULLABLE_STRING,
+        "error": NULLABLE_STRING,
+        "created_at": S,
+        "dispatch_type": {
+            "type": "string",
+            "enum": ["codex_turn", "deterministic_pipeline"],
+        },
+        "job_run_id": NULLABLE_STRING,
+    },
+    [
+        "id", "schedule_id", "kind", "status", "due_at", "idempotency_key",
+        "payload", "attempt", "lease_owner", "lease_until", "started_at",
+        "finished_at", "error", "created_at", "dispatch_type", "job_run_id",
+    ],
+    additional_properties=True,
+)
+DELIVERY_RESULT_SCHEMA = object_schema(
+    {
+        "schema": {
+            "type": "string",
+            "const": "investment-companion.result-envelope/v1",
+        },
+        "conclusion": {
+            "type": "string",
+            "enum": [
+                "no_action", "action", "risk_action", "review_required",
+                "insufficient_evidence", "system_degraded",
+            ],
+        },
+        "summary": S,
+        "key_evidence": {"type": "array", "items": S, "maxItems": 3},
+        "next_step": S,
+        "next_check_at": NULLABLE_STRING,
+        "source_refs": SA,
+    },
+    [
+        "schema", "conclusion", "summary", "key_evidence", "next_step",
+        "next_check_at", "source_refs",
+    ],
+    additional_properties=True,
+)
+DELIVERY_RECORD_SCHEMA = object_schema(
+    {
+        "id": S,
+        "run_id": S,
+        "mode": {
+            "type": "string",
+            "enum": [
+                "silent_allowed", "digest_required", "report_required",
+                "action_required",
+            ],
+        },
+        "status": {
+            "type": "string",
+            "enum": [
+                "pending_content", "queued_digest", "pending_send", "sending",
+                "delivered", "retry", "failed", "suppressed",
+            ],
+        },
+        "destination": S,
+        "result": O,
+        "content_hash": NULLABLE_STRING,
+        "outbox_id": NULLABLE_STRING,
+        "attention_decision_id": NULLABLE_STRING,
+        "idempotency_key": S,
+        "due_at": NULLABLE_STRING,
+        "available_at": NULLABLE_STRING,
+        "delivered_at": NULLABLE_STRING,
+        "last_error": NULLABLE_STRING,
+        "created_at": S,
+        "updated_at": S,
+    },
+    [
+        "id", "run_id", "mode", "status", "destination", "result",
+        "content_hash", "outbox_id", "attention_decision_id",
+        "idempotency_key", "due_at", "available_at", "delivered_at",
+        "last_error", "created_at", "updated_at",
+    ],
+    additional_properties=True,
+)
+ACTIVE_SCHEDULE_SCHEMA = object_schema(
+    {
+        **SCHEDULE_SCHEMA["properties"],
+        "status": {"type": "string", "const": "active"},
+    },
+    SCHEDULE_SCHEMA["required"],
+    additional_properties=True,
+)
+MUTATED_SCHEDULE_SCHEMA = object_schema(
+    {
+        **SCHEDULE_SCHEMA["properties"],
+        "status": {
+            "type": "string", "enum": ["active", "paused", "archived"],
+        },
+    },
+    SCHEDULE_SCHEMA["required"],
+    additional_properties=True,
+)
+COMPLETED_RUN_SCHEMA = object_schema(
+    {
+        **RUN_SCHEMA["properties"],
+        "status": {"type": "string", "enum": ["succeeded", "failed"]},
+    },
+    RUN_SCHEMA["required"],
+    additional_properties=True,
+)
+CANCELLED_RUN_SCHEMA = object_schema(
+    {
+        **RUN_SCHEMA["properties"],
+        "status": {"type": "string", "const": "cancelled"},
+    },
+    RUN_SCHEMA["required"],
+    additional_properties=True,
+)
+PREPARED_DELIVERY_RECORD_SCHEMA = object_schema(
+    {
+        **DELIVERY_RECORD_SCHEMA["properties"],
+        "mode": {
+            "type": "string",
+            "enum": ["digest_required", "report_required", "action_required"],
+        },
+        "status": {
+            "type": "string",
+            "enum": [
+                "queued_digest", "pending_send", "sending", "delivered",
+                "retry", "failed",
+            ],
+        },
+    },
+    DELIVERY_RECORD_SCHEMA["required"],
+    additional_properties=True,
+)
+DELIVERY_STATUS_SCHEMA = object_schema(
+    {
+        "counts": {"type": "object", "additionalProperties": I},
+        "overdue_required": I,
+        "now": S,
+    },
+    ["counts", "overdue_required", "now"],
+    additional_properties=True,
+)
+SYSTEM_STATUS_SCHEMA = object_schema(
+    {
+        "ok": B,
+        "integrity": S,
+        "database": S,
+        "meta": O,
+        "migrations": A,
+        "feature_flags": {},
+        "counts": {"type": "object", "additionalProperties": I},
+        "failed_runs": I,
+        "pending_outbox": I,
+        "delivery": DELIVERY_STATUS_SCHEMA,
+        "now": S,
+    },
+    [
+        "ok", "integrity", "database", "meta", "migrations", "feature_flags",
+        "counts", "failed_runs", "pending_outbox", "delivery", "now",
+    ],
+    additional_properties=True,
+)
+DOCTOR_SCHEMA = object_schema(
+    {
+        "ok": B,
+        "checks": {"type": "object", "additionalProperties": B},
+        "warnings": SA,
+        "production": O,
+        "compatibility": O,
+        "status": SYSTEM_STATUS_SCHEMA,
+    },
+    ["ok", "checks", "warnings", "production", "compatibility", "status"],
+    additional_properties=True,
+)
+
+WORKFLOW_CONTEXT_OPERATIONS = {
+    "schedules": {
+        "input_schema": variant_schema(
+            "view", "schedules",
+            {
+                "status": {
+                    "type": "string",
+                    "enum": ["active", "paused", "archived", "expired"],
+                },
+                "kind": {
+                    "type": "string",
+                    "enum": ["patrol", "review", "maintenance", "one_shot"],
+                },
+            },
+            [],
+        ),
+        "output_schema": {"type": "array", "items": SCHEDULE_SCHEMA},
+    },
+    "schedule": {
+        "input_schema": variant_schema(
+            "view", "schedule", {"schedule_id": S}, ["schedule_id"]
+        ),
+        "output_schema": SCHEDULE_SCHEMA,
+    },
+    "schedule_history": {
+        "input_schema": variant_schema(
+            "view", "schedule_history",
+            {"schedule_id": S, "limit": {"type": "integer", "minimum": 1, "maximum": 100}},
+            ["schedule_id"],
+        ),
+        "output_schema": {"type": "array", "items": RUN_SCHEMA},
+    },
+    "runs": {
+        "input_schema": variant_schema(
+            "view", "runs",
+            {
+                "status": {
+                    "type": "string",
+                    "enum": [
+                        "queued", "leased", "succeeded", "failed", "cancelled",
+                        "recoverable",
+                    ],
+                },
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+            },
+            [],
+        ),
+        "output_schema": {"type": "array", "items": RUN_SCHEMA},
+    },
+    "run": {
+        "input_schema": variant_schema(
+            "view", "run", {"run_id": S}, ["run_id"]
+        ),
+        "output_schema": RUN_SCHEMA,
+    },
+    "deliveries": {
+        "input_schema": variant_schema(
+            "view", "deliveries",
+            {
+                "status": {
+                    "type": "string",
+                    "enum": [
+                        "pending_content", "queued_digest", "pending_send",
+                        "sending", "delivered", "retry", "failed", "suppressed",
+                    ],
+                },
+                "mode": {
+                    "type": "string",
+                    "enum": [
+                        "silent_allowed", "digest_required", "report_required",
+                        "action_required",
+                    ],
+                },
+                "limit": {"type": "integer", "minimum": 1, "maximum": 500},
+            },
+            [],
+        ),
+        "output_schema": {"type": "array", "items": DELIVERY_RECORD_SCHEMA},
+    },
+    "delivery": {
+        "input_schema": variant_schema(
+            "view", "delivery", {"delivery_id": S}, ["delivery_id"]
+        ),
+        "output_schema": DELIVERY_RECORD_SCHEMA,
+    },
+    "delivery_status": {
+        "input_schema": variant_schema("view", "delivery_status", {}, []),
+        "output_schema": DELIVERY_STATUS_SCHEMA,
+    },
+    "system_status": {
+        "input_schema": variant_schema("view", "system_status", {}, []),
+        "output_schema": SYSTEM_STATUS_SCHEMA,
+    },
+    "doctor": {
+        "input_schema": variant_schema("view", "doctor", {}, []),
+        "output_schema": DOCTOR_SCHEMA,
+    },
+}
+WORKFLOW_CONTEXT_INPUT_SCHEMA = operation_union(WORKFLOW_CONTEXT_OPERATIONS)
+WORKFLOW_CONTEXT_OUTPUT_SCHEMA = {
+    "oneOf": [
+        item["output_schema"] for item in WORKFLOW_CONTEXT_OPERATIONS.values()
+    ]
+}
+
+WORKFLOW_UPDATE_OPERATIONS = {
+    "schedule_create": {
+        "input_schema": operation_schema(
+            "schedule_create",
+            {
+                "name": S,
+                "kind": {
+                    "type": "string",
+                    "enum": ["patrol", "review", "maintenance", "one_shot"],
+                },
+                "mission": S,
+                "cadence": O,
+                "scope": O,
+                "policy": O,
+                "origin": O,
+                "timezone": S,
+                "dispatch_type": {
+                    "type": "string",
+                    "enum": ["codex_turn", "deterministic_pipeline"],
+                },
+                "job_definition_id": S,
+            },
+            ["name", "kind", "mission", "cadence"],
+        ),
+        "output_schema": ACTIVE_SCHEDULE_SCHEMA,
+    },
+    "schedule_patch": {
+        "input_schema": operation_schema(
+            "schedule_patch",
+            {"schedule_id": S, "expected_version": I, "changes": O, "reason": S},
+            ["schedule_id", "expected_version", "changes"],
+        ),
+        "output_schema": SCHEDULE_SCHEMA,
+    },
+    "schedule_status": {
+        "input_schema": {
+            "oneOf": [
+                operation_schema(
+                    "schedule_status",
+                    {
+                        "schedule_id": S,
+                        "expected_version": I,
+                        "status": {"type": "string", "const": status},
+                        "reason": S,
+                    },
+                    ["schedule_id", "expected_version", "status"],
+                )
+                for status in ("active", "paused", "archived")
+            ]
+        },
+        "output_schema": MUTATED_SCHEDULE_SCHEMA,
+    },
+    "schedule_run_now": {
+        "input_schema": operation_schema(
+            "schedule_run_now", {"schedule_id": S}, ["schedule_id"]
+        ),
+        "output_schema": RUN_SCHEMA,
+    },
+    "run_complete": {
+        "input_schema": {
+            "oneOf": [
+                operation_schema(
+                    "run_complete",
+                    {"run_id": S, "success": {"type": "boolean", "const": True}},
+                    ["run_id", "success"],
+                ),
+                operation_schema(
+                    "run_complete",
+                    {
+                        "run_id": S,
+                        "success": {"type": "boolean", "const": False},
+                        "error": S,
+                    },
+                    ["run_id", "success", "error"],
+                ),
+            ]
+        },
+        "output_schema": COMPLETED_RUN_SCHEMA,
+    },
+    "run_cancel": {
+        "input_schema": operation_schema(
+            "run_cancel", {"run_id": S, "reason": S}, ["run_id", "reason"]
+        ),
+        "output_schema": CANCELLED_RUN_SCHEMA,
+    },
+    "wake_claim": {
+        "input_schema": operation_schema(
+            "wake_claim",
+            {
+                "owner": S,
+                "lease_seconds": {
+                    "type": "integer", "minimum": 60, "maximum": 7200,
+                },
+            },
+            ["owner"],
+        ),
+        "output_schema": {
+            "oneOf": [
+                object_schema(
+                    {
+                        "outbox_id": S,
+                        "lease_owner": S,
+                        "lease_until": S,
+                        "envelope": object_schema(
+                            {
+                                "schema": S,
+                                "type": {
+                                    "type": "string",
+                                    "enum": [
+                                        "scheduled_run", "research_ready",
+                                        "operating_brief_ready", "legacy_codex_turn",
+                                    ],
+                                },
+                                "message": S,
+                                "payload": O,
+                                "event_id": NULLABLE_STRING,
+                                "run_id": NULLABLE_STRING,
+                                "job_run_id": NULLABLE_STRING,
+                            },
+                            ["schema", "type", "message", "payload", "event_id", "run_id", "job_run_id"],
+                            additional_properties=True,
+                        ),
+                        "run": {"oneOf": [RUN_SCHEMA, {"type": "null"}]},
+                    },
+                    ["outbox_id", "lease_owner", "lease_until", "envelope", "run"],
+                    additional_properties=True,
+                ),
+                {"type": "null"},
+            ]
+        },
+    },
+    "wake_complete": {
+        "input_schema": {
+            "oneOf": [
+                operation_schema(
+                    "wake_complete",
+                    {
+                        "outbox_id": S,
+                        "owner": S,
+                        "success": {"type": "boolean", "const": True},
+                    },
+                    ["outbox_id", "owner", "success"],
+                ),
+                operation_schema(
+                    "wake_complete",
+                    {
+                        "outbox_id": S,
+                        "owner": S,
+                        "success": {"type": "boolean", "const": False},
+                        "error": S,
+                    },
+                    ["outbox_id", "owner", "success", "error"],
+                ),
+            ]
+        },
+        "output_schema": object_schema(
+            {
+                "id": S,
+                "kind": {"type": "string", "const": "codex_turn"},
+                "status": {
+                    "type": "string",
+                    "enum": ["sent", "retry", "dead"],
+                },
+                "attempt": I,
+                "lease_owner": NULLABLE_STRING,
+                "lease_until": NULLABLE_STRING,
+                "last_error": NULLABLE_STRING,
+            },
+            ["id", "kind", "status", "attempt", "lease_owner", "lease_until", "last_error"],
+            additional_properties=True,
+        ),
+    },
+}
+WORKFLOW_UPDATE_INPUT_SCHEMA = operation_union(WORKFLOW_UPDATE_OPERATIONS)
+WORKFLOW_UPDATE_OUTPUT_SCHEMA = {
+    "oneOf": [item["output_schema"] for item in WORKFLOW_UPDATE_OPERATIONS.values()]
+}
+
+DELIVERY_ARGUMENT_PROPERTIES = {
+    "conclusion": {
+        "type": "string",
+        "enum": [
+            "no_action", "action", "risk_action", "review_required",
+            "insufficient_evidence", "system_degraded",
+        ],
+    },
+    "summary": S,
+    "key_evidence": {"type": "array", "items": S, "maxItems": 3},
+    "next_step": S,
+    "next_check_at": S,
+    "source_refs": SA,
+}
+ATTENTION_DECISION_SCHEMA = object_schema(
+    {
+        "id": S,
+        "event_id": NULLABLE_STRING,
+        "policy_revision_id": S,
+        "action": S,
+        "topic": S,
+        "materiality": S,
+        "confidence": S,
+        "reason": S,
+        "evidence": A,
+        "notification_key": S,
+        "status": S,
+        "created_at": S,
+        "delivered_at": NULLABLE_STRING,
+    },
+    [
+        "id", "event_id", "policy_revision_id", "action", "topic",
+        "materiality", "confidence", "reason", "evidence", "notification_key",
+        "status", "created_at", "delivered_at",
+    ],
+    additional_properties=True,
+)
+ATTENTION_FEEDBACK_SCHEMA = object_schema(
+    {
+        "id": S,
+        "attention_decision_id": S,
+        "feedback": {
+            "type": "string",
+            "enum": [
+                "useful", "not_useful", "false_positive", "too_late",
+                "too_frequent",
+            ],
+        },
+        "note": NULLABLE_STRING,
+        "created_at": S,
+        "policy_change": {
+            "type": "string", "enum": ["none", "proposal_required"],
+        },
+    },
+    [
+        "id", "attention_decision_id", "feedback", "note", "created_at",
+        "policy_change",
+    ],
+    additional_properties=True,
+)
+DELIVERY_UPDATE_OPERATIONS = {
+    "prepare": {
+        "input_schema": operation_schema(
+            "prepare",
+            {"delivery_id": S, **DELIVERY_ARGUMENT_PROPERTIES},
+            ["delivery_id", "conclusion", "summary", "key_evidence", "next_step"],
+        ),
+        "output_schema": PREPARED_DELIVERY_RECORD_SCHEMA,
+    },
+    "digest_send": {
+        "input_schema": operation_schema(
+            "digest_send",
+            {
+                "delivery_ids": {
+                    "type": "array", "items": S, "minItems": 1,
+                    "uniqueItems": True,
+                },
+                **DELIVERY_ARGUMENT_PROPERTIES,
+            },
+            ["delivery_ids", "conclusion", "summary", "key_evidence", "next_step"],
+        ),
+        "output_schema": {"type": "array", "items": DELIVERY_RECORD_SCHEMA},
+    },
+    "attention_decide": {
+        "input_schema": operation_schema(
+            "attention_decide",
+            {
+                "topic": S,
+                "materiality": S,
+                "confidence": S,
+                "reason": S,
+                "event_id": S,
+                "evidence": A,
+                "requested_action": S,
+            },
+            ["topic", "materiality", "confidence", "reason"],
+        ),
+        "output_schema": ATTENTION_DECISION_SCHEMA,
+    },
+    "attention_delivered": {
+        "input_schema": operation_schema(
+            "attention_delivered",
+            {"attention_decision_id": S},
+            ["attention_decision_id"],
+        ),
+        "output_schema": ATTENTION_DECISION_SCHEMA,
+    },
+    "attention_feedback": {
+        "input_schema": operation_schema(
+            "attention_feedback",
+            {
+                "attention_decision_id": S,
+                "feedback": {
+                    "type": "string",
+                    "enum": [
+                        "useful", "not_useful", "false_positive", "too_late",
+                        "too_frequent",
+                    ],
+                },
+                "note": S,
+            },
+            ["attention_decision_id", "feedback"],
+        ),
+        "output_schema": ATTENTION_FEEDBACK_SCHEMA,
+    },
+}
+DELIVERY_UPDATE_INPUT_SCHEMA = operation_union(DELIVERY_UPDATE_OPERATIONS)
+DELIVERY_UPDATE_OUTPUT_SCHEMA = {
+    "oneOf": [item["output_schema"] for item in DELIVERY_UPDATE_OPERATIONS.values()]
+}
+
 
 @dataclass(frozen=True)
 class CapabilityContract:
@@ -2260,6 +2939,7 @@ class CapabilityContract:
     actor_aware: bool = False
     variant_selectors: tuple[str, ...] = ("operation",)
     variant_aliases: Mapping[str, str] | None = None
+    pending_variants: Mapping[str, tuple[str, ...]] | None = None
 
 
 CAPABILITY_CONTRACTS: dict[str, CapabilityContract] = {
@@ -2420,6 +3100,48 @@ CAPABILITY_CONTRACTS: dict[str, CapabilityContract] = {
         BRIEF_OPERATIONS,
         actor_aware=True,
     ),
+    "investment_workflow_context": CapabilityContract(
+        WORKFLOW_CONTEXT_DESCRIPTION,
+        "investment.workflow_context",
+        WORKFLOW_CONTEXT_INPUT_SCHEMA,
+        WORKFLOW_CONTEXT_OUTPUT_SCHEMA,
+        ("capability.input.invalid", "capability.output.invalid"),
+        (WORKFLOW_RUN_DELIVERY_INVARIANT, DELIVERY_STATE_INVARIANT),
+        WORKFLOW_CONTEXT_OPERATIONS,
+        variant_selectors=("view",),
+        pending_variants={
+            "view": ("execution_strategies", "execution_strategy"),
+        },
+    ),
+    "investment_workflow_update": CapabilityContract(
+        WORKFLOW_UPDATE_DESCRIPTION,
+        "investment_commands.workflow_update",
+        WORKFLOW_UPDATE_INPUT_SCHEMA,
+        WORKFLOW_UPDATE_OUTPUT_SCHEMA,
+        (
+            "capability.input.invalid",
+            "capability.output.invalid",
+            "investment_workflow.version_conflict",
+            "investment_workflow.wake_lease_conflict",
+        ),
+        (WORKFLOW_VERSION_INVARIANT, WORKFLOW_WAKE_LEASE_INVARIANT),
+        WORKFLOW_UPDATE_OPERATIONS,
+        actor_aware=True,
+    ),
+    "investment_delivery_update": CapabilityContract(
+        DELIVERY_UPDATE_DESCRIPTION,
+        "investment_commands.delivery_update",
+        DELIVERY_UPDATE_INPUT_SCHEMA,
+        DELIVERY_UPDATE_OUTPUT_SCHEMA,
+        (
+            "capability.input.invalid",
+            "capability.output.invalid",
+            "investment_delivery.immutable",
+            "investment_delivery.state_conflict",
+        ),
+        (WORKFLOW_RUN_DELIVERY_INVARIANT, DELIVERY_STATE_INVARIANT),
+        DELIVERY_UPDATE_OPERATIONS,
+    ),
 }
 CONTRACTED_CAPABILITY_NAMES = frozenset(CAPABILITY_CONTRACTS)
 
@@ -2528,6 +3250,11 @@ class CapabilityRegistry:
                         "output_schema": schemas["output_schema"],
                     }
                     for operation, schemas in sorted(contract.operations.items())
+                }
+            if contract.pending_variants is not None:
+                capability["pending_variants"] = {
+                    selector: list(values)
+                    for selector, values in sorted(contract.pending_variants.items())
                 }
             capabilities[name] = capability
         return ProviderManifest.from_document(

@@ -90,7 +90,10 @@ class WorkflowService:
             if not before:
                 raise CompanionError(f"schedule not found: {schedule_id}")
             if before["version"] != expected_version:
-                raise CompanionError(f"version conflict: expected {expected_version}, current {before['version']}")
+                raise CompanionError(
+                    "investment_workflow.version_conflict: "
+                    f"expected {expected_version}, current {before['version']}"
+                )
             after = dict(before)
             after.update(changes)
             self._validate_dispatch(after["dispatch_type"], after.get("job_definition_id"))
@@ -100,15 +103,25 @@ class WorkflowService:
             self._audit(con, actor, "patch", "schedule", schedule_id, before, after, reason)
         return self.schedule_get(schedule_id)
 
-    def schedule_set_status(self, schedule_id: str, status: str, actor: str = "primary-codex", reason: str | None = None) -> dict[str, Any]:
+    def schedule_set_status(self, schedule_id: str, status: str, actor: str = "primary-codex", reason: str | None = None, *, expected_version: int | None = None) -> dict[str, Any]:
         if status not in {"active","paused","archived"}:
             raise CompanionError("invalid target status")
         with self.db.transaction() as con:
             before = row_dict(con.execute("SELECT * FROM schedules WHERE id=?", (schedule_id,)).fetchone())
             if not before: raise CompanionError(f"schedule not found: {schedule_id}")
+            if expected_version is not None and before["version"] != expected_version:
+                raise CompanionError(
+                    "investment_workflow.version_conflict: "
+                    f"expected {expected_version}, current {before['version']}"
+                )
             if status=="active":self._validate_schedule_policy(before.get("policy",{}))
             next_run = self._next_run(before["cadence"]) if status == "active" else before["next_run_at"]
-            con.execute("UPDATE schedules SET status=?,next_run_at=?,version=version+1,updated_at=? WHERE id=?", (status,next_run,iso(),schedule_id))
+            if expected_version is None:
+                changed = con.execute("UPDATE schedules SET status=?,next_run_at=?,version=version+1,updated_at=? WHERE id=?", (status,next_run,iso(),schedule_id)).rowcount
+            else:
+                changed = con.execute("UPDATE schedules SET status=?,next_run_at=?,version=version+1,updated_at=? WHERE id=? AND version=?", (status,next_run,iso(),schedule_id,expected_version)).rowcount
+            if changed != 1:
+                raise CompanionError("investment_workflow.version_conflict: schedule changed concurrently")
             self._audit(con, actor, status, "schedule", schedule_id, before, {**before,"status":status}, reason)
         return self.schedule_get(schedule_id)
 

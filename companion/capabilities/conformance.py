@@ -28,6 +28,10 @@ from .registry import (
     RESEARCH_WORK_INVARIANT,
     RISK_GATE_BOUNDARY_INVARIANT,
     TRANSACTION_CONFIRMATION_INVARIANT,
+    DELIVERY_STATE_INVARIANT,
+    WORKFLOW_RUN_DELIVERY_INVARIANT,
+    WORKFLOW_VERSION_INVARIANT,
+    WORKFLOW_WAKE_LEASE_INVARIANT,
 )
 
 
@@ -292,6 +296,302 @@ def probe_investment_mcp(
         tools = tools_response.get("tools", [])
         home_call = call("investment_home", {})
         initial_program_context_call = call("investment_program_context", {})
+
+        workflow_schedule_call = call(
+            "investment_workflow_update",
+            {
+                "operation": "schedule_create",
+                "name": "Synthetic required-result workflow",
+                "kind": "review",
+                "mission": "Exercise isolated Schedule, Run, Wake and Delivery state.",
+                "cadence": {"type": "interval", "seconds": 3600},
+                "policy": {"delivery_mode": "report_required"},
+            },
+        )
+        workflow_schedule = _call_result(workflow_schedule_call)
+        patched_schedule_call = call(
+            "investment_workflow_update",
+            {
+                "operation": "schedule_patch",
+                "schedule_id": workflow_schedule["id"],
+                "expected_version": workflow_schedule["version"],
+                "changes": {
+                    "mission": "Exercise current-version workflow mutations."
+                },
+                "reason": "synthetic conformance patch",
+            },
+        )
+        patched_schedule = _call_result(patched_schedule_call)
+        stale_patch_call = call(
+            "investment_workflow_update",
+            {
+                "operation": "schedule_patch",
+                "schedule_id": workflow_schedule["id"],
+                "expected_version": workflow_schedule["version"],
+                "changes": {"name": "silently overwritten"},
+            },
+        )
+        paused_schedule_call = call(
+            "investment_workflow_update",
+            {
+                "operation": "schedule_status",
+                "schedule_id": patched_schedule["id"],
+                "expected_version": patched_schedule["version"],
+                "status": "paused",
+                "reason": "exercise versioned pause",
+            },
+        )
+        paused_schedule = _call_result(paused_schedule_call)
+        stale_schedule_status_call = call(
+            "investment_workflow_update",
+            {
+                "operation": "schedule_status",
+                "schedule_id": paused_schedule["id"],
+                "expected_version": patched_schedule["version"],
+                "status": "archived",
+            },
+        )
+        resumed_schedule_call = call(
+            "investment_workflow_update",
+            {
+                "operation": "schedule_status",
+                "schedule_id": paused_schedule["id"],
+                "expected_version": paused_schedule["version"],
+                "status": "active",
+                "reason": "exercise versioned resume",
+            },
+        )
+        resumed_schedule = _call_result(resumed_schedule_call)
+        required_run_call = call(
+            "investment_workflow_update",
+            {
+                "operation": "schedule_run_now",
+                "schedule_id": resumed_schedule["id"],
+            },
+        )
+        required_run = _call_result(required_run_call)
+        required_delivery = _call_result(
+            call(
+                "investment_workflow_context",
+                {"view": "deliveries", "mode": "report_required", "limit": 10},
+            )
+        )[0]
+        required_wake_call = call(
+            "investment_workflow_update",
+            {"operation": "wake_claim", "owner": "required-worker", "lease_seconds": 300},
+        )
+        required_wake = _call_result(required_wake_call)
+        duplicate_wake_call = call(
+            "investment_workflow_update",
+            {"operation": "wake_claim", "owner": "duplicate-worker", "lease_seconds": 300},
+        )
+        required_prepare_call = call(
+            "investment_delivery_update",
+            {
+                "operation": "prepare",
+                "delivery_id": required_delivery["id"],
+                "conclusion": "no_action",
+                "summary": "The synthetic required workflow completed without an action.",
+                "key_evidence": ["Isolated Schedule and Run state was inspected."],
+                "next_step": "Keep the synthetic fixture isolated.",
+                "next_check_at": iso(utc_now() + timedelta(hours=1)),
+                "source_refs": ["synthetic:workflow-required"],
+            },
+        )
+        required_prepared = _call_result(required_prepare_call)
+        required_complete_call = call(
+            "investment_workflow_update",
+            {"operation": "run_complete", "run_id": required_run["id"], "success": True},
+        )
+        required_wake_complete_call = call(
+            "investment_workflow_update",
+            {
+                "operation": "wake_complete",
+                "outbox_id": required_wake["outbox_id"],
+                "owner": "required-worker",
+                "success": True,
+            },
+        )
+        required_delivery_after_run_call = call(
+            "investment_workflow_context",
+            {"view": "delivery", "delivery_id": required_delivery["id"]},
+        )
+        immutable_delivery_call = call(
+            "investment_delivery_update",
+            {
+                "operation": "prepare",
+                "delivery_id": required_delivery["id"],
+                "conclusion": "action",
+                "summary": "Attempt to replace the frozen result.",
+                "key_evidence": [],
+                "next_step": "This write must be rejected.",
+                "source_refs": [],
+            },
+        )
+
+        recoverable_run = _call_result(
+            call(
+                "investment_workflow_update",
+                {"operation": "schedule_run_now", "schedule_id": resumed_schedule["id"]},
+            )
+        )
+        recoverable_wake = _call_result(
+            call(
+                "investment_workflow_update",
+                {"operation": "wake_claim", "owner": "recovery-worker", "lease_seconds": 300},
+            )
+        )
+        wrong_wake_owner_call = call(
+            "investment_workflow_update",
+            {
+                "operation": "wake_complete",
+                "outbox_id": recoverable_wake["outbox_id"],
+                "owner": "wrong-worker",
+                "success": False,
+                "error": "must not overwrite another owner's lease",
+            },
+        )
+        failed_wake_complete_call = call(
+            "investment_workflow_update",
+            {
+                "operation": "wake_complete",
+                "outbox_id": recoverable_wake["outbox_id"],
+                "owner": "recovery-worker",
+                "success": False,
+                "error": "synthetic recoverable failure",
+            },
+        )
+        recoverable_run_call = call(
+            "investment_workflow_context",
+            {"view": "run", "run_id": recoverable_run["id"]},
+        )
+
+        digest_schedule = _call_result(
+            call(
+                "investment_workflow_update",
+                {
+                    "operation": "schedule_create",
+                    "name": "Synthetic digest workflow",
+                    "kind": "review",
+                    "mission": "Exercise digest Delivery state.",
+                    "cadence": {"type": "interval", "seconds": 3600},
+                    "policy": {"delivery_mode": "digest_required"},
+                },
+            )
+        )
+        digest_run = _call_result(
+            call(
+                "investment_workflow_update",
+                {"operation": "schedule_run_now", "schedule_id": digest_schedule["id"]},
+            )
+        )
+        digest_wake = _call_result(
+            call(
+                "investment_workflow_update",
+                {"operation": "wake_claim", "owner": "digest-worker", "lease_seconds": 300},
+            )
+        )
+        digest_delivery = _call_result(
+            call(
+                "investment_workflow_context",
+                {"view": "deliveries", "mode": "digest_required", "limit": 10},
+            )
+        )[0]
+        digest_prepare_call = call(
+            "investment_delivery_update",
+            {
+                "operation": "prepare",
+                "delivery_id": digest_delivery["id"],
+                "conclusion": "no_action",
+                "summary": "The digest component is ready.",
+                "key_evidence": ["The isolated digest Run completed."],
+                "next_step": "Include this component in one digest.",
+                "source_refs": ["synthetic:workflow-digest"],
+            },
+        )
+        digest_complete_call = call(
+            "investment_workflow_update",
+            {"operation": "run_complete", "run_id": digest_run["id"], "success": True},
+        )
+        digest_wake_complete_call = call(
+            "investment_workflow_update",
+            {
+                "operation": "wake_complete",
+                "outbox_id": digest_wake["outbox_id"],
+                "owner": "digest-worker",
+                "success": True,
+            },
+        )
+        digest_send_call = call(
+            "investment_delivery_update",
+            {
+                "operation": "digest_send",
+                "delivery_ids": [digest_delivery["id"]],
+                "conclusion": "no_action",
+                "summary": "One synthetic digest component is ready for transport.",
+                "key_evidence": ["The component result is frozen."],
+                "next_step": "Wait for the transport receipt.",
+                "source_refs": ["synthetic:workflow-digest"],
+            },
+        )
+        digest_attention = _call_result(digest_prepare_call)["attention_decision_id"]
+        invalid_digest_delivery_call = call(
+            "investment_delivery_update",
+            {
+                "operation": "attention_delivered",
+                "attention_decision_id": digest_attention,
+            },
+        )
+
+        failed_run = _call_result(
+            call(
+                "investment_workflow_update",
+                {"operation": "schedule_run_now", "schedule_id": resumed_schedule["id"]},
+            )
+        )
+        failed_run_call = call(
+            "investment_workflow_update",
+            {
+                "operation": "run_complete",
+                "run_id": failed_run["id"],
+                "success": False,
+                "error": "synthetic terminal failure",
+            },
+        )
+        cancelled_run = _call_result(
+            call(
+                "investment_workflow_update",
+                {"operation": "schedule_run_now", "schedule_id": resumed_schedule["id"]},
+            )
+        )
+        cancelled_run_call = call(
+            "investment_workflow_update",
+            {
+                "operation": "run_cancel",
+                "run_id": cancelled_run["id"],
+                "reason": "synthetic cancellation",
+            },
+        )
+        workflow_schedule_context_call = call(
+            "investment_workflow_context",
+            {"view": "schedule", "schedule_id": resumed_schedule["id"]},
+        )
+        workflow_history_call = call(
+            "investment_workflow_context",
+            {"view": "schedule_history", "schedule_id": resumed_schedule["id"], "limit": 10},
+        )
+        workflow_runs_call = call(
+            "investment_workflow_context", {"view": "runs", "limit": 20}
+        )
+        workflow_delivery_status_call = call(
+            "investment_workflow_context", {"view": "delivery_status"}
+        )
+        workflow_system_status_call = call(
+            "investment_workflow_context", {"view": "system_status"}
+        )
+        workflow_doctor_call = call(
+            "investment_workflow_context", {"view": "doctor"}
+        )
 
         research_before_decision_call = call("decision_context", {})
         research_before_portfolio_call = call(
@@ -813,6 +1113,15 @@ def probe_investment_mcp(
             {
                 "operation": "attention_delivered",
                 "attention_decision_id": attention["id"],
+            },
+        )
+        attention_feedback_call = call(
+            "investment_delivery_update",
+            {
+                "operation": "attention_feedback",
+                "attention_decision_id": attention["id"],
+                "feedback": "useful",
+                "note": "synthetic conformance feedback",
             },
         )
         presented_call = call(
@@ -1358,6 +1667,55 @@ def probe_investment_mcp(
         "tools": tools_by_name,
         "home_result": _call_result(home_call),
         "home_call_error": _call_error(home_call),
+        "workflow_delivery": {
+            "schedule": {
+                "created": workflow_schedule,
+                "patched": patched_schedule,
+                "stale_patch_error": _call_error(stale_patch_call),
+                "paused": paused_schedule,
+                "stale_status_error": _call_error(stale_schedule_status_call),
+                "resumed": resumed_schedule,
+                "context": _call_result(workflow_schedule_context_call),
+                "history": _call_result(workflow_history_call),
+            },
+            "required": {
+                "run": required_run,
+                "wake": required_wake,
+                "duplicate_wake": _call_result(duplicate_wake_call),
+                "prepared": required_prepared,
+                "completed": _call_result(required_complete_call),
+                "wake_completed": _call_result(required_wake_complete_call),
+                "delivery_after_run": _call_result(required_delivery_after_run_call),
+                "immutable_error": _call_error(immutable_delivery_call),
+            },
+            "recoverable": {
+                "run": recoverable_run,
+                "wake": recoverable_wake,
+                "wrong_owner_error": _call_error(wrong_wake_owner_call),
+                "wake_failed": _call_result(failed_wake_complete_call),
+                "run_after_failure": _call_result(recoverable_run_call),
+            },
+            "digest": {
+                "schedule": digest_schedule,
+                "run": digest_run,
+                "wake": digest_wake,
+                "prepared": _call_result(digest_prepare_call),
+                "completed": _call_result(digest_complete_call),
+                "wake_completed": _call_result(digest_wake_complete_call),
+                "sent": _call_result(digest_send_call),
+                "false_delivery_error": _call_error(invalid_digest_delivery_call),
+            },
+            "terminal_runs": {
+                "failed": _call_result(failed_run_call),
+                "cancelled": _call_result(cancelled_run_call),
+            },
+            "views": {
+                "runs": _call_result(workflow_runs_call),
+                "delivery_status": _call_result(workflow_delivery_status_call),
+                "system_status": _call_result(workflow_system_status_call),
+                "doctor": _call_result(workflow_doctor_call),
+            },
+        },
         "research": {
             "fixture": research_fixture,
             "context_initial": _call_result(research_context_initial_call),
@@ -1422,6 +1780,7 @@ def probe_investment_mcp(
                 "snoozed": _call_result(snoozed_call),
                 "attention": attention,
                 "attention_delivered": _call_result(attention_delivered_call),
+                "attention_feedback": _call_result(attention_feedback_call),
                 "presented": _call_result(presented_call),
                 "missing_confirmation_error": _call_error(missing_confirmation_call),
                 "accepted": _call_result(accepted_call),
@@ -1853,6 +2212,100 @@ def evaluate_investment_conformance(observation: dict[str, Any]) -> dict[str, An
             "capability": "investment_brief_update",
         },
     )
+    workflow_context_variants = (
+        (tools.get("investment_workflow_context") or {})
+        .get("inputSchema", {})
+        .get("oneOf", [])
+    )
+    workflow_views = {
+        item.get("properties", {}).get("view", {}).get("const"): set(
+            item.get("required", [])
+        )
+        for item in workflow_context_variants
+    }
+    check(
+        "mcp.tools-list.workflow-context-variants",
+        set(workflow_views)
+        == {
+            "schedules", "schedule", "schedule_history", "runs", "run",
+            "deliveries", "delivery", "delivery_status", "system_status", "doctor",
+        }
+        and "schedule_id" in workflow_views.get("schedule", set())
+        and "run_id" in workflow_views.get("run", set())
+        and "delivery_id" in workflow_views.get("delivery", set())
+        and not {"execution_strategies", "execution_strategy"} & set(workflow_views),
+        {
+            "code": "missing_or_drifted_tool",
+            "capability": "investment_workflow_context",
+        },
+    )
+    workflow_update_variants = (
+        (tools.get("investment_workflow_update") or {})
+        .get("inputSchema", {})
+        .get("oneOf", [])
+    )
+    workflow_update_paths = {
+        (
+            item.get("properties", {}).get("operation", {}).get("const"),
+            item.get("properties", {}).get("status", {}).get("const"),
+            item.get("properties", {}).get("success", {}).get("const"),
+        ): set(item.get("required", []))
+        for item in workflow_update_variants
+    }
+    check(
+        "mcp.tools-list.workflow-update-variants",
+        {
+            operation for operation, _status, _success in workflow_update_paths
+        }
+        == {
+            "schedule_create", "schedule_patch", "schedule_status",
+            "schedule_run_now", "run_complete", "run_cancel", "wake_claim",
+            "wake_complete",
+        }
+        and all(
+            "expected_version"
+            in workflow_update_paths.get(("schedule_status", status, None), set())
+            for status in ("active", "paused", "archived")
+        )
+        and "expected_version"
+        in workflow_update_paths.get(("schedule_patch", None, None), set())
+        and "error"
+        in workflow_update_paths.get(("run_complete", None, False), set())
+        and "error"
+        in workflow_update_paths.get(("wake_complete", None, False), set()),
+        {
+            "code": "missing_or_drifted_tool",
+            "capability": "investment_workflow_update",
+        },
+    )
+    delivery_update_variants = (
+        (tools.get("investment_delivery_update") or {})
+        .get("inputSchema", {})
+        .get("oneOf", [])
+    )
+    delivery_update_paths = {
+        item.get("properties", {}).get("operation", {}).get("const"): set(
+            item.get("required", [])
+        )
+        for item in delivery_update_variants
+    }
+    check(
+        "mcp.tools-list.delivery-update-variants",
+        set(delivery_update_paths)
+        == {
+            "prepare", "digest_send", "attention_decide", "attention_delivered",
+            "attention_feedback",
+        }
+        and {"delivery_id", "conclusion", "summary", "key_evidence", "next_step"}
+        <= delivery_update_paths.get("prepare", set())
+        and "delivery_ids" in delivery_update_paths.get("digest_send", set())
+        and "attention_decision_id"
+        in delivery_update_paths.get("attention_feedback", set()),
+        {
+            "code": "missing_or_drifted_tool",
+            "capability": "investment_delivery_update",
+        },
+    )
 
     home = observation.get("home_result")
     health = home.get("production_health") if isinstance(home, dict) else None
@@ -1865,6 +2318,100 @@ def evaluate_investment_conformance(observation: dict[str, Any]) -> dict[str, An
             "capability": "investment_home",
             "invariant": HOME_INVARIANT,
             "counterexample": "tools/call succeeded without required production_health",
+        },
+    )
+
+    workflow = observation.get("workflow_delivery", {})
+    schedule_flow = workflow.get("schedule", {})
+    check(
+        WORKFLOW_VERSION_INVARIANT,
+        isinstance(schedule_flow.get("stale_patch_error"), str)
+        and schedule_flow["stale_patch_error"].startswith(
+            "investment_workflow.version_conflict:"
+        )
+        and isinstance(schedule_flow.get("stale_status_error"), str)
+        and schedule_flow["stale_status_error"].startswith(
+            "investment_workflow.version_conflict:"
+        )
+        and (schedule_flow.get("patched") or {}).get("version")
+        == (schedule_flow.get("created") or {}).get("version", 0) + 1
+        and (schedule_flow.get("paused") or {}).get("version")
+        == (schedule_flow.get("patched") or {}).get("version", 0) + 1
+        and (schedule_flow.get("resumed") or {}).get("version")
+        == (schedule_flow.get("paused") or {}).get("version", 0) + 1
+        and (schedule_flow.get("context") or {}).get("name")
+        == (schedule_flow.get("created") or {}).get("name"),
+        {
+            "code": "invariant_violation",
+            "capability": "investment_workflow_update",
+            "invariant": WORKFLOW_VERSION_INVARIANT,
+            "counterexample": "a stale Schedule mutation overwrote the current version",
+        },
+    )
+    recoverable_flow = workflow.get("recoverable", {})
+    required_flow = workflow.get("required", {})
+    check(
+        WORKFLOW_WAKE_LEASE_INVARIANT,
+        required_flow.get("duplicate_wake") is None
+        and isinstance(recoverable_flow.get("wrong_owner_error"), str)
+        and recoverable_flow["wrong_owner_error"].startswith(
+            "investment_workflow.wake_lease_conflict:"
+        )
+        and (recoverable_flow.get("wake_failed") or {}).get("status") == "retry"
+        and (recoverable_flow.get("run_after_failure") or {}).get("status")
+        == "recoverable",
+        {
+            "code": "invariant_violation",
+            "capability": "investment_workflow_update",
+            "invariant": WORKFLOW_WAKE_LEASE_INVARIANT,
+            "counterexample": "duplicate or non-owner Wake completion replaced an active lease",
+        },
+    )
+    digest_flow = workflow.get("digest", {})
+    check(
+        WORKFLOW_RUN_DELIVERY_INVARIANT,
+        (required_flow.get("completed") or {}).get("status") == "succeeded"
+        and (required_flow.get("delivery_after_run") or {}).get("status")
+        == "pending_send"
+        and (required_flow.get("delivery_after_run") or {}).get("delivered_at")
+        is None
+        and (digest_flow.get("completed") or {}).get("status") == "succeeded"
+        and all(
+            item.get("status") == "pending_send" and item.get("delivered_at") is None
+            for item in digest_flow.get("sent") or []
+        ),
+        {
+            "code": "invariant_violation",
+            "capability": "investment_delivery_update",
+            "invariant": WORKFLOW_RUN_DELIVERY_INVARIANT,
+            "counterexample": "a succeeded Run was reported as delivered without a transport receipt",
+        },
+    )
+    terminal_runs = workflow.get("terminal_runs", {})
+    queue_feedback = (
+        observation.get("decision_action", {}).get("queue", {}).get(
+            "attention_feedback"
+        )
+        or {}
+    )
+    check(
+        DELIVERY_STATE_INVARIANT,
+        isinstance(required_flow.get("immutable_error"), str)
+        and required_flow["immutable_error"].startswith(
+            "investment_delivery.immutable:"
+        )
+        and (digest_flow.get("prepared") or {}).get("status") == "queued_digest"
+        and isinstance(digest_flow.get("false_delivery_error"), str)
+        and "only notify_now" in digest_flow["false_delivery_error"]
+        and (terminal_runs.get("failed") or {}).get("status") == "failed"
+        and (terminal_runs.get("cancelled") or {}).get("status") == "cancelled"
+        and queue_feedback.get("feedback") == "useful"
+        and queue_feedback.get("policy_change") == "none",
+        {
+            "code": "invariant_violation",
+            "capability": "investment_delivery_update",
+            "invariant": DELIVERY_STATE_INVARIANT,
+            "counterexample": "Delivery or Attention state was silently overwritten without the required transition evidence",
         },
     )
 

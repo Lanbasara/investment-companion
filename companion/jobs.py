@@ -810,6 +810,11 @@ def _validate_schema(value:Any,schema:dict[str,Any],path:str)->None:
         )
         if not valid:raise CompanionError(f"{path} must be {' or '.join(expected_types)}")
     if "enum" in schema and value not in schema["enum"]:raise CompanionError(f"{path} is not in enum")
+    if isinstance(value,(int,float)) and not isinstance(value,bool):
+        if "minimum" in schema and value<schema["minimum"]:raise CompanionError(f"{path} must be at least {schema['minimum']}")
+        if "maximum" in schema and value>schema["maximum"]:raise CompanionError(f"{path} must be at most {schema['maximum']}")
+        if "exclusiveMinimum" in schema and value<=schema["exclusiveMinimum"]:raise CompanionError(f"{path} must be greater than {schema['exclusiveMinimum']}")
+        if "exclusiveMaximum" in schema and value>=schema["exclusiveMaximum"]:raise CompanionError(f"{path} must be less than {schema['exclusiveMaximum']}")
     if isinstance(value,dict) and "object" in expected_types:
         required=set(schema.get("required",[]));missing=required-set(value)
         if missing:raise CompanionError(f"{path} missing required fields: {sorted(missing)}")
@@ -823,4 +828,7 @@ def _validate_schema(value:Any,schema:dict[str,Any],path:str)->None:
         if isinstance(additional,dict):
             for key in extra:_validate_schema(value[key],additional,f"{path}.{key}")
     if isinstance(value,list) and "array" in expected_types and "items" in schema:
+        if "minItems" in schema and len(value)<schema["minItems"]:raise CompanionError(f"{path} must contain at least {schema['minItems']} items")
+        if "maxItems" in schema and len(value)>schema["maxItems"]:raise CompanionError(f"{path} must contain at most {schema['maxItems']} items")
+        if schema.get("uniqueItems") and len({canonical(item) for item in value})!=len(value):raise CompanionError(f"{path} items must be unique")
         for index,item in enumerate(value):_validate_schema(item,schema["items"],f"{path}[{index}]")

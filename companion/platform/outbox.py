@@ -139,7 +139,7 @@ class OutboxService:
         with self.db.transaction() as con:
             item=row_dict(con.execute("SELECT * FROM outbox WHERE id=?",(outbox_id,)).fetchone())
             if not item:raise CompanionError(f"outbox not found: {outbox_id}")
-            if item["status"]!="sending" or item.get("lease_owner")!=lease_owner or not item.get("lease_until") or item["lease_until"]<=now:raise CompanionError("wake completion does not own the active outbox lease")
+            if item["status"]!="sending" or item.get("lease_owner")!=lease_owner or not item.get("lease_until") or item["lease_until"]<=now:raise CompanionError("investment_workflow.wake_lease_conflict: wake completion does not own the active outbox lease")
             run_id=item["payload"].get("run_id")
             if success and run_id:
                 run=con.execute("SELECT status FROM runs WHERE id=?",(run_id,)).fetchone()
