@@ -785,6 +785,7 @@ class PortfolioDecisionService(InvestmentProgramService):
         reason: str | None = None,
         snoozed_until: str | None = None,
         attention_decision_id: str | None = None,
+        user_confirmation_ref: str | None = None,
         actor: str = "primary-codex",
     ) -> dict[str, Any]:
         self.c.jobs.feature_require("v5_operating_system")
@@ -792,6 +793,8 @@ class PortfolioDecisionService(InvestmentProgramService):
         self._require_active_program(item["program_id"])
         if state not in {"presented", "snoozed", "accepted", "rejected", "closed"}:
             raise CompanionError("invalid DecisionQueue response state")
+        if user_confirmation_ref is not None:
+            user_confirmation_ref = self._text(user_confirmation_ref, "DecisionQueue user_confirmation_ref")
         if state in {"snoozed", "rejected", "closed"}:
             reason = self._text(reason, f"DecisionQueue {state} reason")
         normalized_snooze = None
@@ -819,7 +822,7 @@ class PortfolioDecisionService(InvestmentProgramService):
                 and item.get("attention_decision_id") != attention_decision_id
             ):
                 raise CompanionError("idempotent DecisionQueue presentation supplied a different AttentionDecision")
-            return item
+            return {**item, "user_confirmation_ref": user_confirmation_ref} if user_confirmation_ref else item
         if state not in transitions.get(item["state"], set()):
             raise CompanionError(f"invalid DecisionQueue transition: {item['state']} -> {state}")
         attention = None
@@ -879,7 +882,16 @@ class PortfolioDecisionService(InvestmentProgramService):
                 "decision_queue_item",
                 queue_id,
                 before={"state": item["state"]},
-                after={"state": state, "attention_decision_id": attention["id"] if attention else item.get("attention_decision_id")},
+                after={
+                    "state": state,
+                    "attention_decision_id": (
+                        attention["id"] if attention else item.get("attention_decision_id")
+                    ),
+                    "user_confirmation_ref": user_confirmation_ref,
+                },
                 reason=reason,
             )
-        return self.queue_get(queue_id)
+        result = self.queue_get(queue_id)
+        if user_confirmation_ref:
+            result["user_confirmation_ref"] = user_confirmation_ref
+        return result

@@ -265,6 +265,7 @@ class InvestmentCommandService:
         reason: str | None = None,
         snoozed_until: str | None = None,
         attention_decision_id: str | None = None,
+        user_confirmation_ref: str | None = None,
         actor: str = "primary-codex",
     ) -> dict[str, Any]:
         return self.c.operating.queue_respond(
@@ -273,6 +274,7 @@ class InvestmentCommandService:
             reason=reason,
             snoozed_until=snoozed_until,
             attention_decision_id=attention_decision_id,
+            user_confirmation_ref=user_confirmation_ref,
             actor=actor,
         )
 
@@ -289,7 +291,10 @@ class InvestmentCommandService:
             ),
             "respond": (
                 {"queue_id", "state"},
-                {"queue_id", "state", "reason", "snoozed_until", "attention_decision_id"},
+                {
+                    "queue_id", "state", "reason", "snoozed_until",
+                    "attention_decision_id", "user_confirmation_ref",
+                },
             ),
         }
         if operation not in contracts:
@@ -301,6 +306,12 @@ class InvestmentCommandService:
             return self.c.operating.queue_enqueue(
                 opportunity_id, **payload, actor=actor
             )
+        if payload.get("state") in {"accepted", "rejected", "snoozed"}:
+            reference = payload.get("user_confirmation_ref")
+            if not isinstance(reference, str) or not reference.strip():
+                raise CompanionError(
+                    "Action Card user response requires user_confirmation_ref"
+                )
         return self.action_respond(**payload, actor=actor)
 
     def workflow_update(

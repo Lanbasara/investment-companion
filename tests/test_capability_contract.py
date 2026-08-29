@@ -24,7 +24,7 @@ from companion.core import Companion, CompanionError
 from companion.interfaces.mcp_profiles import INVESTMENT_TOOLS
 
 
-def test_provider_manifest_contracts_personal_finance_and_research_workflows():
+def test_provider_manifest_contracts_personal_finance_research_and_decision_workflows():
     registry = investment_capability_registry(INVESTMENT_TOOLS)
 
     first = registry.provider_manifest()
@@ -54,6 +54,10 @@ def test_provider_manifest_contracts_personal_finance_and_research_workflows():
         "investment_opportunity_update",
         "investment_evidence_update",
         "investment_research_publish",
+        "decision_context",
+        "investment_decision_publish",
+        "investment_action_plan",
+        "investment_action_update",
     }
     assert {
         name for name, capability in first.document["capabilities"].items()
@@ -105,6 +109,60 @@ def test_provider_manifest_contracts_personal_finance_and_research_workflows():
     assert set(evidence["operations"]) == {"publish_source", "market_snapshot"}
     assert first.document["capabilities"]["investment_research_publish"]["handler"] == (
         "investment_commands.research_publish"
+    )
+    decision_context = first.document["capabilities"]["decision_context"]
+    assert decision_context["handler"] == "investment.decision_context"
+    assert {
+        "decision.research_validation_is_not_decision/v1",
+        "action_card.acceptance_never_changes_portfolio/v1",
+    } <= set(decision_context["invariants"])
+    decision_publish = first.document["capabilities"]["investment_decision_publish"]
+    assert decision_publish["handler"] == "investment_commands.decision_publish"
+    assert set(decision_publish["operations"]) == {
+        "standard_action",
+        "bounded_action",
+        "no_action",
+        "watch",
+    }
+    assert {
+        variant["properties"]["decision_kind"]["const"]
+        for variant in decision_publish["input_schema"]["oneOf"]
+    } == {"action", "conditional_action", "no_action", "watch"}
+    action_plan = first.document["capabilities"]["investment_action_plan"]
+    assert set(action_plan["operations"]) == {"standard", "bounded"}
+    assert {
+        variant["properties"]["action_tier"]["const"]
+        for variant in action_plan["input_schema"]["oneOf"]
+    } == {"standard", "bounded"}
+    action_update = first.document["capabilities"]["investment_action_update"]
+    assert action_update["handler"] == "investment_commands.action_update"
+    assert set(action_update["operations"]) == {
+        "enqueue",
+        "presented",
+        "accepted",
+        "rejected",
+        "snoozed",
+        "closed",
+    }
+    for capability_name in (
+        "decision_context",
+        "investment_decision_publish",
+        "investment_action_plan",
+        "investment_action_update",
+    ):
+        assert first.document["capabilities"][capability_name]["output_schema"][
+            "additionalProperties"
+        ] is True
+    assert all(
+        operation["output_schema"]["additionalProperties"] is True
+        for capability_name in (
+            "investment_decision_publish",
+            "investment_action_plan",
+            "investment_action_update",
+        )
+        for operation in first.document["capabilities"][capability_name][
+            "operations"
+        ].values()
     )
 
 
@@ -441,6 +499,69 @@ def test_registry_rejects_ambiguous_or_incomplete_research_operation_variants(ar
         )
 
 
+@pytest.mark.parametrize(
+    ("capability", "arguments"),
+    [
+        (
+            "investment_decision_publish",
+            {
+                "decision_kind": "action",
+                "subject": {"asset_id": "asset_1"},
+                "content": "missing action qualifications",
+                "account_id": "account_1",
+                "as_of": "2026-01-01T00:00:00Z",
+                "knowledge_cutoff": "2026-01-01T00:00:00Z",
+                "valid_until": "2026-01-02T00:00:00Z",
+                "thesis_revision_ids": ["revision_1"],
+                "evidence_manifest_ids": ["manifest_1"],
+                "invalidators": ["price leaves range"],
+                "no_action": {"choice": "hold cash"},
+                "alternatives": [{"choice": "smaller position"}],
+            },
+        ),
+        (
+            "investment_action_plan",
+            {
+                "action_tier": "bounded",
+                "as_of": "2026-01-01T00:00:00Z",
+                "account_id": "account_1",
+                "asset_id": "asset_1",
+                "quantity": "100",
+                "price": "10",
+                "reality_spec": {},
+                "market_snapshot_id": "market_1",
+                "max_market_age_seconds": 60,
+                "valid_until": "2026-01-02T00:00:00Z",
+                "price_range": {"min": "9", "max": "11"},
+            },
+        ),
+        (
+            "investment_action_update",
+            {
+                "operation": "respond",
+                "queue_id": "queue_1",
+                "state": "accepted",
+            },
+        ),
+        (
+            "investment_action_update",
+            {
+                "operation": "respond",
+                "queue_id": "queue_1",
+                "state": "snoozed",
+                "reason": "review later",
+                "user_confirmation_ref": "message_1",
+            },
+        ),
+    ],
+)
+def test_registry_rejects_incomplete_decision_and_action_variants(capability, arguments):
+    registry = investment_capability_registry(INVESTMENT_TOOLS)
+
+    with pytest.raises(CompanionError, match="capability.input.invalid"):
+        registry.invoke(SimpleNamespace(), capability, arguments, actor="test")
+
+
 def test_platform_health_uses_an_injected_registry_without_interface_dependency(
     tmp_path,
 ):
@@ -486,6 +607,12 @@ def test_real_investment_mcp_profile_captures_home_production_health_drift(tmp_p
         "mcp.research-work.outcomes/v1",
         "mcp.research-negative-cases.rejected/v1",
         "mcp.required-confirmation-references.rejected/v1",
+        "decision.research_validation_is_not_decision/v1",
+        "investment_action_plan.risk_gate_is_veto_not_thesis/v1",
+        "action_card.acceptance_never_changes_portfolio/v1",
+        "mcp.tools-list.decision-publish-variants",
+        "mcp.tools-list.action-plan-variants",
+        "mcp.tools-list.action-update-variants",
     }
     assert negative["passed"] is False
     assert negative["failures"] == [{
@@ -528,6 +655,21 @@ def test_real_investment_mcp_profile_captures_home_production_health_drift(tmp_p
         "rejected": "rejected",
         "monitoring": "monitoring",
     }
+    decision_action = observation["decision_action"]
+    assert decision_action["decision"]["revision"]["metadata"]["decision_kind"] == (
+        "action"
+    )
+    assert decision_action["plans"]["standard"]["risk"]["status"] == "pass"
+    assert decision_action["plans"]["bounded"][
+        "eligible_for_conditional_decision"
+    ] is True
+    assert decision_action["bounded_decision"]["revision"]["metadata"][
+        "action_tier"
+    ] == "bounded"
+    assert decision_action["plans"]["blocked"]["risk"]["status"] == "blocked"
+    assert decision_action["queue"]["accepted"]["state"] == "accepted"
+    assert decision_action["queue"]["rejected"]["state"] == "rejected"
+    assert decision_action["after_accept"]["decision"]["executions"] == []
 
 
 def test_contract_digest_normalizes_set_like_array_order():
