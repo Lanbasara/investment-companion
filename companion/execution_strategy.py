@@ -55,7 +55,7 @@ class BrokerExecutionStrategyService:
         with self.c.db.connect() as con:existing=row_dict(con.execute("SELECT * FROM broker_execution_plans WHERE idempotency_key=?",(key,)).fetchone())
         if existing:
             if existing["content_hash"] != digest(plan_type, normalized, valid_until, queue_id):raise CompanionError("idempotency_key belongs to another broker execution plan")
-            return existing
+            return self.get(existing["id"])
         now=iso();pid=new_id("brokerplan");content_hash=digest(plan_type,normalized,valid_until,queue_id)
         with self.c.db.transaction() as con:
             con.execute("INSERT INTO broker_execution_plans(id,program_id,queue_id,decision_revision_id,broker,plan_type,account_id,asset_id,spec_json,semantics_version,status,valid_until,content_hash,idempotency_key,created_at,updated_at) VALUES(?,?,?,?,? ,?,?,?,?,?,'draft',?,?,?,?,?)",(pid,program["id"],queue_id,revision["id"],"cicc_wealth",plan_type,normalized["account_id"],normalized["asset_id"],canonical(normalized),CICC_SEMANTICS_VERSION,iso(parse(valid_until)),content_hash,key,now,now))
@@ -66,7 +66,12 @@ class BrokerExecutionStrategyService:
     def get(self, plan_id: str) -> dict[str, Any]:
         with self.c.db.connect() as con:item=row_dict(con.execute("SELECT * FROM broker_execution_plans WHERE id=?",(plan_id,)).fetchone())
         if not item:raise CompanionError(f"broker execution plan not found: {plan_id}")
+        item=self._plan_projection(item)
         item["orders"]=self.orders(plan_id);item["events"]=self.events(plan_id);item["net_quantities"]=self.net_quantities(plan_id)
+        item["outstanding_orders"]=[order for order in item["orders"] if order["status"] in {"triggered","submitted","partially_filled","unknown"}]
+        item["reported_execution_ids"]=list(dict.fromkeys(order["execution_id"] for order in item["orders"] if order.get("execution_id")))
+        reconciled=next((event for event in reversed(item["events"]) if event["event_type"]=="reconciled"),None)
+        item["reconciliation"]={"reconciliation_id":reconciled["payload"]["reconciliation_id"],"occurred_at":reconciled["occurred_at"]} if reconciled else None
         return item
 
     def list(self, *, status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
@@ -75,7 +80,19 @@ class BrokerExecutionStrategyService:
         query="SELECT * FROM broker_execution_plans";params=[]
         if status:query+=" WHERE status=?";params.append(status)
         query+=" ORDER BY updated_at DESC,id DESC LIMIT ?";params.append(limit)
-        with self.c.db.connect() as con:return rows_dict(con.execute(query,params).fetchall())
+        with self.c.db.connect() as con:return [self._plan_projection(item) for item in rows_dict(con.execute(query,params).fetchall())]
+
+    @staticmethod
+    def _plan_projection(item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            **item,
+            "broker_validity": {
+                "sessions": item["spec"]["validity_sessions"],
+                "valid_until": item["valid_until"],
+                "broker_condition_ref": item.get("broker_condition_ref"),
+                "configured_at": item.get("configured_at"),
+            },
+        }
 
     def expire_due(self,*,actor:str="system") -> list[str]:
         now=iso()

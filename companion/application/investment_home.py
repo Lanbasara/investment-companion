@@ -92,6 +92,7 @@ class InvestmentHomeService:
         view: str,
         schedule_id: str | None = None,
         run_id: str | None = None,
+        plan_id: str | None = None,
         delivery_id: str | None = None,
         status: str | None = None,
         kind: str | None = None,
@@ -129,9 +130,9 @@ class InvestmentHomeService:
         if view == "execution_strategies":
             return self.c.execution_strategy.list(status=status, limit=limit)
         if view == "execution_strategy":
-            if not run_id:
-                raise CompanionError("workflow execution_strategy view requires run_id as plan_id")
-            return self.c.execution_strategy.get(run_id)
+            if not plan_id:
+                raise CompanionError("workflow execution_strategy view requires plan_id")
+            return self.c.execution_strategy.get(plan_id)
         raise CompanionError(
             "workflow view must be schedules, schedule, schedule_history, runs, run, "
             "deliveries, delivery, delivery_status, system_status, doctor, execution_strategies or execution_strategy"

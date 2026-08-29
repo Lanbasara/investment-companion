@@ -29,6 +29,8 @@ from .registry import (
     RISK_GATE_BOUNDARY_INVARIANT,
     TRANSACTION_CONFIRMATION_INVARIANT,
     DELIVERY_STATE_INVARIANT,
+    EXECUTION_CONFIRMATION_INVARIANT,
+    EXECUTION_RECONCILIATION_INVARIANT,
     WORKFLOW_RUN_DELIVERY_INVARIANT,
     WORKFLOW_VERSION_INVARIANT,
     WORKFLOW_WAKE_LEASE_INVARIANT,
@@ -180,6 +182,101 @@ def _seed_research_fixture(root: Path) -> dict[str, Any]:
         "context_refs": contexts,
         "program_content": program_content,
     }
+
+
+def _seed_active_grid_report_fixture(
+    root: Path,
+    *,
+    program_id: str,
+    queue_id: str,
+    decision_revision_id: str,
+    account_id: str,
+    valid_until: str,
+) -> dict[str, Any]:
+    """Seed the broker-side precondition for MCP-only sleep/dividend reports.
+
+    Strategy creation is exercised separately through MCP.  This fixture starts
+    at the user-reported active-broker state so the black-box probe can cover
+    moving-grid-only transitions without touching a broker or user data.
+    """
+    from ..core import Companion
+    from ..execution_strategy import CICC_SEMANTICS_VERSION
+    from ..foundation import canonical, digest, new_id
+
+    companion = Companion(root, gate_scope="test_fixture")
+    companion.initialize()
+    asset = companion.financial.asset_upsert(
+        asset_type="etf",
+        name="Synthetic Grid Report ETF",
+        currency="CNY",
+        identifiers={"synthetic_id": "GRID-REPORT-ETF"},
+    )
+    spec = companion.execution_strategy._normalize_spec(
+        "moving_grid",
+        {
+            "account_id": account_id,
+            "asset_id": asset["id"],
+            "validity_sessions": 5,
+            "monitoring_window": None,
+            "initial_reference_price": "10",
+            "spacing_type": "difference",
+            "rise_sell_spacing": "1",
+            "fall_buy_spacing": "1",
+            "sell_order": {
+                "price_type": "limit",
+                "price_instruction": "instant",
+                "custom_price": None,
+            },
+            "buy_order": {
+                "price_type": "limit",
+                "price_instruction": "instant",
+                "custom_price": None,
+            },
+            "sell_quantity": "100",
+            "buy_quantity": "100",
+            "price_range": {
+                "lower": "8",
+                "upper": "12",
+                "out_of_range_behavior": "sleep",
+            },
+            "position_range": {"max_net_buy": "100", "max_net_sell": "100"},
+            "multiple_grid_order": True,
+        },
+    )
+    plan_id = new_id("brokerplan")
+    now = iso()
+    idempotency_key = "synthetic-grid-report-fixture"
+    with companion.db.transaction() as con:
+        con.execute(
+            "INSERT INTO broker_execution_plans("
+            "id,program_id,queue_id,decision_revision_id,broker,plan_type,"
+            "account_id,asset_id,spec_json,semantics_version,status,"
+            "broker_condition_ref,valid_until,content_hash,idempotency_key,"
+            "configured_at,current_reference_price_text,created_at,updated_at"
+            ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (
+                plan_id,
+                program_id,
+                queue_id,
+                decision_revision_id,
+                "cicc_wealth",
+                "moving_grid",
+                account_id,
+                asset["id"],
+                canonical(spec),
+                CICC_SEMANTICS_VERSION,
+                "active",
+                "synthetic-grid-condition",
+                valid_until,
+                digest("synthetic-grid-report-fixture", spec, valid_until),
+                idempotency_key,
+                now,
+                "10",
+                now,
+                now,
+            ),
+        )
+    return companion.execution_strategy.get(plan_id)
 
 
 def _call_result(response: dict[str, Any]) -> Any:
@@ -1030,8 +1127,21 @@ def probe_investment_mcp(
                 "research_validation_calculation_id": promoted_research["validation"][
                     "calculation_id"
                 ],
+                },
+            )
+        broker_strategy_spec = {
+            "account_id": research_fixture["account_id"],
+            "asset_id": asset_ids[0],
+            "validity_sessions": 5,
+            "monitoring_window": None,
+            "trigger": {"direction": "cross_down", "monitor_price": "10"},
+            "order": {
+                "price_type": "limit",
+                "price_instruction": "custom",
+                "custom_price": "10",
             },
-        )
+            "quantity": "100",
+        }
         decision_publish_call = call(
             "investment_decision_publish",
             {
@@ -1043,6 +1153,10 @@ def probe_investment_mcp(
                 "research_validation_calculation_id": promoted_research["validation"][
                     "calculation_id"
                 ],
+                "execution_plan": {
+                    "plan_type": "priced_buy",
+                    "spec": broker_strategy_spec,
+                },
             },
         )
         decision_publish = _call_result(decision_publish_call)
@@ -1182,7 +1296,397 @@ def probe_investment_mcp(
                 "user_confirmation_ref": "synthetic:user-message:reject",
             },
         )
-
+        manual_enqueue_call = call(
+            "investment_action_update",
+            {
+                "operation": "enqueue",
+                "opportunity_id": actionable_opportunity["id"],
+                "decision_revision_id": decision_publish["revision"]["id"],
+                "idempotency_key": "synthetic-manual-execution-path",
+            },
+        )
+        manual_queue = _call_result(manual_enqueue_call)
+        manual_attention_call = call(
+            "investment_delivery_update",
+            {
+                "operation": "attention_decide",
+                "topic": "synthetic manual and broker Execution",
+                "materiality": "high",
+                "confidence": "decision_grade",
+                "reason": "present the isolated Execution Action Card",
+                "evidence": [manual_queue["id"]],
+            },
+        )
+        manual_attention = _call_result(manual_attention_call)
+        call(
+            "investment_delivery_update",
+            {
+                "operation": "attention_delivered",
+                "attention_decision_id": manual_attention["id"],
+            },
+        )
+        call(
+            "investment_action_update",
+            {
+                "operation": "respond",
+                "queue_id": manual_queue["id"],
+                "state": "presented",
+                "attention_decision_id": manual_attention["id"],
+            },
+        )
+        manual_accepted_call = call(
+            "investment_action_update",
+            {
+                "operation": "respond",
+                "queue_id": manual_queue["id"],
+                "state": "accepted",
+                "user_confirmation_ref": "synthetic:user-message:accept-execution",
+            },
+        )
+        manual_before_call = call(
+            "portfolio_context", {"account_id": research_fixture["account_id"]}
+        )
+        execution_prepare_call = call(
+            "investment_execution_update",
+            {
+                "operation": "prepare",
+                "queue_id": manual_queue["id"],
+                "idempotency_key": "synthetic-manual-execution",
+            },
+        )
+        prepared_execution = _call_result(execution_prepare_call)
+        duplicate_prepare_call = call(
+            "investment_execution_update",
+            {
+                "operation": "prepare",
+                "queue_id": manual_queue["id"],
+                "idempotency_key": "synthetic-manual-execution",
+            },
+        )
+        manual_after_prepare_call = call(
+            "portfolio_context", {"account_id": research_fixture["account_id"]}
+        )
+        strategy_create_call = call(
+            "investment_execution_update",
+            {
+                "operation": "strategy_create",
+                "queue_id": manual_queue["id"],
+                "plan_type": "priced_buy",
+                "spec": broker_strategy_spec,
+                "valid_until": research_fixture["valid_until"],
+                "idempotency_key": "synthetic-priced-buy-strategy",
+            },
+        )
+        broker_strategy = _call_result(strategy_create_call)
+        duplicate_strategy_create_call = call(
+            "investment_execution_update",
+            {
+                "operation": "strategy_create",
+                "queue_id": manual_queue["id"],
+                "plan_type": "priced_buy",
+                "spec": broker_strategy_spec,
+                "valid_until": research_fixture["valid_until"],
+                "idempotency_key": "synthetic-priced-buy-strategy",
+            },
+        )
+        invalid_validity_call = call(
+            "investment_execution_update",
+            {
+                "operation": "strategy_configured",
+                "plan_id": broker_strategy["id"],
+                "broker_condition_ref": "synthetic-condition",
+                "configured_at": iso(),
+                "broker_validity_sessions": 10,
+                "broker_valid_until": research_fixture["valid_until"],
+            },
+        )
+        strategy_configured_call = call(
+            "investment_execution_update",
+            {
+                "operation": "strategy_configured",
+                "plan_id": broker_strategy["id"],
+                "broker_condition_ref": "synthetic-condition",
+                "configured_at": iso(),
+                "broker_validity_sessions": 5,
+                "broker_valid_until": research_fixture["valid_until"],
+            },
+        )
+        strategy_activate_call = call(
+            "investment_execution_update",
+            {
+                "operation": "strategy_activate",
+                "plan_id": broker_strategy["id"],
+                "occurred_at": iso(),
+            },
+        )
+        priced_strategy_sleep_call = call(
+            "investment_execution_update",
+            {
+                "operation": "strategy_sleep",
+                "plan_id": broker_strategy["id"],
+                "direction": "buy",
+                "sleeping": True,
+                "occurred_at": iso(),
+                "reason": "synthetic wrong-plan-type report",
+            },
+        )
+        priced_strategy_dividend_call = call(
+            "investment_execution_update",
+            {
+                "operation": "strategy_etf_dividend",
+                "plan_id": broker_strategy["id"],
+                "occurred_at": iso(),
+                "corporate_action_ref": "synthetic:wrong-plan-dividend",
+            },
+        )
+        grid_report_fixture = _seed_active_grid_report_fixture(
+            fixture_root,
+            program_id=research_fixture["program_id"],
+            queue_id=manual_queue["id"],
+            decision_revision_id=decision_publish["revision"]["id"],
+            account_id=research_fixture["account_id"],
+            valid_until=research_fixture["valid_until"],
+        )
+        grid_portfolio_before_call = call(
+            "portfolio_context", {"account_id": research_fixture["account_id"]}
+        )
+        grid_sleep_call = call(
+            "investment_execution_update",
+            {
+                "operation": "strategy_sleep",
+                "plan_id": grid_report_fixture["id"],
+                "direction": "buy",
+                "sleeping": True,
+                "occurred_at": iso(),
+                "reason": "synthetic broker reported the buy direction sleeping",
+            },
+        )
+        grid_sleep_view_call = call(
+            "investment_workflow_context",
+            {"view": "execution_strategy", "plan_id": grid_report_fixture["id"]},
+        )
+        grid_dividend_call = call(
+            "investment_execution_update",
+            {
+                "operation": "strategy_etf_dividend",
+                "plan_id": grid_report_fixture["id"],
+                "occurred_at": iso(),
+                "corporate_action_ref": "synthetic:etf-dividend-termination",
+            },
+        )
+        grid_portfolio_after_call = call(
+            "portfolio_context", {"account_id": research_fixture["account_id"]}
+        )
+        strategy_list_call = call(
+            "investment_workflow_context",
+            {"view": "execution_strategies", "status": "active", "limit": 10},
+        )
+        strategy_active_view_call = call(
+            "investment_workflow_context",
+            {"view": "execution_strategy", "plan_id": broker_strategy["id"]},
+        )
+        strategy_portfolio_before_order_call = call(
+            "portfolio_context", {"account_id": research_fixture["account_id"]}
+        )
+        strategy_triggered_at = iso()
+        strategy_order_call = call(
+            "investment_execution_update",
+            {
+                "operation": "strategy_order_report",
+                "plan_id": broker_strategy["id"],
+                "broker_order_ref": "synthetic-strategy-order",
+                "side": "buy",
+                "quantity": "100",
+                "status": "submitted",
+                "triggered_at": strategy_triggered_at,
+                "trigger_price": "10",
+            },
+        )
+        strategy_order = _call_result(strategy_order_call)
+        duplicate_strategy_order_call = call(
+            "investment_execution_update",
+            {
+                "operation": "strategy_order_report",
+                "plan_id": broker_strategy["id"],
+                "broker_order_ref": "synthetic-strategy-order",
+                "side": "buy",
+                "quantity": "100",
+                "status": "submitted",
+                "triggered_at": strategy_triggered_at,
+                "trigger_price": "10",
+            },
+        )
+        strategy_portfolio_after_order_call = call(
+            "portfolio_context", {"account_id": research_fixture["account_id"]}
+        )
+        strategy_termination_request_call = call(
+            "investment_execution_update",
+            {
+                "operation": "strategy_terminate_request",
+                "plan_id": broker_strategy["id"],
+                "occurred_at": iso(),
+                "reason": "synthetic user requested termination",
+            },
+        )
+        strategy_terminated_call = call(
+            "investment_execution_update",
+            {
+                "operation": "strategy_terminated",
+                "plan_id": broker_strategy["id"],
+                "occurred_at": iso(),
+                "reason": "synthetic broker reported termination",
+            },
+        )
+        live_order_reconcile_call = call(
+            "investment_execution_update",
+            {
+                "operation": "strategy_reconcile",
+                "plan_id": broker_strategy["id"],
+                "occurred_at": iso(),
+                "reconciliation_id": "synthetic-before-live-order-closed",
+            },
+        )
+        strategy_cancelled_order_call = call(
+            "investment_execution_update",
+            {
+                "operation": "strategy_order_report",
+                "plan_id": broker_strategy["id"],
+                "broker_order_ref": "synthetic-strategy-order",
+                "side": "buy",
+                "quantity": "100",
+                "status": "cancelled",
+                "triggered_at": strategy_triggered_at,
+                "cancelled_quantity": "100",
+            },
+        )
+        strategy_portfolio_after_cancel_call = call(
+            "portfolio_context", {"account_id": research_fixture["account_id"]}
+        )
+        strategy_reconciliation_as_of = iso()
+        strategy_reconciliation_call = call(
+            "investment_transaction_update",
+            {
+                "operation": "reconcile",
+                "account_id": research_fixture["account_id"],
+                "as_of": strategy_reconciliation_as_of,
+                "statement": {
+                    "cash": {"CNY": "100000"},
+                    "positions": {},
+                    "position_values": {},
+                    "position_total_by_currency": {},
+                    "total_by_currency": {"CNY": "100000"},
+                },
+                "source_ref": "synthetic:strategy-final-statement",
+            },
+        )
+        strategy_reconciliation = _call_result(strategy_reconciliation_call)
+        strategy_reconciled_call = call(
+            "investment_execution_update",
+            {
+                "operation": "strategy_reconcile",
+                "plan_id": broker_strategy["id"],
+                "occurred_at": strategy_reconciliation_as_of,
+                "reconciliation_id": strategy_reconciliation["id"],
+            },
+        )
+        strategy_reconciled_view_call = call(
+            "investment_workflow_context",
+            {"view": "execution_strategy", "plan_id": broker_strategy["id"]},
+        )
+        execution_order_call = call(
+            "investment_execution_update",
+            {
+                "operation": "order",
+                "execution_id": prepared_execution["id"],
+                "broker_order_ref": "synthetic-broker-order",
+                "ordered_at": iso(),
+            },
+        )
+        manual_after_order_call = call(
+            "portfolio_context", {"account_id": research_fixture["account_id"]}
+        )
+        incomplete_fill_call = call(
+            "investment_execution_update",
+            {
+                "operation": "report_fill",
+                "execution_id": prepared_execution["id"],
+                "occurred_at": iso(),
+                "quantity": "40",
+                "price": "10",
+                "fee": "1",
+            },
+        )
+        partial_fill_call = call(
+            "investment_execution_update",
+            {
+                "operation": "report_fill",
+                "execution_id": prepared_execution["id"],
+                "occurred_at": iso(),
+                "quantity": "40",
+                "price": "10",
+                "fee": "1",
+                "source": "synthetic broker report",
+                "external_id": "synthetic-partial-fill",
+                "final": False,
+            },
+        )
+        partial_fill = _call_result(partial_fill_call)
+        duplicate_partial_fill_call = call(
+            "investment_execution_update",
+            {
+                "operation": "report_fill",
+                "execution_id": prepared_execution["id"],
+                "occurred_at": partial_fill["pending_ledger_entry"]["occurred_at"],
+                "quantity": "40",
+                "price": "10",
+                "fee": "1",
+                "source": "synthetic broker report",
+                "external_id": "synthetic-partial-fill",
+                "final": False,
+            },
+        )
+        manual_after_report_call = call(
+            "portfolio_context", {"account_id": research_fixture["account_id"]}
+        )
+        partial_confirm_call = call(
+            "investment_execution_update",
+            {
+                "operation": "confirm_fill",
+                "execution_id": prepared_execution["id"],
+                "entry_id": partial_fill["pending_ledger_entry"]["id"],
+                "final": False,
+            },
+        )
+        manual_after_partial_confirm_call = call(
+            "portfolio_context", {"account_id": research_fixture["account_id"]}
+        )
+        deviated_fill_call = call(
+            "investment_execution_update",
+            {
+                "operation": "report_fill",
+                "execution_id": prepared_execution["id"],
+                "occurred_at": iso(),
+                "quantity": "60",
+                "price": "11",
+                "fee": "1",
+                "source": "synthetic broker report",
+                "external_id": "synthetic-deviated-fill",
+                "final": True,
+            },
+        )
+        deviated_fill = _call_result(deviated_fill_call)
+        final_confirm_call = call(
+            "investment_execution_update",
+            {
+                "operation": "confirm_fill",
+                "execution_id": prepared_execution["id"],
+                "entry_id": deviated_fill["pending_ledger_entry"]["id"],
+                "final": True,
+            },
+        )
+        manual_after_final_confirm_call = call(
+            "portfolio_context", {"account_id": research_fixture["account_id"]}
+        )
         no_action_brief_call = call(
             "investment_brief_update",
             {
@@ -1794,6 +2298,92 @@ def probe_investment_mcp(
                 "decision": _call_result(decision_after_accept_call),
                 "portfolio": _call_result(portfolio_after_accept_call),
             },
+            "execution": {
+                "queue": _call_result(manual_accepted_call),
+                "prepared": prepared_execution,
+                "duplicate_prepare": _call_result(duplicate_prepare_call),
+                "ordered": _call_result(execution_order_call),
+                "incomplete_fill_error": _call_error(incomplete_fill_call),
+                "partial_report": partial_fill,
+                "duplicate_partial_report": _call_result(
+                    duplicate_partial_fill_call
+                ),
+                "partial_confirm": _call_result(partial_confirm_call),
+                "deviated_report": deviated_fill,
+                "final_confirm": _call_result(final_confirm_call),
+                "portfolio": {
+                    "before": _call_result(manual_before_call),
+                    "after_prepare": _call_result(manual_after_prepare_call),
+                    "after_order": _call_result(manual_after_order_call),
+                    "after_report": _call_result(manual_after_report_call),
+                    "after_partial_confirm": _call_result(
+                        manual_after_partial_confirm_call
+                    ),
+                    "after_final_confirm": _call_result(
+                        manual_after_final_confirm_call
+                    ),
+                },
+                "strategy": {
+                    "queue": _call_result(manual_accepted_call),
+                    "created": broker_strategy,
+                    "duplicate_create": _call_result(
+                        duplicate_strategy_create_call
+                    ),
+                    "invalid_validity_error": _call_error(invalid_validity_call),
+                    "configured": _call_result(strategy_configured_call),
+                    "activated": _call_result(strategy_activate_call),
+                    "grid_only_reports": {
+                        "priced_sleep_error": _call_error(
+                            priced_strategy_sleep_call
+                        ),
+                        "priced_dividend_error": _call_error(
+                            priced_strategy_dividend_call
+                        ),
+                        "seeded": grid_report_fixture,
+                        "sleeping": _call_result(grid_sleep_call),
+                        "sleeping_view": _call_result(grid_sleep_view_call),
+                        "dividend_terminated": _call_result(
+                            grid_dividend_call
+                        ),
+                        "portfolio": {
+                            "before": _call_result(grid_portfolio_before_call),
+                            "after": _call_result(grid_portfolio_after_call),
+                        },
+                    },
+                    "list": _call_result(strategy_list_call),
+                    "active_view": _call_result(strategy_active_view_call),
+                    "order": strategy_order,
+                    "duplicate_order": _call_result(
+                        duplicate_strategy_order_call
+                    ),
+                    "termination_requested": _call_result(
+                        strategy_termination_request_call
+                    ),
+                    "terminated": _call_result(strategy_terminated_call),
+                    "live_order_reconcile_error": _call_error(
+                        live_order_reconcile_call
+                    ),
+                    "cancelled_order": _call_result(
+                        strategy_cancelled_order_call
+                    ),
+                    "full_scope_reconciliation": strategy_reconciliation,
+                    "reconciled": _call_result(strategy_reconciled_call),
+                    "reconciled_view": _call_result(
+                        strategy_reconciled_view_call
+                    ),
+                    "portfolio": {
+                        "before_order": _call_result(
+                            strategy_portfolio_before_order_call
+                        ),
+                        "after_order": _call_result(
+                            strategy_portfolio_after_order_call
+                        ),
+                        "after_cancel": _call_result(
+                            strategy_portfolio_after_cancel_call
+                        ),
+                    },
+                },
+            },
         },
         "program_brief": {
             "initial_context": _call_result(initial_program_context_call),
@@ -2212,6 +2802,68 @@ def evaluate_investment_conformance(observation: dict[str, Any]) -> dict[str, An
             "capability": "investment_brief_update",
         },
     )
+    execution_variants = (
+        (tools.get("investment_execution_update") or {})
+        .get("inputSchema", {})
+        .get("oneOf", [])
+    )
+    execution_paths = [
+        (
+            item.get("properties", {}).get("operation", {}).get("const"),
+            item.get("properties", {}).get("plan_type", {}).get("const"),
+            item.get("properties", {}).get("status", {}).get("const"),
+            set(item.get("required", [])),
+        )
+        for item in execution_variants
+    ]
+    execution_operations = {operation for operation, _plan, _status, _required in execution_paths}
+    strategy_create_types = {
+        plan_type
+        for operation, plan_type, _status, _required in execution_paths
+        if operation == "strategy_create"
+    }
+    strategy_order_statuses = {
+        status
+        for operation, _plan, status, _required in execution_paths
+        if operation == "strategy_order_report"
+    }
+    check(
+        "mcp.tools-list.execution-update-variants",
+        execution_operations
+        == {
+            "prepare", "order", "report_fill", "confirm_fill", "cancel",
+            "strategy_create", "strategy_configured", "strategy_activate",
+            "strategy_order_report", "strategy_terminate_request",
+            "strategy_terminated", "strategy_etf_dividend", "strategy_sleep",
+            "strategy_exception", "strategy_reconcile",
+        }
+        and strategy_create_types
+        == {"priced_buy", "priced_sell", "bracket_exit", "moving_grid"}
+        and strategy_order_statuses
+        == {
+            "triggered", "submitted", "partially_filled", "filled",
+            "cancelled", "rejected", "unknown",
+        }
+        and all(
+            "idempotency_key" in required
+            for operation, _plan, _status, required in execution_paths
+            if operation in {"prepare", "strategy_create"}
+        )
+        and all(
+            {"direction", "sleeping"} <= required
+            for operation, _plan, _status, required in execution_paths
+            if operation == "strategy_sleep"
+        )
+        and all(
+            "reconciliation_id" in required
+            for operation, _plan, _status, required in execution_paths
+            if operation == "strategy_reconcile"
+        ),
+        {
+            "code": "missing_or_drifted_tool",
+            "capability": "investment_execution_update",
+        },
+    )
     workflow_context_variants = (
         (tools.get("investment_workflow_context") or {})
         .get("inputSchema", {})
@@ -2229,11 +2881,13 @@ def evaluate_investment_conformance(observation: dict[str, Any]) -> dict[str, An
         == {
             "schedules", "schedule", "schedule_history", "runs", "run",
             "deliveries", "delivery", "delivery_status", "system_status", "doctor",
+            "execution_strategies", "execution_strategy",
         }
         and "schedule_id" in workflow_views.get("schedule", set())
         and "run_id" in workflow_views.get("run", set())
         and "delivery_id" in workflow_views.get("delivery", set())
-        and not {"execution_strategies", "execution_strategy"} & set(workflow_views),
+        and "plan_id" in workflow_views.get("execution_strategy", set())
+        and "run_id" not in workflow_views.get("execution_strategy", set()),
         {
             "code": "missing_or_drifted_tool",
             "capability": "investment_workflow_context",
@@ -2629,6 +3283,205 @@ def evaluate_investment_conformance(observation: dict[str, Any]) -> dict[str, An
             "capability": "investment_action_update",
             "invariant": ACTION_ACCEPTANCE_INVARIANT,
             "counterexample": "Action Card response created an Execution or changed Portfolio Ledger truth",
+        },
+    )
+
+    execution_flow = decision_action.get("execution", {})
+    execution_portfolios = execution_flow.get("portfolio", {})
+    execution_before = execution_portfolios.get("before") or {}
+    before_truth = execution_before.get("portfolio") or {}
+
+    def same_confirmed_portfolio(value: dict[str, Any]) -> bool:
+        state = (value or {}).get("portfolio") or {}
+        return all(
+            state.get(field) == before_truth.get(field)
+            for field in ("cash", "positions", "total_by_currency")
+        )
+
+    partial_report = execution_flow.get("partial_report") or {}
+    duplicate_report = execution_flow.get("duplicate_partial_report") or {}
+    partial_confirmation = execution_flow.get("partial_confirm") or {}
+    final_confirmation = execution_flow.get("final_confirm") or {}
+    after_report = execution_portfolios.get("after_report") or {}
+    after_partial_confirmation = (
+        execution_portfolios.get("after_partial_confirm") or {}
+    )
+    after_final_confirmation = (
+        execution_portfolios.get("after_final_confirm") or {}
+    )
+    check(
+        EXECUTION_CONFIRMATION_INVARIANT,
+        (execution_flow.get("queue") or {}).get("state") == "accepted"
+        and (execution_flow.get("prepared") or {}).get("id")
+        == (execution_flow.get("duplicate_prepare") or {}).get("id")
+        and (execution_flow.get("ordered") or {}).get("status") == "ordered"
+        and same_confirmed_portfolio(execution_portfolios.get("after_prepare") or {})
+        and same_confirmed_portfolio(execution_portfolios.get("after_order") or {})
+        and same_confirmed_portfolio(after_report)
+        and partial_report.get("portfolio_changed") is False
+        and partial_report.get("requires_confirmation") is True
+        and (partial_report.get("pending_ledger_entry") or {}).get("status")
+        == "needs_confirmation"
+        and (partial_report.get("pending_ledger_entry") or {}).get("id")
+        == (duplicate_report.get("pending_ledger_entry") or {}).get("id")
+        and len(after_report.get("pending_transactions") or []) == 1
+        and isinstance(execution_flow.get("incomplete_fill_error"), str)
+        and execution_flow["incomplete_fill_error"].startswith(
+            "capability.input.invalid:"
+        )
+        and (partial_confirmation.get("execution") or {}).get("status")
+        == "partially_filled"
+        and (partial_confirmation.get("confirmed_ledger_entry") or {}).get(
+            "status"
+        )
+        == "confirmed"
+        and partial_confirmation.get("portfolio_changed") is True
+        and not same_confirmed_portfolio(after_partial_confirmation)
+        and after_partial_confirmation.get("pending_transactions") == []
+        and (final_confirmation.get("execution") or {}).get("status")
+        == "deviated"
+        and len(
+            (final_confirmation.get("execution") or {}).get(
+                "ledger_entry_ids", []
+            )
+        )
+        == 2
+        and final_confirmation.get("truth") == "confirmed_ledger_replay"
+        and not same_confirmed_portfolio(after_final_confirmation),
+        {
+            "code": "invariant_violation",
+            "capability": "investment_execution_update",
+            "invariant": EXECUTION_CONFIRMATION_INVARIANT,
+            "counterexample": (
+                "Action acceptance, Execution preparation, broker order or reported "
+                "fill changed confirmed Portfolio truth before user confirmation"
+            ),
+        },
+    )
+    strategy_flow = execution_flow.get("strategy", {})
+    strategy_portfolios = strategy_flow.get("portfolio", {})
+    strategy_before = strategy_portfolios.get("before_order") or {}
+    strategy_before_truth = strategy_before.get("portfolio") or {}
+
+    def same_strategy_portfolio(value: dict[str, Any]) -> bool:
+        state = (value or {}).get("portfolio") or {}
+        return all(
+            state.get(field) == strategy_before_truth.get(field)
+            for field in ("cash", "positions", "total_by_currency")
+        )
+
+    created_strategy = strategy_flow.get("created") or {}
+    strategy_order = strategy_flow.get("order") or {}
+    duplicate_strategy_order = strategy_flow.get("duplicate_order") or {}
+    terminated_strategy = strategy_flow.get("terminated") or {}
+    reconciled_strategy = strategy_flow.get("reconciled") or {}
+    grid_reports = strategy_flow.get("grid_only_reports") or {}
+    sleeping_grid = grid_reports.get("sleeping") or {}
+    sleeping_grid_view = grid_reports.get("sleeping_view") or {}
+    dividend_terminated_grid = grid_reports.get("dividend_terminated") or {}
+    grid_portfolios = grid_reports.get("portfolio") or {}
+    grid_before_truth = (grid_portfolios.get("before") or {}).get("portfolio") or {}
+    grid_after_truth = (grid_portfolios.get("after") or {}).get("portfolio") or {}
+    check(
+        "mcp.execution-strategy.grid-reports/v1",
+        isinstance(grid_reports.get("priced_sleep_error"), str)
+        and "moving_grid" in grid_reports["priced_sleep_error"]
+        and isinstance(grid_reports.get("priced_dividend_error"), str)
+        and "moving_grid" in grid_reports["priced_dividend_error"]
+        and sleeping_grid.get("plan_type") == "moving_grid"
+        and sleeping_grid.get("buy_direction_state") == "sleeping"
+        and sleeping_grid.get("sell_direction_state") == "active"
+        and sleeping_grid_view.get("buy_direction_state") == "sleeping"
+        and sleeping_grid_view.get("sell_direction_state") == "active"
+        and dividend_terminated_grid.get("status") == "terminated"
+        and any(
+            event.get("event_type") == "corporate_action"
+            and (event.get("payload") or {}).get("corporate_action_ref")
+            == "synthetic:etf-dividend-termination"
+            for event in dividend_terminated_grid.get("events") or []
+        )
+        and all(
+            grid_after_truth.get(field) == grid_before_truth.get(field)
+            for field in ("cash", "positions", "total_by_currency")
+        ),
+        {
+            "code": "invariant_violation",
+            "capability": "investment_execution_update",
+            "invariant": EXECUTION_CONFIRMATION_INVARIANT,
+            "counterexample": (
+                "directional grid sleep or ETF-dividend termination lost read/write "
+                "symmetry or changed confirmed Portfolio truth"
+            ),
+        },
+    )
+    check(
+        EXECUTION_RECONCILIATION_INVARIANT,
+        (strategy_flow.get("queue") or {}).get("state") == "accepted"
+        and created_strategy.get("plan_type") == "priced_buy"
+        and created_strategy.get("id")
+        == (strategy_flow.get("duplicate_create") or {}).get("id")
+        and created_strategy.get("idempotency_key")
+        == "synthetic-priced-buy-strategy"
+        and isinstance(strategy_flow.get("invalid_validity_error"), str)
+        and strategy_flow["invalid_validity_error"].startswith(
+            "capability.input.invalid:"
+        )
+        and (strategy_flow.get("configured") or {}).get("broker_validity", {}).get(
+            "sessions"
+        )
+        == 5
+        and (strategy_flow.get("activated") or {}).get("status") == "active"
+        and any(
+            item.get("id") == created_strategy.get("id")
+            for item in strategy_flow.get("list") or []
+        )
+        and (strategy_flow.get("active_view") or {}).get("id")
+        == created_strategy.get("id")
+        and bool(strategy_order.get("reported_order_execution_id"))
+        and len(strategy_order.get("outstanding_orders") or []) == 1
+        and strategy_order.get("reported_order_execution_id")
+        == duplicate_strategy_order.get("reported_order_execution_id")
+        and len(strategy_order.get("events") or [])
+        == len(duplicate_strategy_order.get("events") or [])
+        and same_strategy_portfolio(strategy_portfolios.get("after_order") or {})
+        and (strategy_flow.get("termination_requested") or {}).get("status")
+        == "termination_pending"
+        and terminated_strategy.get("status") == "terminated"
+        and len(terminated_strategy.get("outstanding_orders") or []) == 1
+        and isinstance(strategy_flow.get("live_order_reconcile_error"), str)
+        and "live or unknown" in strategy_flow["live_order_reconcile_error"]
+        and len(
+            (strategy_flow.get("cancelled_order") or {}).get(
+                "outstanding_orders", []
+            )
+        )
+        == 0
+        and same_strategy_portfolio(strategy_portfolios.get("after_cancel") or {})
+        and (strategy_flow.get("full_scope_reconciliation") or {}).get("status")
+        == "matched"
+        and (
+            (strategy_flow.get("full_scope_reconciliation") or {}).get(
+                "reconciliation", {}
+            )
+        ).get("full_scope_matched")
+        is True
+        and reconciled_strategy.get("status") == "reconciled"
+        and (reconciled_strategy.get("reconciliation") or {}).get(
+            "reconciliation_id"
+        )
+        == (strategy_flow.get("full_scope_reconciliation") or {}).get("id")
+        and (strategy_flow.get("reconciled_view") or {}).get("id")
+        == reconciled_strategy.get("id")
+        and (strategy_flow.get("reconciled_view") or {}).get("reconciliation")
+        == reconciled_strategy.get("reconciliation"),
+        {
+            "code": "invariant_violation",
+            "capability": "investment_execution_update",
+            "invariant": EXECUTION_RECONCILIATION_INVARIANT,
+            "counterexample": (
+                "broker strategy read/write state lost its reported Execution, "
+                "outstanding order or full-scope reconciliation boundary"
+            ),
         },
     )
 

@@ -33,55 +33,6 @@ UNCONTRACTED_INVESTMENT_TOOLS = {
         "读取客观绩效、复盘和待验证的变更提案。",
         schema({"limit": I}),
     ),
-    "investment_execution_update": (
-        "管理人工执行和券商托管条件单：一次性委托、定价买卖、止盈止损与网格均需用户在券商配置并回报状态，不会自动改变组合。",
-        schema(
-            {
-                "operation": {
-                    "type": "string",
-                    "enum": ["prepare", "order", "report_fill", "confirm_fill", "cancel", "strategy_create", "strategy_configured", "strategy_activate", "strategy_order_report", "strategy_terminate_request", "strategy_terminated", "strategy_etf_dividend", "strategy_sleep", "strategy_exception", "strategy_reconcile"],
-                },
-                "queue_id": S,
-                "idempotency_key": S,
-                "execution_id": S,
-                "broker_order_ref": S,
-                "ordered_at": S,
-                "occurred_at": S,
-                "quantity": {},
-                "price": {},
-                "fee": {},
-                "source": S,
-                "external_id": S,
-                "settled_at": S,
-                "entry_id": S,
-                "final": {"type": "boolean"},
-                "reason": S,
-                "plan_id": S,
-                "plan_type": {"type":"string","enum":["priced_buy","priced_sell","bracket_exit","moving_grid"]},
-                "spec": O,
-                "valid_until": S,
-                "broker_condition_ref": S,
-                "configured_at": S,
-                "broker_validity_sessions": {"type":"integer","enum":[5,20,60,180]},
-                "broker_valid_until": S,
-                "triggered_at": S,
-                "trigger_price": {},
-                "reference_price_before": {},
-                "reference_price_after": {},
-                "rejection_reason": S,
-                "cancelled_quantity": {},
-                "condition_leg": {"type":"string","enum":["take_profit","stop_loss"]},
-                "status": S,
-                "side": S,
-                "corporate_action_ref": S,
-                "sleeping": {"type":"boolean"},
-                "direction": {"type":"string","enum":["buy","sell"]},
-                "reconciliation_id": S,
-                "corrected_event_ref": S,
-            },
-            ["operation"],
-        ),
-    ),
     "investment_performance_calculate": (
         "按确认账本、现金流、基准和成本计算一个周期的客观投资结果。",
         schema(
@@ -146,13 +97,6 @@ def call_investment(companion, name: str, arguments: dict[str, Any], actor: str)
     if name == "evaluation_context":
         return companion.investment.evaluation_context(**arguments)
     commands = companion.investment_commands
-    if name == "investment_execution_update":
-        operation = arguments["operation"]
-        return commands.execution_update(
-            operation=operation,
-            actor=actor,
-            **{key: value for key, value in arguments.items() if key != "operation"},
-        )
     if name == "investment_performance_calculate":
         return commands.performance_calculate(**arguments)
     if name == "investment_review_publish":
