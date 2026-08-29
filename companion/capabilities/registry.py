@@ -256,6 +256,22 @@ SCOPE_STATUS = object_schema(
     },
     ["status", "incidents"],
 )
+OPTIONAL_SCOPE_STATUS = object_schema(
+    {
+        "status": {
+            "type": "string",
+            "enum": [
+                "compatible",
+                "fallback",
+                "unverified",
+                "not_applicable",
+            ],
+        },
+        "incidents": {"type": "array", "items": {"type": "object"}},
+        "fallback": {},
+    },
+    ["status", "incidents", "fallback"],
+)
 PRODUCTION_HEALTH_SCHEMA = object_schema(
     {
         "ok": B,
@@ -264,7 +280,7 @@ PRODUCTION_HEALTH_SCHEMA = object_schema(
         "workflows": {"type": "object", "additionalProperties": SCOPE_STATUS},
         "optional_enhancements": {
             "type": "object",
-            "additionalProperties": SCOPE_STATUS,
+            "additionalProperties": OPTIONAL_SCOPE_STATUS,
         },
         "incidents": {"type": "array", "items": {"type": "object"}},
         "provider_digest": {},
@@ -4238,6 +4254,24 @@ CAPABILITY_CONTRACTS: dict[str, CapabilityContract] = {
     ),
 }
 CONTRACTED_CAPABILITY_NAMES = frozenset(CAPABILITY_CONTRACTS)
+TRUSTED_CONCLUSION_OPERATIONS: dict[str, set[str] | None] = {
+    "investment_research_publish": None,
+    "investment_decision_publish": None,
+    "investment_action_plan": None,
+    "investment_action_update": {"enqueue"},
+    "investment_brief_update": {"publish", "scorecard_publish"},
+    "investment_performance_calculate": None,
+    "investment_review_publish": None,
+    "investment_delivery_update": {"prepare", "digest_send"},
+}
+RUNTIME_BASELINE_ERROR = "capability.runtime.baseline_unavailable"
+
+
+def _requires_trusted_compatibility(
+    name: str, arguments: dict[str, Any]
+) -> bool:
+    operations = TRUSTED_CONCLUSION_OPERATIONS.get(name, set())
+    return operations is None or arguments.get("operation") in operations
 
 
 @dataclass(frozen=True)
@@ -4253,18 +4287,11 @@ class ProviderManifest:
 class CapabilityRegistry:
     """Derive discovery, validation, dispatch and provider evidence from one seam."""
 
-    def __init__(self, tools: Mapping[str, tuple[str, dict[str, Any]]]):
-        self._legacy_tools = dict(tools)
-
     def discovery_tools(self) -> dict[str, tuple[str, dict[str, Any]]]:
-        tools = dict(self._legacy_tools)
-        tools.update(
-            {
-                name: (contract.description, contract.input_schema)
-                for name, contract in CAPABILITY_CONTRACTS.items()
-            }
-        )
-        return tools
+        return {
+            name: (contract.description, contract.input_schema)
+            for name, contract in CAPABILITY_CONTRACTS.items()
+        }
 
     def handles(self, name: str) -> bool:
         return name in CAPABILITY_CONTRACTS
@@ -4289,6 +4316,27 @@ class CapabilityRegistry:
             _validate_schema(arguments, contract.input_schema, f"{name} arguments")
         except CompanionError as exc:
             raise CompanionError(f"capability.input.invalid: {exc}") from exc
+        if _requires_trusted_compatibility(name, arguments):
+            from .runtime import compatibility_summary
+
+            compatibility = compatibility_summary(
+                self,
+                companion.root,
+                companion.gate_scope,
+            )
+            if (
+                compatibility["applicable"]
+                and compatibility["baseline"]["status"] != "compatible"
+            ):
+                incident_codes = sorted(
+                    {
+                        incident.get("code", "compatibility.unknown")
+                        for incident in compatibility["baseline"]["incidents"]
+                    }
+                )
+                raise CompanionError(
+                    f"{RUNTIME_BASELINE_ERROR}: " + ", ".join(incident_codes)
+                )
         handler: Any = companion
         for segment in contract.handler.split("."):
             handler = getattr(handler, segment)
@@ -4318,23 +4366,21 @@ class CapabilityRegistry:
 
     def provider_manifest(self) -> ProviderManifest:
         capabilities: dict[str, Any] = {}
-        for name, (description, input_schema) in sorted(self.discovery_tools().items()):
-            contract = CAPABILITY_CONTRACTS.get(name)
-            if contract is None:
-                capabilities[name] = {
-                    "status": "uncontracted",
-                    "description": description,
-                    "handler": "interfaces.mcp_profiles.call_investment",
-                    "input_schema": input_schema,
-                }
-                continue
+        for name, contract in sorted(CAPABILITY_CONTRACTS.items()):
             capability = {
                 "status": "contracted",
                 "description": contract.description,
                 "handler": contract.handler,
                 "input_schema": contract.input_schema,
                 "output_schema": contract.output_schema,
-                "errors": list(contract.errors),
+                "errors": sorted(
+                    set(contract.errors)
+                    | (
+                        {RUNTIME_BASELINE_ERROR}
+                        if name in TRUSTED_CONCLUSION_OPERATIONS
+                        else set()
+                    )
+                ),
                 "invariants": list(contract.invariants),
             }
             if contract.operations is not None:
@@ -4360,7 +4406,5 @@ class CapabilityRegistry:
         )
 
 
-def investment_capability_registry(
-    tools: Mapping[str, tuple[str, dict[str, Any]]] | None = None,
-) -> CapabilityRegistry:
-    return CapabilityRegistry(tools or {})
+def investment_capability_registry() -> CapabilityRegistry:
+    return CapabilityRegistry()

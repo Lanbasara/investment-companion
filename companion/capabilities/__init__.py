@@ -9,6 +9,11 @@ from .registry import (
     RECONCILIATION_STATEMENT_SCHEMA,
     investment_capability_registry,
 )
+from .depth import (
+    interface_surface,
+    load_interface_depth_policy,
+    validate_interface_depth,
+)
 from .validator import validate_compatibility
 
 __all__ = [
@@ -20,4 +25,7 @@ __all__ = [
     "RECONCILIATION_STATEMENT_SCHEMA",
     "investment_capability_registry",
     "validate_compatibility",
+    "interface_surface",
+    "load_interface_depth_policy",
+    "validate_interface_depth",
 ]

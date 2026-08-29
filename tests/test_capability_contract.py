@@ -14,6 +14,11 @@ from companion.capabilities.conformance import (
     evaluate_investment_conformance,
     probe_investment_mcp,
 )
+from companion.capabilities.depth import (
+    interface_surface,
+    load_interface_depth_policy,
+    validate_interface_depth,
+)
 from companion.capabilities.receipts import (
     issue_compatibility_receipt,
     read_current_receipt,
@@ -24,11 +29,18 @@ from companion.core import Companion, CompanionError
 from companion.interfaces.mcp_profiles import INVESTMENT_TOOLS
 
 
+def current_interface_depth():
+    return validate_interface_depth(
+        investment_capability_registry(),
+        load_interface_depth_policy(),
+    )
+
+
 def test_provider_manifest_contracts_all_investment_profile_workflows():
-    registry = investment_capability_registry(INVESTMENT_TOOLS)
+    registry = investment_capability_registry()
 
     first = registry.provider_manifest()
-    second = investment_capability_registry(dict(reversed(INVESTMENT_TOOLS.items()))).provider_manifest()
+    second = investment_capability_registry().provider_manifest()
 
     assert first.document == second.document
     assert first.digest == second.digest
@@ -69,14 +81,15 @@ def test_provider_manifest_contracts_all_investment_profile_workflows():
         "investment_workflow_update",
         "investment_delivery_update",
     }
-    assert {
+    assert not {
         name for name, capability in first.document["capabilities"].items()
         if capability["status"] == "uncontracted"
-    } == set(INVESTMENT_TOOLS) - contracted
+    }
     assert {
         name for name, capability in first.document["capabilities"].items()
         if capability["status"] == "contracted"
     } == contracted
+    assert set(first.document["capabilities"]) == set(INVESTMENT_TOOLS) == contracted
 
     context = first.document["capabilities"]["investment_context_update"]
     assert context["handler"] == "investment_commands.context_update"
@@ -185,8 +198,9 @@ def test_provider_manifest_contracts_all_investment_profile_workflows():
     }
     assert set(brief_update["errors"]) == {
         "capability.input.invalid",
-        "capability.output.invalid",
-        "investment_program.not_active",
+            "capability.output.invalid",
+            "capability.runtime.baseline_unavailable",
+            "investment_program.not_active",
         "investment_brief.unresolved_obligations",
         "investment_brief.calculation_lineage_required",
     }
@@ -325,6 +339,9 @@ def test_provider_manifest_contracts_all_investment_profile_workflows():
         for token in (
             "receipt",
             "provider_manifest",
+            "scope_digests",
+            "interface_depth_policy",
+            "conformance_checks",
             "pipeline_metadata",
             "job_metadata",
         )
@@ -396,7 +413,7 @@ def baseline_requirements() -> dict:
 
 
 def test_validator_accepts_provider_that_covers_baseline_requirement():
-    provider = investment_capability_registry(INVESTMENT_TOOLS).provider_manifest()
+    provider = investment_capability_registry().provider_manifest()
 
     result = validate_compatibility(provider.document, baseline_requirements())
 
@@ -423,7 +440,7 @@ def test_validator_accepts_provider_that_covers_baseline_requirement():
 )
 def test_validator_reports_structured_baseline_drift(drift: str, expected_code: str):
     provider = deepcopy(
-        investment_capability_registry(INVESTMENT_TOOLS).provider_manifest().document
+        investment_capability_registry().provider_manifest().document
     )
     if drift == "missing_capability":
         del provider["capabilities"]["investment_home"]
@@ -451,7 +468,7 @@ def test_validator_rejects_requirement_without_usage_evidence(field: str, value)
     requirements["capabilities"]["investment_home"][field] = value
 
     result = validate_compatibility(
-        investment_capability_registry(INVESTMENT_TOOLS).provider_manifest().document,
+        investment_capability_registry().provider_manifest().document,
         requirements,
     )
 
@@ -471,7 +488,7 @@ def test_plugin_usage_audit_reports_contracted_research_capability_missing_from_
     )
 
     result = validate_compatibility(
-        investment_capability_registry(INVESTMENT_TOOLS).provider_manifest().document,
+        investment_capability_registry().provider_manifest().document,
         baseline_requirements(),
         usage_sources=[prose],
     )
@@ -483,6 +500,33 @@ def test_plugin_usage_audit_reports_contracted_research_capability_missing_from_
         for failure in result["usage_audit"]["failures"]
         if failure["code"] == "undeclared_capability_usage"
     } == {"research_context", "investment_research_publish"}
+
+
+def test_plugin_usage_audit_checks_workflow_and_operation_view_declarations(tmp_path):
+    skill = tmp_path / "skills" / "decide-investment" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text(
+        "Use `investment_home`, then call an undeclared `operation=\"future\"`.",
+        encoding="utf-8",
+    )
+    requirements = baseline_requirements()
+    requirements["capabilities"]["investment_home"]["workflows"] = [
+        "manage-investment-lifecycle"
+    ]
+
+    result = validate_compatibility(
+        investment_capability_registry().provider_manifest().document,
+        requirements,
+        usage_sources=[skill],
+    )
+
+    assert result["compatible"] is False
+    assert {
+        failure["code"] for failure in result["usage_audit"]["failures"]
+    } == {
+        "undeclared_workflow_capability_usage",
+        "undeclared_selector_usage",
+    }
 
 
 @pytest.mark.parametrize(
@@ -510,7 +554,7 @@ def test_plugin_usage_audit_reports_contracted_research_capability_missing_from_
 )
 def test_validator_rejects_provider_that_narrows_consumer_input(provider_input):
     provider = deepcopy(
-        investment_capability_registry(INVESTMENT_TOOLS).provider_manifest().document
+        investment_capability_registry().provider_manifest().document
     )
     requirements = baseline_requirements()
     requirement_input = deepcopy(provider_input)
@@ -538,7 +582,7 @@ def test_validator_rejects_provider_that_narrows_consumer_input(provider_input):
 )
 def test_validator_checks_required_operation_outputs(drift, expected_code):
     provider = deepcopy(
-        investment_capability_registry(INVESTMENT_TOOLS).provider_manifest().document
+        investment_capability_registry().provider_manifest().document
     )
     transaction = provider["capabilities"]["investment_transaction_update"]
     requirements = baseline_requirements()
@@ -577,7 +621,7 @@ def test_validator_checks_required_operation_outputs(drift, expected_code):
 
 
 def test_registry_rejects_home_handler_result_that_violates_output_contract():
-    registry = investment_capability_registry(INVESTMENT_TOOLS)
+    registry = investment_capability_registry()
     companion = SimpleNamespace(
         investment=SimpleNamespace(home=lambda: {"schema": "known-drift-without-health"})
     )
@@ -587,7 +631,7 @@ def test_registry_rejects_home_handler_result_that_violates_output_contract():
 
 
 def test_registry_rejects_invalid_dynamic_workflow_status(tmp_path):
-    registry = investment_capability_registry(INVESTMENT_TOOLS)
+    registry = investment_capability_registry()
     real = Companion(tmp_path, gate_scope="test_fixture")
     real.initialize()
     result = real.investment.home()
@@ -614,7 +658,7 @@ def test_registry_rejects_invalid_dynamic_workflow_status(tmp_path):
     ],
 )
 def test_registry_rejects_ambiguous_or_incomplete_context_variants(arguments):
-    registry = investment_capability_registry(INVESTMENT_TOOLS)
+    registry = investment_capability_registry()
 
     with pytest.raises(CompanionError, match="capability.input.invalid"):
         registry.invoke(SimpleNamespace(), "investment_context_update", arguments, actor="test")
@@ -635,7 +679,7 @@ def test_registry_rejects_ambiguous_or_incomplete_context_variants(arguments):
     ],
 )
 def test_registry_rejects_missing_references_and_cross_operation_fields(arguments):
-    registry = investment_capability_registry(INVESTMENT_TOOLS)
+    registry = investment_capability_registry()
 
     with pytest.raises(CompanionError, match="capability.input.invalid"):
         registry.invoke(SimpleNamespace(), "investment_transaction_update", arguments, actor="test")
@@ -673,7 +717,7 @@ def test_registry_rejects_missing_references_and_cross_operation_fields(argument
     ],
 )
 def test_registry_rejects_ambiguous_or_incomplete_research_operation_variants(arguments):
-    registry = investment_capability_registry(INVESTMENT_TOOLS)
+    registry = investment_capability_registry()
 
     with pytest.raises(CompanionError, match="capability.input.invalid"):
         registry.invoke(
@@ -741,7 +785,7 @@ def test_registry_rejects_ambiguous_or_incomplete_research_operation_variants(ar
     ],
 )
 def test_registry_rejects_incomplete_decision_and_action_variants(capability, arguments):
-    registry = investment_capability_registry(INVESTMENT_TOOLS)
+    registry = investment_capability_registry()
 
     with pytest.raises(CompanionError, match="capability.input.invalid"):
         registry.invoke(SimpleNamespace(), capability, arguments, actor="test")
@@ -809,7 +853,7 @@ def test_registry_rejects_incomplete_decision_and_action_variants(capability, ar
 def test_registry_rejects_incomplete_program_and_brief_variants(
     capability, arguments
 ):
-    registry = investment_capability_registry(INVESTMENT_TOOLS)
+    registry = investment_capability_registry()
 
     with pytest.raises(CompanionError, match="capability.input.invalid"):
         registry.invoke(SimpleNamespace(), capability, arguments, actor="test")
@@ -883,7 +927,7 @@ def test_registry_rejects_incomplete_program_and_brief_variants(
 def test_registry_rejects_incomplete_workflow_and_delivery_variants(
     capability, arguments
 ):
-    registry = investment_capability_registry(INVESTMENT_TOOLS)
+    registry = investment_capability_registry()
 
     with pytest.raises(CompanionError, match="capability.input.invalid"):
         registry.invoke(SimpleNamespace(), capability, arguments, actor="test")
@@ -945,7 +989,7 @@ def test_registry_rejects_incomplete_workflow_and_delivery_variants(
     ],
 )
 def test_registry_rejects_incomplete_or_ambiguous_execution_variants(arguments):
-    registry = investment_capability_registry(INVESTMENT_TOOLS)
+    registry = investment_capability_registry()
 
     with pytest.raises(CompanionError, match="capability.input.invalid"):
         registry.invoke(
@@ -959,7 +1003,7 @@ def test_registry_rejects_incomplete_or_ambiguous_execution_variants(arguments):
 def test_platform_health_uses_an_injected_registry_without_interface_dependency(
     tmp_path,
 ):
-    registry = investment_capability_registry(INVESTMENT_TOOLS)
+    registry = investment_capability_registry()
 
     companion = Companion(
         tmp_path,
@@ -1131,6 +1175,66 @@ def test_real_investment_mcp_profile_captures_home_production_health_drift(tmp_p
     assert workflow["terminal_runs"]["cancelled"]["status"] == "cancelled"
 
 
+def test_interface_depth_gate_covers_tools_operations_views_and_required_fields():
+    registry = investment_capability_registry()
+    policy = load_interface_depth_policy()
+    surface = interface_surface(registry)
+
+    result = validate_interface_depth(registry, policy)
+    drifted = deepcopy(surface)
+    drifted["tools"]["investment_home"]["required_fields"].append(
+        "new_model_visible_field"
+    )
+    rejected = validate_interface_depth(registry, policy, surface=drifted)
+
+    assert result["passed"] is True
+    assert result["profile"] == "investment"
+    assert set(surface["tools"]) == set(INVESTMENT_TOOLS)
+    assert "execution_strategy" in surface["tools"]["investment_workflow_context"][
+        "views"
+    ]
+    assert "strategy_create" in surface["tools"]["investment_execution_update"][
+        "operations"
+    ]
+    assert rejected["passed"] is False
+    assert [failure["code"] for failure in rejected["failures"]] == [
+        "interface_depth.unexplained_growth"
+    ]
+
+
+def test_interface_depth_migration_requires_unexpired_deletion_conditions():
+    from datetime import date
+
+    registry = investment_capability_registry()
+    policy = load_interface_depth_policy()
+    drifted = interface_surface(registry)
+    drifted["tools"]["future_tool"] = {"required_fields": ["operation"]}
+    target_digest = content_digest(drifted)
+    policy["changes"] = [
+        {
+            "from_digest": policy["baseline_digest"],
+            "to_digest": target_digest,
+            "decision": "migration",
+            "rationale": "Temporarily expand while the replacement migrates.",
+            "removal_conditions": "Installed Plugin no longer requires future_tool.",
+            "remove_by": "2026-09-30",
+        }
+    ]
+
+    accepted = validate_interface_depth(
+        registry, policy, surface=drifted, today=date(2026, 8, 29)
+    )
+    expired = validate_interface_depth(
+        registry, policy, surface=drifted, today=date(2026, 10, 1)
+    )
+
+    assert accepted["passed"] is True
+    assert accepted["decision"]["decision"] == "migration"
+    assert [failure["code"] for failure in expired["failures"]] == [
+        "interface_depth.migration_expired"
+    ]
+
+
 def test_contract_digest_normalizes_set_like_array_order():
     requirements = baseline_requirements()
     reordered = deepcopy(requirements)
@@ -1151,7 +1255,7 @@ def test_contract_digest_normalizes_set_like_array_order():
 def test_optional_enhancement_failure_does_not_degrade_required_scopes(
     tmp_path, monkeypatch
 ):
-    registry = investment_capability_registry(INVESTMENT_TOOLS)
+    registry = investment_capability_registry()
     provider = registry.provider_manifest()
     requirements = baseline_requirements()
     requirements["capabilities"]["missing_optional"] = {
@@ -1183,6 +1287,7 @@ def test_optional_enhancement_failure_does_not_degrade_required_scopes(
             "checks": [],
             "failures": [],
         },
+        interface_depth=current_interface_depth(),
         mcp_profile="investment",
         core_identity="core-test",
         plugin_identity="plugin-test",
@@ -1199,14 +1304,20 @@ def test_optional_enhancement_failure_does_not_degrade_required_scopes(
     assert summary["ok"] is True
     assert summary["baseline"]["status"] == "compatible"
     assert summary["workflows"]["investment_home"]["status"] == "compatible"
-    assert summary["optional_enhancements"]["missing_optional"]["status"] == "degraded"
+    assert summary["optional_enhancements"]["missing_optional"] == {
+        "status": "fallback",
+        "incidents": validation["scopes"]["optional_enhancements"][
+            "missing_optional"
+        ]["failures"],
+        "fallback": "Use the baseline health summary.",
+    }
     assert summary["receipt_digest"] == receipt["digest"]
 
 
 def test_runtime_health_scopes_workflow_requirement_drift_to_affected_workflow(
     tmp_path, monkeypatch
 ):
-    registry = investment_capability_registry(INVESTMENT_TOOLS)
+    registry = investment_capability_registry()
     provider = registry.provider_manifest()
     requirements = {
         "format": "investment-companion.capability-requirements/v1",
@@ -1270,6 +1381,7 @@ def test_runtime_health_scopes_workflow_requirement_drift_to_affected_workflow(
             "checks": [],
             "failures": [],
         },
+        interface_depth=current_interface_depth(),
         mcp_profile="investment",
         core_identity="core-test",
         plugin_identity="plugin-test",
@@ -1287,7 +1399,7 @@ def test_runtime_health_scopes_workflow_requirement_drift_to_affected_workflow(
     summary = compatibility_summary(registry, tmp_path, "test_fixture")
 
     assert summary["ok"] is False
-    assert summary["baseline"]["status"] == "degraded"
+    assert summary["baseline"]["status"] == "compatible"
     assert summary["workflows"]["manage-investment-lifecycle"]["status"] == (
         "degraded"
     )
@@ -1300,13 +1412,19 @@ def test_runtime_health_scopes_workflow_requirement_drift_to_affected_workflow(
         for incident in summary["workflows"]["manage-investment-lifecycle"][
             "incidents"
         ]
-    } == {"missing_operation"}
+    } == {"missing_operation", "compatibility.scope_digest_mismatch"}
 
 
 def test_receipts_are_content_addressed_and_all_contracted_profile_allows_production(tmp_path):
-    provider = investment_capability_registry(INVESTMENT_TOOLS).provider_manifest()
+    provider = investment_capability_registry().provider_manifest()
     requirements = baseline_requirements()
-    validation = validate_compatibility(provider.document, requirements)
+    usage_source = tmp_path / "SKILL.md"
+    usage_source.write_text("Call `investment_home` before conclusions.\n", encoding="utf-8")
+    validation = validate_compatibility(
+        provider.document,
+        requirements,
+        usage_sources=[usage_source],
+    )
     conformance = evaluate_investment_conformance(probe_investment_mcp(tmp_path / "mcp"))
     receipt_state = tmp_path / "deployment" / "capability-contract"
 
@@ -1317,6 +1435,7 @@ def test_receipts_are_content_addressed_and_all_contracted_profile_allows_produc
         requirements=requirements,
         validation=validation,
         conformance=conformance,
+        interface_depth=current_interface_depth(),
         mcp_profile="investment",
         core_identity="core-test",
         plugin_identity="plugin-test",
@@ -1328,6 +1447,7 @@ def test_receipts_are_content_addressed_and_all_contracted_profile_allows_produc
         requirements=requirements,
         validation=validation,
         conformance=conformance,
+        interface_depth=current_interface_depth(),
         mcp_profile="investment",
         core_identity="core-test",
         plugin_identity="plugin-test",
@@ -1338,7 +1458,14 @@ def test_receipts_are_content_addressed_and_all_contracted_profile_allows_produc
     assert first["receipt"]["provider_digest"] == provider.digest
     assert first["receipt"]["requirements_digest"] == validation["requirements_digest"]
     assert first["receipt"]["mcp_profile"] == "investment"
+    assert first["receipt"]["contract_format"] == provider.document["format"]
     assert first["receipt"]["conformance"] == conformance
+    assert first["receipt"]["interface_depth"]["passed"] is True
+    assert first["receipt"]["validation"]["usage_audit"] == {
+        "ok": True,
+        "source_count": 1,
+        "used_capabilities": ["investment_home"],
+    }
     assert first["receipt"]["release_pair"] == {
         "core": "core-test",
         "plugin": "plugin-test",
@@ -1352,6 +1479,7 @@ def test_receipts_are_content_addressed_and_all_contracted_profile_allows_produc
         requirements=requirements,
         validation=validation,
         conformance=conformance,
+        interface_depth=current_interface_depth(),
         mcp_profile="investment",
         core_identity="core-test",
         plugin_identity="plugin-test",
@@ -1369,7 +1497,7 @@ def test_receipts_are_content_addressed_and_all_contracted_profile_allows_produc
 def test_runtime_compares_current_digests_with_receipt_without_rerunning_conformance(
     tmp_path, monkeypatch
 ):
-    registry = investment_capability_registry(INVESTMENT_TOOLS)
+    registry = investment_capability_registry()
     provider = registry.provider_manifest()
     requirements = baseline_requirements()
     validation = validate_compatibility(provider.document, requirements)
@@ -1382,6 +1510,7 @@ def test_runtime_compares_current_digests_with_receipt_without_rerunning_conform
         requirements=requirements,
         validation=validation,
         conformance=conformance,
+        interface_depth=current_interface_depth(),
         mcp_profile="investment",
         core_identity="core-test",
         plugin_identity="plugin-test",
@@ -1417,7 +1546,8 @@ def test_runtime_compares_current_digests_with_receipt_without_rerunning_conform
     assert drifted["ok"] is False
     assert drifted["baseline"]["status"] == "degraded"
     assert [incident["code"] for incident in drifted["incidents"]] == [
-        "compatibility.requirements_digest_mismatch"
+        "compatibility.requirements_digest_mismatch",
+        "compatibility.scope_digest_mismatch",
     ]
 
     requirements_path.write_text(json.dumps(requirements), encoding="utf-8")
@@ -1438,6 +1568,87 @@ def test_runtime_compares_current_digests_with_receipt_without_rerunning_conform
     assert doctor["compatibility"]["receipt"] == receipt["receipt"]
     assert model_doctor["compatibility"] == doctor["compatibility"]["summary"]
     assert "receipt" not in model_doctor["compatibility"]
+
+
+def test_runtime_detects_current_receipt_identity_and_mcp_profile_changes(
+    tmp_path, monkeypatch
+):
+    registry = investment_capability_registry()
+    provider = registry.provider_manifest()
+    requirements = baseline_requirements()
+    validation = validate_compatibility(provider.document, requirements)
+    conformance = {
+        "passed": True,
+        "profile": "investment",
+        "checks": [],
+        "failures": [],
+    }
+    state_dir = tmp_path / ".state" / "capability-contract"
+    original = issue_compatibility_receipt(
+        state_dir=state_dir,
+        environment="non_production",
+        provider=provider.document,
+        requirements=requirements,
+        validation=validation,
+        conformance=conformance,
+        interface_depth=current_interface_depth(),
+        mcp_profile="investment",
+        core_identity="core-test",
+        plugin_identity="plugin-test",
+    )
+    requirements_path = tmp_path / "requirements.json"
+    requirements_path.write_text(json.dumps(requirements), encoding="utf-8")
+    monkeypatch.setenv("COMPANION_PLUGIN_REQUIREMENTS", str(requirements_path))
+    monkeypatch.setenv("COMPANION_CAPABILITY_RECEIPT_DIR", str(state_dir))
+    monkeypatch.setenv("COMPANION_CAPABILITY_RECEIPT_IDENTITY", original["digest"])
+    monkeypatch.setenv("COMPANION_MCP_PROFILE", "investment")
+
+    assert compatibility_summary(registry, tmp_path, "test_fixture")["ok"] is True
+
+    replacement = issue_compatibility_receipt(
+        state_dir=state_dir,
+        environment="non_production",
+        provider=provider.document,
+        requirements=requirements,
+        validation=validation,
+        conformance=conformance,
+        interface_depth=current_interface_depth(),
+        mcp_profile="investment",
+        core_identity="core-test",
+        plugin_identity="plugin-replacement",
+    )
+    stale_pointer = compatibility_summary(registry, tmp_path, "test_fixture")
+    from companion.core import Companion
+
+    companion = Companion(
+        tmp_path,
+        gate_scope="test_fixture",
+        capability_registry=registry,
+    )
+    companion.initialize()
+    with pytest.raises(CompanionError, match="capability.runtime.baseline_unavailable"):
+        registry.invoke(
+            companion,
+            "investment_action_update",
+            {
+                "operation": "enqueue",
+                "opportunity_id": "synthetic-opportunity",
+                "decision_revision_id": "synthetic-decision",
+            },
+            actor="test",
+        )
+    monkeypatch.setenv("COMPANION_CAPABILITY_RECEIPT_IDENTITY", replacement["digest"])
+    monkeypatch.setenv("COMPANION_MCP_PROFILE", "admin")
+    wrong_profile = compatibility_summary(registry, tmp_path, "test_fixture")
+
+    assert stale_pointer["baseline"]["status"] == "degraded"
+    assert "compatibility.receipt_identity_mismatch" in {
+        incident["code"] for incident in stale_pointer["incidents"]
+    }
+    assert wrong_profile["baseline"]["status"] == "degraded"
+    assert "compatibility.mcp_profile_mismatch" in {
+        incident["code"] for incident in wrong_profile["incidents"]
+    }
 
 
 def test_shared_cli_validates_requirement_document(tmp_path):

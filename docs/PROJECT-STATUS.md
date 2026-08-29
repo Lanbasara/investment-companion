@@ -86,7 +86,7 @@ Primary Codex 仍是唯一最终语义判断、正式发布和用户沟通主体
 - Investment Briefing Service 将 Execution、待确认/已确认 Ledger、DecisionQueue 与最新 Reconciliation 投影到 Investment Home 和 Today，并为日/周/月 Brief 自动冻结不可伪造的 `execution_operating_snapshot` Calculation；
 - 冻结数据驱动的 China Market Calendar，持续量化研究已改用统一交易日解释；
 - `investment_home`、组合/研究/决策/评价四个 Context Workbench 和 10 个窄写命令；
-- 22 工具的版本无关 Investment MCP Profile；发布审计补齐了原 15 工具缺少的账户/资产、证据、Program、Opportunity、Action、Brief、Schedule/Wake/Delivery 入口，旧 157 工具保留在兼容/Admin Profile；
+- 22 工具的版本无关 Investment MCP release profile；发布审计补齐了原 15 工具缺少的账户/资产、证据、Program、Opportunity、Action、Brief、Schedule/Wake/Delivery 入口，旧 157 工具 schema、Admin/All profile 与独立 dispatcher 已删除；
 - 跨模块黄金闭环已贯通研究、Research Validation、Risk Gate、Decision、待确认成交、确认账本、现金流调整绩效和惰性变更提案；
 - 精确同周期 Performance Calculation 已接入 Program 评价覆盖，月度指标不再把已有真实收益误报为缺失；
 - 195 项测试、8 个子测试通过；架构测试同时锁定大型模块上限、版本依赖、新服务边界与 22 工具闭环完整性。Agent 配置未发生变化。

@@ -10,6 +10,7 @@ from typing import Any
 from ..foundation import CompanionError
 from ..interfaces.mcp_profiles import INVESTMENT_CAPABILITY_REGISTRY
 from .conformance import evaluate_investment_conformance, probe_investment_mcp
+from .depth import load_interface_depth_policy, validate_interface_depth
 from .receipts import issue_compatibility_receipt
 from .validator import validate_compatibility
 
@@ -70,14 +71,9 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m companion.capabilities")
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("provider")
+    sub.add_parser("depth")
     validate = sub.add_parser("validate")
     validate.add_argument("--requirements", required=True)
-    validate.add_argument(
-        "--usage-source",
-        action="append",
-        default=[],
-        help="Plugin prose file to audit for contracted capability usage",
-    )
     receipt = sub.add_parser("receipt")
     receipt.add_argument("--requirements", required=True)
     receipt.add_argument("--state-dir", required=True)
@@ -88,6 +84,13 @@ def _parser() -> argparse.ArgumentParser:
     )
     receipt.add_argument("--core-identity", required=True)
     receipt.add_argument("--plugin-identity", required=True)
+    for command in (validate, receipt):
+        command.add_argument(
+            "--usage-source",
+            action="append",
+            default=[],
+            help="Plugin prose file to audit for contracted capability usage",
+        )
     return parser
 
 
@@ -97,15 +100,32 @@ def main(argv: list[str] | None = None) -> int:
         provider = INVESTMENT_CAPABILITY_REGISTRY.provider_manifest()
         if args.command == "provider":
             result = {"digest": provider.digest, "manifest": provider.document}
+        elif args.command == "depth":
+            result = validate_interface_depth(
+                INVESTMENT_CAPABILITY_REGISTRY,
+                load_interface_depth_policy(),
+            )
         else:
             requirements = _load(args.requirements)
             validation = validate_compatibility(
                 provider.document,
                 requirements,
-                usage_sources=(args.usage_source or None)
-                if args.command == "validate"
-                else None,
+                usage_sources=args.usage_source or None,
             )
+            interface_depth = validate_interface_depth(
+                INVESTMENT_CAPABILITY_REGISTRY,
+                load_interface_depth_policy(),
+            )
+            validation["interface_depth"] = interface_depth
+            if not interface_depth["passed"]:
+                failures = [
+                    {**failure, "scope": "baseline"}
+                    for failure in interface_depth["failures"]
+                ]
+                validation["failures"].extend(failures)
+                validation["scopes"]["baseline"]["failures"].extend(failures)
+                validation["scopes"]["baseline"]["status"] = "degraded"
+                validation["compatible"] = False
             if args.command == "validate":
                 result = validation
             else:
@@ -126,6 +146,7 @@ def main(argv: list[str] | None = None) -> int:
                     requirements=requirements,
                     validation=validation,
                     conformance=conformance,
+                    interface_depth=interface_depth,
                     mcp_profile="investment",
                     core_identity=core_identity,
                     plugin_identity=plugin_identity,

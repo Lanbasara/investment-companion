@@ -38,6 +38,7 @@ def issue_compatibility_receipt(
     requirements: dict[str, Any],
     validation: dict[str, Any],
     conformance: dict[str, Any],
+    interface_depth: dict[str, Any],
     mcp_profile: str,
     core_identity: str,
     plugin_identity: str,
@@ -55,8 +56,12 @@ def issue_compatibility_receipt(
         raise CompanionError("validation requirements digest does not match current requirements")
     if not validation.get("compatible"):
         raise CompanionError("static capability validation did not pass")
+    if environment == "production" and validation.get("usage_audit", {}).get("ok") is not True:
+        raise CompanionError("production receipt requires a successful Plugin prose audit")
     if not conformance.get("passed") or conformance.get("profile") != mcp_profile:
         raise CompanionError("MCP conformance did not pass for the requested profile")
+    if not interface_depth.get("passed") or interface_depth.get("profile") != mcp_profile:
+        raise CompanionError("Interface Depth validation did not pass for the requested profile")
     uncontracted = sorted(
         name for name, capability in provider.get("capabilities", {}).items()
         if capability.get("status") == "uncontracted"
@@ -68,6 +73,7 @@ def issue_compatibility_receipt(
         )
     receipt = {
         "format": RECEIPT_FORMAT,
+        "contract_format": provider.get("format"),
         "environment": environment,
         "provider_digest": provider_digest,
         "requirements_digest": requirements_digest,
@@ -76,9 +82,19 @@ def issue_compatibility_receipt(
         "validation": {
             "compatible": validation["compatible"],
             "scopes": validation["scopes"],
+            "scope_digests": validation["scope_digests"],
             "failures": validation["failures"],
+            "usage_audit": {
+                "ok": validation.get("usage_audit", {}).get("ok"),
+                "source_count": len(validation.get("usage_audit", {}).get("sources", [])),
+                "used_capabilities": sorted(
+                    validation.get("usage_audit", {})
+                    .get("used_contracted_capabilities", {})
+                ),
+            },
         },
         "conformance": conformance,
+        "interface_depth": interface_depth,
     }
     receipt_digest = content_digest(receipt)
     directory = Path(state_dir).expanduser().resolve()
