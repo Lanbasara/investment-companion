@@ -420,6 +420,54 @@ class PortfolioCandidateQualificationCalculation:
             "no_action_inferred": False,
         }
 
+    def audit_lineage_projection(self) -> dict[str, Any]:
+        """Freeze internal candidate and material-fact lineage for audit consumers."""
+
+        lineage = self.account_qualification.fact_lineage
+        return {
+            "calculation_id": self.calculation_id,
+            "level": self.level,
+            "allowed_uses": list(self.allowed_uses),
+            "policy_version": self.policy_version,
+            "account_id": self.candidate.account_id,
+            "candidate": {
+                "account_id": self.candidate.account_id,
+                "asset_id": self.candidate.asset_id,
+                "direction": self.candidate.direction,
+                "quantity": self.candidate.quantity,
+                "reference_price": self.candidate.reference_price,
+                "price_range": {
+                    "min": self.candidate.price_range[0],
+                    "max": self.candidate.price_range[1],
+                },
+                "market_snapshot_id": self.candidate.market_snapshot_id,
+                "max_market_age_seconds": self.candidate.max_market_age_seconds,
+                "as_of": self.candidate.as_of,
+                "valid_until": self.candidate.valid_until,
+            },
+            "account_calculation_id": self.account_qualification.calculation_id,
+            "confirmed_ledger_entry_ids": list(lineage.confirmed_ledger_entry_ids),
+            "confirmed_ledger_fingerprint": lineage.confirmed_ledger_fingerprint,
+            "reconciliation_id": lineage.reconciliation_id,
+            "reconciliation_fingerprint": lineage.reconciliation_fingerprint,
+            "continuity_confirmation_id": lineage.continuity_confirmation_id,
+            "continuity_fingerprint": lineage.continuity_fingerprint,
+            "pending_ledger_entry_ids": list(lineage.pending_ledger_entry_ids),
+            "open_execution_ids": list(lineage.open_execution_ids),
+            "active_broker_strategy_ids": list(
+                lineage.active_broker_strategy_ids
+            ),
+            "market_snapshot_id": self.market_evidence.market_snapshot_id,
+            "latest_relevant_market_snapshot_id": (
+                self.market_evidence.latest_relevant_snapshot_id
+            ),
+            "account_material_fact_fingerprint": (
+                self.account_qualification.material_fact_fingerprint
+            ),
+            "market_fact_fingerprint": self.market_fact_fingerprint,
+            "material_fact_fingerprint": self.material_fact_fingerprint,
+        }
+
 
 class PortfolioQualificationService:
     """Single read-only authority for account portfolio-fact qualification."""
@@ -974,6 +1022,92 @@ class PortfolioQualificationService:
             market_fact_fingerprint=market_fact_fingerprint,
             material_fact_fingerprint=material_fact_fingerprint,
         )
+
+    def evaluate_risk_candidate(
+        self, risk: dict[str, Any]
+    ) -> PortfolioCandidateQualificationCalculation:
+        """Rebuild the candidate qualification described by one Risk Calculation."""
+
+        return self.evaluate_candidate(
+            account_id=risk["inputs"]["account_id"],
+            asset_id=risk["inputs"]["asset_id"],
+            quantity=risk["inputs"]["quantity"],
+            price=risk["inputs"]["price"],
+            price_range=risk["assumptions"]["price_range"],
+            market_snapshot_id=risk["inputs"].get("market_snapshot_id"),
+            max_market_age_seconds=risk["assumptions"][
+                "max_market_age_seconds"
+            ],
+            as_of=risk["as_of"],
+            valid_until=risk["assumptions"]["valid_until"],
+        )
+
+    def revalidate_frozen_risk_candidate(
+        self,
+        *,
+        risk: dict[str, Any],
+        calculation_id: str,
+        account_id: str,
+        as_of: str,
+        valid_until: str,
+        current_at: str,
+    ) -> tuple[PortfolioCandidateQualificationCalculation, dict[str, Any]]:
+        """Validate Risk lineage and ensure its immutable candidate is current now."""
+
+        frozen = risk["outputs"].get("portfolio_qualification")
+        lineage = risk["assumptions"].get("portfolio_qualification_lineage")
+        frozen_id = risk["inputs"].get(
+            "portfolio_qualification_calculation_id"
+        )
+        if not isinstance(frozen, dict) or not isinstance(lineage, dict):
+            raise CompanionError(
+                "Decision Risk Gate does not freeze a Portfolio Qualification"
+            )
+        if (
+            not frozen_id
+            or frozen.get("calculation_id") != frozen_id
+            or lineage.get("calculation_id") != frozen_id
+        ):
+            raise CompanionError(
+                "Decision Risk Gate Portfolio Qualification lineage is inconsistent"
+            )
+        if calculation_id != frozen_id:
+            raise CompanionError(
+                "Decision and Risk Gate use different Portfolio Qualification Calculations"
+            )
+        if risk["inputs"].get("account_id") != account_id:
+            raise CompanionError(
+                "Decision Portfolio Qualification belongs to another account"
+            )
+        if risk["as_of"] != as_of:
+            raise CompanionError(
+                "Decision and Portfolio Qualification use different decision times"
+            )
+        if risk["assumptions"].get("valid_until") != valid_until:
+            raise CompanionError(
+                "Decision and Portfolio Qualification use different validity"
+            )
+
+        calculation = self.evaluate_risk_candidate(risk)
+        if (
+            calculation.calculation_id != frozen_id
+            or calculation.material_fact_fingerprint
+            != lineage.get("material_fact_fingerprint")
+        ):
+            raise CompanionError(
+                "Decision Portfolio Qualification frozen lineage is inconsistent"
+            )
+        if calculation.market_evidence.market_snapshot_id != risk["outputs"].get(
+            "market_snapshot_id"
+        ):
+            raise CompanionError(
+                "Decision Portfolio Qualification and Risk Gate use different Market Snapshots"
+            )
+        if not self.candidate_is_current(calculation, as_of=current_at):
+            raise CompanionError(
+                "Decision Portfolio Qualification facts have drifted or the candidate has expired; recalculate Risk and Qualification"
+            )
+        return calculation, lineage
 
     def candidate_is_current(
         self,

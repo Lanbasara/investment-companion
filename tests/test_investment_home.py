@@ -547,7 +547,7 @@ def test_research_and_decision_commands_freeze_evidence_portfolio_and_risk(tmp_p
     )
     companion.investment_commands.context_confirm(revision_id=investor["id"])
     companion.investment_commands.context_confirm(revision_id=mandate["id"])
-    cutoff = iso()
+    cutoff = iso(utc_now() - timedelta(seconds=20))
     evidence = companion.data.manifest_publish(
         kind="fixture_official_evidence",
         schema_version="fixture/v1",
@@ -581,8 +581,20 @@ def test_research_and_decision_commands_freeze_evidence_portfolio_and_risk(tmp_p
         validation_spec=thesis_validation_spec(),
     )
     assert research["validation"]["status"] == "eligible_for_decision"
-    as_of = iso()
+    as_of = iso(utc_now() - timedelta(seconds=10))
     valid_until = iso(utc_now() + timedelta(days=1))
+    companion.financial.reconcile(
+        account["id"],
+        as_of,
+        {
+            "cash": {"CNY": "1000"},
+            "positions": {},
+            "position_values": {},
+            "position_total_by_currency": {"CNY": "0"},
+            "total_by_currency": {"CNY": "1000"},
+        },
+        "decision-qualification-fixture",
+    )
     market = companion.financial.market_add(
         asset["id"], "close", "1", as_of, "fixture", "healthy", "CNY"
     )
@@ -617,9 +629,39 @@ def test_research_and_decision_commands_freeze_evidence_portfolio_and_risk(tmp_p
     }
     with pytest.raises(CompanionError, match="Research Validation"):
         companion.investment_commands.decision_publish(**decision_args)
+    with pytest.raises(CompanionError, match="Portfolio Qualification"):
+        companion.investment_commands.decision_publish(
+            **decision_args,
+            research_validation_calculation_id=research["validation"]["calculation_id"],
+        )
+    with pytest.raises(CompanionError, match="quantity domain"):
+        companion.investment_commands.decision_publish(
+            **{
+                **decision_args,
+                "subject": {"asset_id": asset["id"], "quantity": "101"},
+            },
+            research_validation_calculation_id=research["validation"]["calculation_id"],
+            portfolio_qualification_calculation_id=risk[
+                "portfolio_qualification"
+            ]["calculation_id"],
+        )
+    with pytest.raises(CompanionError, match="direction differs"):
+        companion.investment_commands.decision_publish(
+            **{
+                **decision_args,
+                "subject": {"asset_id": asset["id"], "direction": "sell"},
+            },
+            research_validation_calculation_id=research["validation"]["calculation_id"],
+            portfolio_qualification_calculation_id=risk[
+                "portfolio_qualification"
+            ]["calculation_id"],
+        )
     decision = companion.investment_commands.decision_publish(
         **decision_args,
         research_validation_calculation_id=research["validation"]["calculation_id"],
+        portfolio_qualification_calculation_id=risk["portfolio_qualification"][
+            "calculation_id"
+        ],
     )
 
     revision = decision["revision"]
@@ -628,5 +670,190 @@ def test_research_and_decision_commands_freeze_evidence_portfolio_and_risk(tmp_p
     assert revision["context_refs"]["mandate_revision_id"] == mandate["id"]
     assert revision["metadata"]["risk_calculation_id"] == risk["calculation_id"]
     assert revision["metadata"]["research_validation_calculation_id"] == research["validation"]["calculation_id"]
+    assert revision["metadata"]["portfolio_qualification_calculation_id"] == (
+        risk["portfolio_qualification"]["calculation_id"]
+    )
+    assert revision["metadata"]["portfolio_qualification_lineage"] == (
+        companion.financial.calculation_get(risk["calculation_id"])["assumptions"][
+            "portfolio_qualification_lineage"
+        ]
+    )
+    assert revision["context_refs"]["portfolio_qualification_calculation_id"] == (
+        risk["portfolio_qualification"]["calculation_id"]
+    )
+    assert decision["portfolio_qualification_calculation_id"] == (
+        risk["portfolio_qualification"]["calculation_id"]
+    )
     assert revision["metadata"]["automatic_trade"] is False
     assert companion.financial.ledger_list() == ledger_before
+
+    frozen_qualification_lineage = revision["metadata"][
+        "portfolio_qualification_lineage"
+    ]
+    changed = companion.financial.ledger_add(
+        account_id=account["id"],
+        entry_type="fee",
+        occurred_at=iso(),
+        amount="-1",
+        currency="CNY",
+        source="decision-qualification-drift-fixture",
+    )
+    companion.financial.ledger_confirm(changed["id"])
+    with pytest.raises(CompanionError, match="facts have drifted"):
+        companion.investment_commands.decision_publish(
+            **decision_args,
+            research_validation_calculation_id=research["validation"]["calculation_id"],
+            portfolio_qualification_calculation_id=risk["portfolio_qualification"][
+                "calculation_id"
+            ],
+        )
+
+    watch_as_of = iso()
+    companion.financial.reconcile(
+        account["id"],
+        watch_as_of,
+        {
+            "cash": {"CNY": "999"},
+            "positions": {},
+            "position_values": {},
+            "position_total_by_currency": {"CNY": "0"},
+            "total_by_currency": {"CNY": "999"},
+        },
+        "decision-watch-qualification-fixture",
+    )
+    companion.financial.ledger_add(
+        account_id=account["id"],
+        entry_type="fee",
+        occurred_at=watch_as_of,
+        amount="-1",
+        currency="CNY",
+        source="decision-watch-pending-fixture",
+    )
+    watch_market = companion.financial.market_add(
+        asset["id"], "close", "1", watch_as_of, "fixture", "healthy", "CNY"
+    )
+    watch_risk = companion.investment_commands.risk_assess(
+        as_of=watch_as_of,
+        account_id=account["id"],
+        asset_id=asset["id"],
+        quantity="100",
+        price="1",
+        reality_spec=ashare_reality(),
+        market_snapshot_id=watch_market["id"],
+        max_market_age_seconds=600,
+        valid_until=valid_until,
+        price_range={"min": "0.95", "max": "1.05"},
+    )
+    assert watch_risk["status"] == "pass"
+    assert watch_risk["portfolio_qualification"]["level"] == "range_ready"
+    with pytest.raises(CompanionError, match="preflight_ready"):
+        companion.investment_commands.decision_publish(
+            **{
+                **decision_args,
+                "as_of": watch_as_of,
+                "risk_calculation_id": watch_risk["calculation_id"],
+            },
+            research_validation_calculation_id=research["validation"]["calculation_id"],
+            portfolio_qualification_calculation_id=watch_risk[
+                "portfolio_qualification"
+            ]["calculation_id"],
+        )
+    other_candidate_risk = companion.investment_commands.risk_assess(
+        as_of=watch_as_of,
+        account_id=account["id"],
+        asset_id=asset["id"],
+        quantity="200",
+        price="1",
+        reality_spec=ashare_reality(),
+        market_snapshot_id=watch_market["id"],
+        max_market_age_seconds=600,
+        valid_until=valid_until,
+        price_range={"min": "0.95", "max": "1.05"},
+    )
+    with pytest.raises(CompanionError, match="requires a Portfolio Qualification"):
+        companion.investment_commands.decision_publish(
+            **{
+                **decision_args,
+                "as_of": watch_as_of,
+                "subject": {"asset_id": asset["id"], "quantity": "100"},
+                "decision_kind": "watch",
+                "risk_calculation_id": watch_risk["calculation_id"],
+            },
+            research_validation_calculation_id=research["validation"]["calculation_id"],
+        )
+    with pytest.raises(CompanionError, match="different Portfolio Qualification"):
+        companion.investment_commands.decision_publish(
+            **{
+                **decision_args,
+                "as_of": watch_as_of,
+                "decision_kind": "watch",
+                "risk_calculation_id": watch_risk["calculation_id"],
+            },
+            research_validation_calculation_id=research["validation"]["calculation_id"],
+            portfolio_qualification_calculation_id=other_candidate_risk[
+                "portfolio_qualification"
+            ]["calculation_id"],
+        )
+    with pytest.raises(CompanionError, match="allowed uses"):
+        companion.investment_commands.decision_publish(
+            **{
+                **decision_args,
+                "as_of": watch_as_of,
+                "subject": {"asset_id": asset["id"], "quantity": "100"},
+                "content": "# Watch\nKeep the candidate under observation.",
+                "decision_kind": "watch",
+                "risk_calculation_id": watch_risk["calculation_id"],
+            },
+            research_validation_calculation_id=research["validation"]["calculation_id"],
+            portfolio_qualification_calculation_id=watch_risk[
+                "portfolio_qualification"
+            ]["calculation_id"],
+        )
+    with pytest.raises(CompanionError, match="quantity domain"):
+        companion.investment_commands.decision_publish(
+            **{
+                **decision_args,
+                "as_of": watch_as_of,
+                "subject": {
+                    "asset_id": asset["id"],
+                    "quantity_range": {"min": "0", "max": "101"},
+                },
+                "content": "# Watch\nReject an over-wide quantity domain.",
+                "decision_kind": "watch",
+                "risk_calculation_id": watch_risk["calculation_id"],
+            },
+            research_validation_calculation_id=research["validation"]["calculation_id"],
+            portfolio_qualification_calculation_id=watch_risk[
+                "portfolio_qualification"
+            ]["calculation_id"],
+        )
+    watch = companion.investment_commands.decision_publish(
+        **{
+            **decision_args,
+            "as_of": watch_as_of,
+            "subject": {
+                "asset_id": asset["id"],
+                "quantity_range": {"min": "0", "max": "100"},
+            },
+            "content": "# Watch\nObserve only within the qualified quantity range.",
+            "decision_kind": "watch",
+            "risk_calculation_id": watch_risk["calculation_id"],
+        },
+        research_validation_calculation_id=research["validation"]["calculation_id"],
+        portfolio_qualification_calculation_id=watch_risk[
+            "portfolio_qualification"
+        ]["calculation_id"],
+    )
+    assert watch["revision"]["metadata"]["portfolio_qualification"]["candidate"][
+        "quantity"
+    ] is None
+    assert watch["revision"]["metadata"]["action_card_eligible"] is False
+    with pytest.raises(CompanionError, match="action Decision"):
+        companion.actionability.validate_decision(watch["revision"]["id"])
+    historical = companion.cognition.revision_get(revision["id"])
+    assert historical["metadata"]["portfolio_qualification_lineage"] == (
+        frozen_qualification_lineage
+    )
+    assert historical["metadata"]["portfolio_qualification_calculation_id"] == (
+        risk["portfolio_qualification"]["calculation_id"]
+    )

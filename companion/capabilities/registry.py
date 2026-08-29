@@ -25,6 +25,9 @@ RESEARCH_WORK_INVARIANT = (
 DECISION_RESEARCH_SEPARATION_INVARIANT = (
     "decision.research_validation_is_not_decision/v1"
 )
+DECISION_QUALIFICATION_INVARIANT = (
+    "decision.portfolio_qualification_shared_with_risk/v1"
+)
 RISK_GATE_BOUNDARY_INVARIANT = (
     "investment_action_plan.risk_gate_is_veto_not_thesis/v1"
 )
@@ -101,7 +104,7 @@ DECISION_CONTEXT_DESCRIPTION = (
     "读取正式 Decision、Action Card 状态、失效原因和人工执行边界；接受 Action Card 不代表成交。"
 )
 DECISION_PUBLISH_DESCRIPTION = (
-    "把当前组合、约束、已验证研究、替代方案和风险结果冻结为有期限的正式 Investment Decision；不会成交。"
+    "把当前组合、候选 Portfolio Qualification、约束、已验证研究、替代方案和风险结果冻结为有期限的正式 Investment Decision；不会成交。"
 )
 ACTION_PLAN_DESCRIPTION = (
     "用统一候选 Portfolio Qualification、当前 Mandate 和独立 Risk Gate 计算 standard 或 bounded 人工行动方案。"
@@ -1482,6 +1485,10 @@ DECISION_METADATA_SCHEMA = object_schema(
         "source_refs": SA,
         "risk_calculation_id": {},
         "research_validation_calculation_id": {},
+        "portfolio_qualification_calculation_id": {},
+        "portfolio_qualification": {},
+        "portfolio_qualification_lineage": {},
+        "action_card_eligible": B,
         "confirmed_ledger_hash": S,
         "human_execution_only": {"type": "boolean", "const": True},
         "automatic_trade": {"type": "boolean", "const": False},
@@ -1492,6 +1499,8 @@ DECISION_METADATA_SCHEMA = object_schema(
         "decision_contract_version", "decision_kind", "action_tier", "valid_until",
         "invalidators", "no_action", "alternatives", "source_refs",
         "risk_calculation_id", "research_validation_calculation_id",
+        "portfolio_qualification_calculation_id", "portfolio_qualification",
+        "portfolio_qualification_lineage", "action_card_eligible",
         "confirmed_ledger_hash", "human_execution_only", "automatic_trade",
         "execution_plan", "published_at",
     ],
@@ -1514,11 +1523,13 @@ DECISION_REVISION_SCHEMA = object_schema(
                 "portfolio_calculation_id": S,
                 "thesis_revision_ids": SA,
                 "research_validation_calculation_id": {},
+                "portfolio_qualification_calculation_id": {},
             },
             [
                 "investor_revision_id", "mandate_revision_id",
                 "portfolio_calculation_id", "thesis_revision_ids",
                 "research_validation_calculation_id",
+                "portfolio_qualification_calculation_id",
             ],
             additional_properties=True,
         ),
@@ -1570,12 +1581,25 @@ def decision_input_schema(decision_kind: str, *, action: bool) -> dict[str, Any]
             {
                 "risk_calculation_id": S,
                 "research_validation_calculation_id": S,
+                "portfolio_qualification_calculation_id": S,
                 "execution_plan": O,
                 "execution_sell_risk_calculation_id": S,
             }
         )
         required.extend(
-            ["risk_calculation_id", "research_validation_calculation_id"]
+            [
+                "risk_calculation_id",
+                "research_validation_calculation_id",
+                "portfolio_qualification_calculation_id",
+            ]
+        )
+    elif decision_kind == "watch":
+        properties.update(
+            {
+                "risk_calculation_id": S,
+                "research_validation_calculation_id": S,
+                "portfolio_qualification_calculation_id": S,
+            }
         )
     return object_schema(properties, required)
 
@@ -1587,10 +1611,12 @@ DECISION_PUBLISH_OUTPUT_SCHEMA = object_schema(
         "portfolio_calculation_id": S,
         "risk_calculation_id": {},
         "research_validation_calculation_id": {},
+        "portfolio_qualification_calculation_id": {},
     },
     [
         "decision", "revision", "portfolio_calculation_id",
         "risk_calculation_id", "research_validation_calculation_id",
+        "portfolio_qualification_calculation_id",
     ],
     additional_properties=True,
 )
@@ -1614,24 +1640,6 @@ DECISION_OPERATIONS = {
 }
 DECISION_PUBLISH_INPUT_SCHEMA = operation_union(DECISION_OPERATIONS)
 
-RISK_GATE_RESULT_SCHEMA = object_schema(
-    {
-        "status": {"type": "string", "enum": ["pass", "blocked"]},
-        "blocked": B,
-        "violations": {"type": "array", "items": O},
-        "trade_impact_calculation_id": S,
-        "portfolio_calculation_id": S,
-        "market_snapshot_id": {},
-        "metrics": O,
-        "calculation_id": S,
-    },
-    [
-        "status", "blocked", "violations", "trade_impact_calculation_id",
-        "portfolio_calculation_id", "market_snapshot_id", "metrics",
-        "calculation_id",
-    ],
-    additional_properties=True,
-)
 CANDIDATE_QUALIFICATION_VALIDITY_SCHEMA = object_schema(
     {
         "status": {
@@ -1739,6 +1747,27 @@ CANDIDATE_QUALIFICATION_SCHEMA = object_schema(
         "market_evidence",
         "no_action_inferred",
     ],
+)
+RISK_GATE_RESULT_SCHEMA = object_schema(
+    {
+        "status": {"type": "string", "enum": ["pass", "blocked"]},
+        "blocked": B,
+        "violations": {"type": "array", "items": O},
+        "trade_impact_calculation_id": S,
+        "portfolio_calculation_id": S,
+        "market_snapshot_id": {},
+        "portfolio_qualification": CANDIDATE_QUALIFICATION_SCHEMA,
+        "precise_action_eligible": B,
+        "metrics": O,
+        "calculation_id": S,
+    },
+    [
+        "status", "blocked", "violations", "trade_impact_calculation_id",
+        "portfolio_calculation_id", "market_snapshot_id",
+        "portfolio_qualification", "precise_action_eligible", "metrics",
+        "calculation_id",
+    ],
+    additional_properties=True,
 )
 ACTION_PLAN_OUTPUT_SCHEMA = object_schema(
     {
@@ -4318,7 +4347,7 @@ CAPABILITY_CONTRACTS: dict[str, CapabilityContract] = {
         DECISION_PUBLISH_INPUT_SCHEMA,
         DECISION_PUBLISH_OUTPUT_SCHEMA,
         ("capability.input.invalid", "capability.output.invalid"),
-        (DECISION_RESEARCH_SEPARATION_INVARIANT,),
+        (DECISION_RESEARCH_SEPARATION_INVARIANT, DECISION_QUALIFICATION_INVARIANT),
         DECISION_OPERATIONS,
         variant_selectors=("decision_kind",),
         variant_aliases={

@@ -74,6 +74,65 @@ def test_risk_gate_passes_a_bounded_trade_without_changing_ledger(tmp_path):
     assert companion.financial.confirmed_ledger_hash() == ledger_before
 
 
+def test_risk_gate_freezes_candidate_qualification_without_conflating_risk_status(
+    tmp_path,
+):
+    companion, account, asset, market = setup_portfolio(tmp_path)
+    checked_at = iso()
+    valid_until = iso(utc_now() + timedelta(minutes=30))
+
+    result = companion.risk.assess_trade(
+        as_of=checked_at,
+        account_id=account["id"],
+        asset_id=asset["id"],
+        quantity="100",
+        price="10",
+        fee="5",
+        mandate={},
+        reality_spec=reality(),
+        market_snapshot_id=market["id"],
+        max_market_age_seconds=600,
+        valid_until=valid_until,
+        price_range={"min": "9.5", "max": "10.5"},
+    )
+
+    qualification = result["portfolio_qualification"]
+    calculation = companion.financial.calculation_get(result["calculation_id"])
+    assert result["status"] == "pass"
+    assert qualification["level"] == "range_ready"
+    assert result["precise_action_eligible"] is False
+    assert calculation["inputs"]["portfolio_qualification_calculation_id"] == (
+        qualification["calculation_id"]
+    )
+    assert calculation["outputs"]["portfolio_qualification"] == qualification
+    lineage = calculation["assumptions"]["portfolio_qualification_lineage"]
+    assert lineage["account_id"] == account["id"]
+    assert lineage["candidate"] == {
+            "account_id": account["id"],
+            "asset_id": asset["id"],
+            "direction": "buy",
+            "quantity": "100",
+            "reference_price": "10",
+            "price_range": {"min": "9.5", "max": "10.5"},
+            "market_snapshot_id": market["id"],
+            "max_market_age_seconds": 600,
+            "as_of": checked_at,
+            "valid_until": valid_until,
+    }
+    assert lineage["account_calculation_id"] == qualification["account_calculation_id"]
+    assert lineage["confirmed_ledger_entry_ids"]
+    assert lineage["reconciliation_id"] is None
+    assert lineage["continuity_confirmation_id"] is None
+    assert lineage["pending_ledger_entry_ids"] == []
+    assert lineage["open_execution_ids"] == []
+    assert lineage["active_broker_strategy_ids"] == []
+    assert lineage["market_snapshot_id"] == market["id"]
+    assert lineage["latest_relevant_market_snapshot_id"] == market["id"]
+    assert lineage["account_material_fact_fingerprint"]
+    assert lineage["market_fact_fingerprint"]
+    assert lineage["material_fact_fingerprint"]
+
+
 def test_risk_gate_combines_mandate_concentration_liquidity_and_lot_vetoes(tmp_path):
     companion, account, asset, market = setup_portfolio(tmp_path)
     result = companion.risk.assess_trade(
@@ -92,6 +151,8 @@ def test_risk_gate_combines_mandate_concentration_liquidity_and_lot_vetoes(tmp_p
         reality_spec=reality(),
         market_snapshot_id=market["id"],
         max_market_age_seconds=600,
+        valid_until=iso(utc_now() + timedelta(minutes=30)),
+        price_range={"min": "9.5", "max": "10.5"},
         average_daily_amount="100000",
     )
     rules = {item["rule"] for item in result["violations"]}
@@ -116,6 +177,8 @@ def test_risk_gate_fails_closed_when_required_market_or_liquidity_data_is_missin
         mandate={"max_participation_rate": "0.10"},
         reality_spec=reality(),
         max_market_age_seconds=600,
+        valid_until=iso(utc_now() + timedelta(minutes=30)),
+        price_range={"min": "9.5", "max": "10.5"},
     )
     rules = {item["rule"] for item in result["violations"]}
     assert {"market_snapshot_missing", "liquidity_data_missing"} <= rules

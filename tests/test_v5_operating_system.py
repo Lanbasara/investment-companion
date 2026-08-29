@@ -117,6 +117,18 @@ def setup_operating_system(tmp_path: Path) -> tuple[Companion, dict]:
         source="pytest",
     )
     companion.financial.ledger_confirm(opening["id"])
+    companion.financial.reconcile(
+        account["id"],
+        iso(),
+        {
+            "cash": {"CNY": "100000"},
+            "positions": {},
+            "position_values": {},
+            "position_total_by_currency": {"CNY": "0"},
+            "total_by_currency": {"CNY": "100000"},
+        },
+        "v5-decision-qualification-fixture",
+    )
     investor = confirmed_context(
         companion,
         "investor",
@@ -300,6 +312,9 @@ def build_actionable_opportunity(companion: Companion, fixture: dict, execution_
         alternatives=[{"choice": "hold cash"}, {"choice": "buy fewer shares"}],
         risk_calculation_id=risk["calculation_id"],
         research_validation_calculation_id=validation_id,
+        portfolio_qualification_calculation_id=risk["portfolio_qualification"][
+            "calculation_id"
+        ],
         execution_plan=requested_execution_plan,
         execution_sell_risk_calculation_id=sell_risk["calculation_id"] if sell_risk else None,
     )
@@ -1395,6 +1410,9 @@ def test_bounded_research_can_publish_only_a_capped_conditional_decision(tmp_pat
             alternatives=[{"choice": "hold cash"}],
             risk_calculation_id=risk["calculation_id"],
             research_validation_calculation_id=research["validation"]["calculation_id"],
+            portfolio_qualification_calculation_id=risk[
+                "portfolio_qualification"
+            ]["calculation_id"],
         )
     decision = companion.investment_commands.decision_publish(
         subject={"asset_id": asset["id"]},
@@ -1411,6 +1429,9 @@ def test_bounded_research_can_publish_only_a_capped_conditional_decision(tmp_pat
         alternatives=[{"choice": "hold cash"}],
         risk_calculation_id=risk["calculation_id"],
         research_validation_calculation_id=research["validation"]["calculation_id"],
+        portfolio_qualification_calculation_id=risk["portfolio_qualification"][
+            "calculation_id"
+        ],
         execution_plan={
             "plan_type": "priced_buy",
             "spec": {

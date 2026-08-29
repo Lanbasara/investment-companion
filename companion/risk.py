@@ -117,6 +117,22 @@ class RiskGate:
             if not low <= px <= high:
                 add("price_out_of_range", price=dtext(px), minimum=dtext(low), maximum=dtext(high))
 
+        if valid_until is None or price_range is None or max_market_age_seconds is None:
+            raise CompanionError(
+                "risk assessment requires candidate price_range, market freshness and validity"
+            )
+        qualification = self.c.portfolio_qualification.evaluate_candidate(
+            account_id=account_id,
+            asset_id=asset_id,
+            quantity=dtext(qty),
+            price=dtext(px),
+            price_range=price_range,
+            market_snapshot_id=market_snapshot_id,
+            max_market_age_seconds=max_market_age_seconds,
+            as_of=as_of,
+            valid_until=valid_until,
+        )
+
         market = None
         if market_snapshot_id is not None:
             with self.c.db.connect() as con:
@@ -300,6 +316,11 @@ class RiskGate:
             "trade_impact_calculation_id": impact["calculation_id"],
             "portfolio_calculation_id": before["calculation_id"],
             "market_snapshot_id": market["id"] if market else None,
+            "portfolio_qualification": qualification.stable_projection(),
+            "precise_action_eligible": bool(
+                not violations
+                and "precise_decision_support" in qualification.allowed_uses
+            ),
             "metrics": {
                 "post_trade_position_weight": dtext(position_weight) if position_weight is not None else None,
                 "trade_turnover": dtext(turnover) if turnover is not None else None,
@@ -320,6 +341,9 @@ class RiskGate:
                 "action_tier": action_tier,
                 "program_revision_id": program_revision_id,
                 "validity_sessions": validity_sessions,
+                "portfolio_qualification_calculation_id": (
+                    qualification.calculation_id
+                ),
             },
             {
                 "mandate": mandate or {},
@@ -334,6 +358,9 @@ class RiskGate:
                 "bounded_action_policy": bounded_action_policy or {},
                 "program_revision_id": program_revision_id,
                 "validity_sessions": validity_sessions,
+                "portfolio_qualification_lineage": (
+                    qualification.audit_lineage_projection()
+                ),
             },
             {
                 "blocked": "any hard-rule violation",

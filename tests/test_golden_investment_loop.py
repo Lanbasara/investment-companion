@@ -112,6 +112,18 @@ def test_golden_research_to_real_performance_to_inert_change_proposal(tmp_path):
         validation_spec=validation_spec(),
     )
     valid_until = iso(now + timedelta(days=1))
+    companion.financial.reconcile(
+        account["id"],
+        iso(decision_at),
+        {
+            "cash": {"CNY": "10000"},
+            "positions": {},
+            "position_values": {},
+            "position_total_by_currency": {"CNY": "0"},
+            "total_by_currency": {"CNY": "10000"},
+        },
+        "golden-decision-qualification",
+    )
     market = companion.financial.market_add(
         asset["id"],
         "close",
@@ -129,7 +141,7 @@ def test_golden_research_to_real_performance_to_inert_change_proposal(tmp_path):
         price="10",
         reality_spec=reality(),
         market_snapshot_id=market["id"],
-        max_market_age_seconds=600,
+        max_market_age_seconds=2 * 24 * 60 * 60,
         valid_until=valid_until,
         price_range={"min": "9.8", "max": "10.2"},
     )
@@ -148,6 +160,9 @@ def test_golden_research_to_real_performance_to_inert_change_proposal(tmp_path):
         alternatives=[{"choice": "hold cash"}, {"choice": "buy fewer shares"}],
         risk_calculation_id=risk["calculation_id"],
         research_validation_calculation_id=research["validation"]["calculation_id"],
+        portfolio_qualification_calculation_id=risk["portfolio_qualification"][
+            "calculation_id"
+        ],
     )
 
     pending_trade = companion.investment_commands.transaction_record(

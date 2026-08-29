@@ -18,6 +18,7 @@ from .registry import (
     CANDIDATE_QUALIFICATION_INVARIANT,
     CONTEXT_CONFIRMATION_INVARIANT,
     CONTINUITY_INVARIANT,
+    DECISION_QUALIFICATION_INVARIANT,
     DECISION_RESEARCH_SEPARATION_INVARIANT,
     HOME_INVARIANT,
     PORTFOLIO_LEDGER_INVARIANT,
@@ -1097,6 +1098,9 @@ def probe_investment_mcp(
                 "thesis_revision_ids": [rejected_research["revision"]["id"]],
                 "evidence_manifest_ids": [source_one["id"]],
                 "risk_calculation_id": standard_plan["risk"]["calculation_id"],
+                "portfolio_qualification_calculation_id": standard_plan[
+                    "candidate_qualification"
+                ]["calculation_id"],
                 "research_validation_calculation_id": promoted_research["validation"][
                     "calculation_id"
                 ],
@@ -1111,6 +1115,9 @@ def probe_investment_mcp(
                 "thesis_revision_ids": [promoted_research["revision"]["id"]],
                 "evidence_manifest_ids": [source_one["id"], source_two["id"]],
                 "risk_calculation_id": standard_plan["risk"]["calculation_id"],
+                "portfolio_qualification_calculation_id": standard_plan[
+                    "candidate_qualification"
+                ]["calculation_id"],
                 "research_validation_calculation_id": promoted_research["validation"][
                     "calculation_id"
                 ],
@@ -1124,6 +1131,9 @@ def probe_investment_mcp(
                 "thesis_revision_ids": [promoted_research["revision"]["id"]],
                 "evidence_manifest_ids": [source_one["id"], source_two["id"]],
                 "risk_calculation_id": blocked_plan["risk"]["calculation_id"],
+                "portfolio_qualification_calculation_id": blocked_plan[
+                    "candidate_qualification"
+                ]["calculation_id"],
                 "research_validation_calculation_id": promoted_research["validation"][
                     "calculation_id"
                 ],
@@ -1138,6 +1148,9 @@ def probe_investment_mcp(
                 "thesis_revision_ids": [promoted_research["revision"]["id"]],
                 "evidence_manifest_ids": [source_one["id"], source_two["id"]],
                 "risk_calculation_id": bounded_plan["risk"]["calculation_id"],
+                "portfolio_qualification_calculation_id": bounded_plan[
+                    "candidate_qualification"
+                ]["calculation_id"],
                 "research_validation_calculation_id": promoted_research["validation"][
                     "calculation_id"
                 ],
@@ -1164,6 +1177,9 @@ def probe_investment_mcp(
                 "thesis_revision_ids": [promoted_research["revision"]["id"]],
                 "evidence_manifest_ids": [source_one["id"], source_two["id"]],
                 "risk_calculation_id": standard_plan["risk"]["calculation_id"],
+                "portfolio_qualification_calculation_id": standard_plan[
+                    "candidate_qualification"
+                ]["calculation_id"],
                 "research_validation_calculation_id": promoted_research["validation"][
                     "calculation_id"
                 ],
@@ -2970,9 +2986,17 @@ def evaluate_investment_conformance(observation: dict[str, Any]) -> dict[str, An
     check(
         "mcp.tools-list.decision-publish-variants",
         set(decision_required) == {"action", "conditional_action", "no_action", "watch"}
-        and {"risk_calculation_id", "research_validation_calculation_id"}
+        and {
+            "risk_calculation_id",
+            "research_validation_calculation_id",
+            "portfolio_qualification_calculation_id",
+        }
         <= decision_required.get("action", set())
-        and {"risk_calculation_id", "research_validation_calculation_id"}
+        and {
+            "risk_calculation_id",
+            "research_validation_calculation_id",
+            "portfolio_qualification_calculation_id",
+        }
         <= decision_required.get("conditional_action", set())
         and "risk_calculation_id" not in decision_required.get("no_action", set()),
         {
@@ -3533,6 +3557,42 @@ def evaluate_investment_conformance(observation: dict[str, Any]) -> dict[str, An
             "capability": "investment_decision_publish",
             "invariant": DECISION_RESEARCH_SEPARATION_INVARIANT,
             "counterexample": "Research Validation became a Decision or an unqualified/expired Decision was published",
+        },
+    )
+
+    decision_qualification_id = decision_metadata.get(
+        "portfolio_qualification_calculation_id"
+    )
+    standard_plan = decision_action.get("plans", {}).get("standard") or {}
+    standard_qualification = standard_plan.get("candidate_qualification") or {}
+    standard_risk_qualification = (
+        (standard_plan.get("risk") or {}).get("portfolio_qualification") or {}
+    )
+    check(
+        DECISION_QUALIFICATION_INVARIANT,
+        bool(decision_qualification_id)
+        and decision_qualification_id == standard_qualification.get("calculation_id")
+        and decision_qualification_id
+        == standard_risk_qualification.get("calculation_id")
+        and decision_result.get("portfolio_qualification_calculation_id")
+        == decision_qualification_id
+        and decision_revision.get("context_refs", {}).get(
+            "portfolio_qualification_calculation_id"
+        )
+        == decision_qualification_id
+        and decision_metadata.get("portfolio_qualification", {}).get("level")
+        == "preflight_ready"
+        and bool(
+            decision_metadata.get("portfolio_qualification_lineage", {}).get(
+                "material_fact_fingerprint"
+            )
+        )
+        and decision_metadata.get("action_card_eligible") is True,
+        {
+            "code": "invariant_violation",
+            "capability": "investment_decision_publish",
+            "invariant": DECISION_QUALIFICATION_INVARIANT,
+            "counterexample": "Decision, Risk and candidate Portfolio Qualification did not freeze the same current calculation and lineage",
         },
     )
 

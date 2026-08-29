@@ -171,6 +171,22 @@ def test_provider_manifest_contracts_all_investment_profile_workflows():
         variant["properties"]["decision_kind"]["const"]
         for variant in decision_publish["input_schema"]["oneOf"]
     } == {"action", "conditional_action", "no_action", "watch"}
+    decision_variants = {
+        variant["properties"]["decision_kind"]["const"]: variant
+        for variant in decision_publish["input_schema"]["oneOf"]
+    }
+    assert "portfolio_qualification_calculation_id" in decision_variants[
+        "action"
+    ]["required"]
+    assert "portfolio_qualification_calculation_id" in decision_variants[
+        "conditional_action"
+    ]["required"]
+    assert "portfolio_qualification_calculation_id" in decision_variants[
+        "watch"
+    ]["properties"]
+    assert "decision.portfolio_qualification_shared_with_risk/v1" in (
+        decision_publish["invariants"]
+    )
     action_plan = first.document["capabilities"]["investment_action_plan"]
     assert set(action_plan["operations"]) == {"standard", "bounded"}
     assert {
@@ -184,6 +200,11 @@ def test_provider_manifest_contracts_all_investment_profile_workflows():
     candidate_qualification = action_plan["output_schema"]["properties"][
         "candidate_qualification"
     ]
+    risk_schema = action_plan["output_schema"]["properties"]["risk"]
+    assert {
+        "portfolio_qualification",
+        "precise_action_eligible",
+    } <= set(risk_schema["required"])
     assert candidate_qualification["properties"]["level"]["enum"] == [
         "unavailable",
         "directional_only",
@@ -1121,6 +1142,7 @@ def test_real_investment_mcp_profile_captures_home_production_health_drift(tmp_p
         "mcp.research-negative-cases.rejected/v1",
         "mcp.required-confirmation-references.rejected/v1",
         "decision.research_validation_is_not_decision/v1",
+        "decision.portfolio_qualification_shared_with_risk/v1",
         "investment_action_plan.risk_gate_is_veto_not_thesis/v1",
         "investment_action_plan.portfolio_qualification_caps_precision/v1",
         "action_card.acceptance_never_changes_portfolio/v1",

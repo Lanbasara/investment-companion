@@ -218,7 +218,8 @@ def test_portfolio_qualification_is_the_only_account_precision_fact_assembler():
     assert "SELECT * FROM reconciliations" not in home
     assert "SELECT * FROM executions" not in home
     assert "PortfolioQualificationService" in qualification
-    assert "evaluate_candidate(" in commands
+    assert "evaluate_risk_candidate(" in commands
+    assert "revalidate_frozen_risk_candidate(" in commands
     assert "portfolio_context(" not in commands
     assert "LEVEL_RANK" not in commands
     for mutation in (

@@ -608,6 +608,7 @@ class InvestmentCommandService:
         prices: dict[str, Any] | None = None,
         risk_calculation_id: str | None = None,
         research_validation_calculation_id: str | None = None,
+        portfolio_qualification_calculation_id: str | None = None,
         execution_plan: dict[str, Any] | None = None,
         execution_sell_risk_calculation_id: str | None = None,
     ) -> dict[str, Any]:
@@ -617,6 +618,7 @@ class InvestmentCommandService:
             )
         if not isinstance(subject, dict) or not subject:
             raise CompanionError("decision subject must be a non-empty object")
+        candidate_claims = self._decision_candidate_claims(subject)
         if not isinstance(content, str) or not content.strip():
             raise CompanionError("decision content must be non-empty")
         if not thesis_revision_ids or len(thesis_revision_ids) != len(set(thesis_revision_ids)):
@@ -704,6 +706,41 @@ class InvestmentCommandService:
             raise CompanionError("action decision requires a passing Risk Gate Calculation")
         if is_action_decision and risk["assumptions"].get("action_tier", "standard") != action_tier:
             raise CompanionError("decision kind and Risk Gate action tier differ")
+        portfolio_qualification = None
+        portfolio_qualification_lineage = None
+        if is_action_decision and not portfolio_qualification_calculation_id:
+            raise CompanionError(
+                "action decision requires a current Portfolio Qualification Calculation"
+            )
+        if (
+            decision_kind == "watch"
+            and not portfolio_qualification_calculation_id
+            and (
+                risk is not None
+                or any(candidate_claims.values())
+            )
+        ):
+            raise CompanionError(
+                "candidate-specific watch Decision requires a Portfolio Qualification Calculation"
+            )
+        if portfolio_qualification_calculation_id is not None:
+            if not risk:
+                raise CompanionError(
+                    "Decision Portfolio Qualification requires its matching Risk Gate Calculation"
+                )
+            (
+                portfolio_qualification,
+                portfolio_qualification_lineage,
+            ) = self._portfolio_qualification_for_decision(
+                risk=risk,
+                calculation_id=portfolio_qualification_calculation_id,
+                decision_kind=decision_kind,
+                subject=subject,
+                candidate_claims=candidate_claims,
+                account_id=account_id,
+                as_of=as_of,
+                valid_until=valid_until,
+            )
         authorized_execution_plan=None
         if execution_plan is not None:
             if not is_action_decision or not isinstance(execution_plan,dict) or set(execution_plan)!={"plan_type","spec"}:
@@ -758,6 +795,11 @@ class InvestmentCommandService:
             "research_validation_calculation_id": (
                 research_validation["id"] if research_validation else None
             ),
+            "portfolio_qualification_calculation_id": (
+                portfolio_qualification.calculation_id
+                if portfolio_qualification
+                else None
+            ),
         }
         revision = self.c.cognition.publish(
             decision["id"],
@@ -778,6 +820,20 @@ class InvestmentCommandService:
                 "research_validation_calculation_id": (
                     research_validation["id"] if research_validation else None
                 ),
+                "portfolio_qualification_calculation_id": (
+                    portfolio_qualification.calculation_id
+                    if portfolio_qualification
+                    else None
+                ),
+                "portfolio_qualification": (
+                    portfolio_qualification.stable_projection()
+                    if portfolio_qualification
+                    else None
+                ),
+                "portfolio_qualification_lineage": (
+                    portfolio_qualification_lineage
+                ),
+                "action_card_eligible": is_action_decision,
                 "confirmed_ledger_hash": self.c.financial.confirmed_ledger_hash(),
                 "human_execution_only": True,
                 "automatic_trade": False,
@@ -793,7 +849,139 @@ class InvestmentCommandService:
             "research_validation_calculation_id": (
                 research_validation["id"] if research_validation else None
             ),
+            "portfolio_qualification_calculation_id": (
+                portfolio_qualification.calculation_id
+                if portfolio_qualification
+                else None
+            ),
         }
+
+    def _portfolio_qualification_for_decision(
+        self,
+        *,
+        risk: dict[str, Any],
+        calculation_id: str,
+        decision_kind: str,
+        subject: dict[str, Any],
+        candidate_claims: dict[str, list[Any]],
+        account_id: str,
+        as_of: str,
+        valid_until: str,
+    ):
+        current, lineage = (
+            self.c.portfolio_qualification.revalidate_frozen_risk_candidate(
+                risk=risk,
+                calculation_id=calculation_id,
+                account_id=account_id,
+                as_of=as_of,
+                valid_until=valid_until,
+                current_at=iso(),
+            )
+        )
+        subject_asset = subject.get("asset_id")
+        if subject_asset and current.candidate.asset_id != subject_asset:
+            raise CompanionError(
+                "Decision Portfolio Qualification belongs to another candidate"
+            )
+        self._validate_decision_candidate_claims(current, candidate_claims)
+        if decision_kind in {"action", "conditional_action"}:
+            if current.level != "preflight_ready":
+                raise CompanionError(
+                    "action decision requires a current preflight_ready Portfolio Qualification"
+                )
+            if risk["outputs"].get("precise_action_eligible") is not True:
+                raise CompanionError(
+                    "action decision is not eligible for precise action under its Risk and Portfolio Qualification"
+                )
+        elif decision_kind == "watch":
+            if "watch" not in current.allowed_uses:
+                raise CompanionError(
+                    "watch Decision exceeds the Portfolio Qualification allowed uses"
+                )
+            if (
+                candidate_claims["exact_quantities"]
+                and "precise_decision_support" not in current.allowed_uses
+            ):
+                raise CompanionError(
+                    "watch Decision exact quantity exceeds the Portfolio Qualification allowed uses"
+                )
+            if (
+                candidate_claims["quantity_ranges"]
+                and "quantity_ranges" not in current.allowed_uses
+            ):
+                raise CompanionError(
+                    "watch Decision quantity range exceeds the Portfolio Qualification allowed uses"
+                )
+        return current, lineage
+
+    @staticmethod
+    def _decision_candidate_claims(value: Any) -> dict[str, list[Any]]:
+        claims: dict[str, list[Any]] = {
+            "directions": [],
+            "exact_quantities": [],
+            "quantity_ranges": [],
+        }
+
+        def collect(item: Any) -> None:
+            if isinstance(item, dict):
+                for key, child in item.items():
+                    if key in {"direction", "side"}:
+                        claims["directions"].append(child)
+                    elif key in {"quantity", "exact_quantity"}:
+                        claims["exact_quantities"].append(child)
+                    elif key in {"quantity_range", "quantity_domain"}:
+                        claims["quantity_ranges"].append(child)
+                    else:
+                        collect(child)
+            elif isinstance(item, list):
+                for child in item:
+                    collect(child)
+
+        collect(value)
+        return claims
+
+    @staticmethod
+    def _validate_decision_candidate_claims(
+        qualification: Any, claims: dict[str, list[Any]]
+    ) -> None:
+        candidate = qualification.candidate
+        directions = claims["directions"]
+        if any(direction not in {"buy", "sell"} for direction in directions):
+            raise CompanionError("Decision candidate direction must be buy or sell")
+        if any(direction != candidate.direction for direction in directions):
+            raise CompanionError(
+                "Decision candidate direction differs from the frozen Portfolio Qualification"
+            )
+
+        maximum = dec(candidate.quantity, "qualified candidate quantity")
+        for raw_quantity in claims["exact_quantities"]:
+            quantity = dec(raw_quantity, "Decision candidate quantity")
+            if quantity == 0 or abs(quantity) > maximum:
+                raise CompanionError(
+                    "Decision candidate quantity exceeds the frozen Portfolio Qualification quantity domain"
+                )
+            if quantity < 0 and candidate.direction != "sell":
+                raise CompanionError(
+                    "Decision candidate quantity direction differs from the frozen Portfolio Qualification"
+                )
+            if quantity > 0 and not directions and candidate.direction != "buy":
+                raise CompanionError(
+                    "Decision candidate quantity direction differs from the frozen Portfolio Qualification"
+                )
+
+        for raw_range in claims["quantity_ranges"]:
+            if not isinstance(raw_range, dict) or set(raw_range) != {"min", "max"}:
+                raise CompanionError(
+                    "Decision candidate quantity range must contain exactly min and max"
+                )
+            minimum = dec(raw_range["min"], "Decision candidate minimum quantity")
+            maximum_requested = dec(
+                raw_range["max"], "Decision candidate maximum quantity"
+            )
+            if minimum < 0 or minimum > maximum_requested or maximum_requested > maximum:
+                raise CompanionError(
+                    "Decision candidate quantity range exceeds the frozen Portfolio Qualification quantity domain"
+                )
 
     @staticmethod
     def _execution_plan_price_bounds(plan_type:str,spec:dict[str,Any])->tuple[Decimal,Decimal]:
@@ -858,17 +1046,16 @@ class InvestmentCommandService:
     def action_plan(self, **trade: Any) -> dict[str, Any]:
         risk = self.risk_assess(**trade)
         quantity = dec(trade["quantity"], "action quantity")
-        qualification = self.c.portfolio_qualification.evaluate_candidate(
-            account_id=trade["account_id"],
-            asset_id=trade["asset_id"],
-            quantity=trade["quantity"],
-            price=trade["price"],
-            price_range=trade["price_range"],
-            market_snapshot_id=trade["market_snapshot_id"],
-            max_market_age_seconds=trade["max_market_age_seconds"],
-            as_of=trade["as_of"],
-            valid_until=trade["valid_until"],
+        risk_calculation = self.c.financial.calculation_get(risk["calculation_id"])
+        qualification = self.c.portfolio_qualification.evaluate_risk_candidate(
+            risk_calculation
         )
+        if risk["portfolio_qualification"]["calculation_id"] != (
+            qualification.calculation_id
+        ):
+            raise CompanionError(
+                "Risk and Action Plan produced different Portfolio Qualifications"
+            )
         precision = qualification.account_qualification.legacy_precision_boundary()
         truth_freshness = qualification.account_qualification.legacy_truth_freshness()
         exact_sizing = "precise_decision_support" in qualification.allowed_uses
@@ -898,13 +1085,13 @@ class InvestmentCommandService:
             "candidate_qualification": qualification.stable_projection(),
             "precision_boundary": precision,
             "truth_freshness": truth_freshness,
-            "eligible_for_decision": risk_clear and exact_sizing,
+            "eligible_for_decision": risk["precise_action_eligible"],
             "conditional_sizing_available": conditional_sizing,
             "decision_blockers": (["risk_gate"] if not risk_clear else [])
             + (["portfolio_qualification"] if not exact_sizing else []),
             "action_tier": trade.get("action_tier", "standard"),
             "eligible_for_conditional_decision": trade.get("action_tier", "standard") == "bounded"
-            and risk_clear and exact_sizing,
+            and risk["precise_action_eligible"],
             "automatic_decision_or_execution": False,
         }
 

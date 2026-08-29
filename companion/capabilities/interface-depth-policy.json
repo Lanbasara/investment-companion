@@ -1,5 +1,13 @@
 {
   "baseline_digest": "sha256:61ae9bd2bc3c1a22644c951043df5c8dbf645c1d3e975e3178b7c949dd08cc4f",
-  "changes": [],
+  "changes": [
+    {
+      "decision": "deepen_module",
+      "from_digest": "sha256:61ae9bd2bc3c1a22644c951043df5c8dbf645c1d3e975e3178b7c949dd08cc4f",
+      "module": "investment_decision_publish",
+      "rationale": "Require action Decisions to carry the immutable candidate Portfolio Qualification already returned by Action Plan and frozen by Risk, so consumers gain one stronger publication seam without a new tool or duplicated qualification policy.",
+      "to_digest": "sha256:1dc463751840dbdb47db028952a18f482465538238d69f6cf4c76a55bc95eb1f"
+    }
+  ],
   "format": "investment-companion.interface-depth-policy/v1"
 }

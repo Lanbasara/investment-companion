@@ -647,6 +647,10 @@ def test_action_plan_projects_candidate_qualification_and_derives_legacy_eligibi
         }
     )
     assert plan["candidate_qualification"] == expected.stable_projection()
+    assert plan["risk"]["portfolio_qualification"] == (
+        plan["candidate_qualification"]
+    )
+    assert plan["risk"]["precise_action_eligible"] is True
     assert plan["candidate_qualification"]["level"] == "preflight_ready"
     assert plan["risk"]["status"] == "pass"
     assert plan["eligible_for_decision"] is True
