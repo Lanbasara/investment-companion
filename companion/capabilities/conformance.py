@@ -15,6 +15,7 @@ from .registry import (
     ACTION_ACCEPTANCE_INVARIANT,
     BRIEF_NO_ACTION_INVARIANT,
     BRIEF_PROJECTION_INVARIANT,
+    CANDIDATE_QUALIFICATION_INVARIANT,
     CONTEXT_CONFIRMATION_INVARIANT,
     CONTINUITY_INVARIANT,
     DECISION_RESEARCH_SEPARATION_INVARIANT,
@@ -1062,9 +1063,18 @@ def probe_investment_mcp(
                 "quantity": "100000",
             },
         )
+        missing_market_plan_call = call(
+            "investment_action_plan",
+            {
+                "action_tier": "standard",
+                **action_plan_base,
+                "market_snapshot_id": "mkt_missing_candidate_qualification",
+            },
+        )
         standard_plan = _call_result(standard_plan_call)
         bounded_plan = _call_result(bounded_plan_call)
         blocked_plan = _call_result(blocked_plan_call)
+        missing_market_plan = _call_result(missing_market_plan_call)
         decision_base = {
             "content": "# Synthetic Decision\n\nA time-bounded manual action with alternatives.",
             "decision_kind": "action",
@@ -2501,6 +2511,7 @@ def probe_investment_mcp(
                 "standard": standard_plan,
                 "bounded": bounded_plan,
                 "blocked": blocked_plan,
+                "missing_market": missing_market_plan,
                 "bounded_missing_sessions_error": _call_error(
                     bounded_missing_sessions_call
                 ),
@@ -3551,6 +3562,32 @@ def evaluate_investment_conformance(observation: dict[str, Any]) -> dict[str, An
             "capability": "investment_action_plan",
             "invariant": RISK_GATE_BOUNDARY_INVARIANT,
             "counterexample": "Risk Gate acted like a research opinion or failed to veto an unaffordable action",
+        },
+    )
+
+    standard_qualification = standard_plan.get("candidate_qualification") or {}
+    missing_market_plan = plans.get("missing_market") or {}
+    missing_market_qualification = (
+        missing_market_plan.get("candidate_qualification") or {}
+    )
+    check(
+        CANDIDATE_QUALIFICATION_INVARIANT,
+        standard_qualification.get("level") == "preflight_ready"
+        and standard_qualification.get("market_evidence", {}).get("fresh") is True
+        and standard_plan.get("eligible_for_decision") is True
+        and (blocked_plan.get("candidate_qualification") or {}).get("level")
+        == "preflight_ready"
+        and blocked_plan.get("eligible_for_decision") is False
+        and missing_market_qualification.get("level") == "range_ready"
+        and missing_market_qualification.get("reason_codes")
+        == ["market_snapshot_missing"]
+        and missing_market_qualification.get("no_action_inferred") is False
+        and missing_market_plan.get("eligible_for_decision") is False,
+        {
+            "code": "invariant_violation",
+            "capability": "investment_action_plan",
+            "invariant": CANDIDATE_QUALIFICATION_INVARIANT,
+            "counterexample": "candidate qualification ignored portfolio or market precision, duplicated Risk, or implied no_action",
         },
     )
 

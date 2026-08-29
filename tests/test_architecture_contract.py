@@ -207,6 +207,9 @@ def test_portfolio_qualification_is_the_only_account_precision_fact_assembler():
     home = (PACKAGE / "application" / "investment_home.py").read_text(
         encoding="utf-8"
     )
+    commands = (PACKAGE / "application" / "commands.py").read_text(
+        encoding="utf-8"
+    )
     qualification = (PACKAGE / "portfolio_qualification.py").read_text(
         encoding="utf-8"
     )
@@ -215,6 +218,9 @@ def test_portfolio_qualification_is_the_only_account_precision_fact_assembler():
     assert "SELECT * FROM reconciliations" not in home
     assert "SELECT * FROM executions" not in home
     assert "PortfolioQualificationService" in qualification
+    assert "evaluate_candidate(" in commands
+    assert "portfolio_context(" not in commands
+    assert "LEVEL_RANK" not in commands
     for mutation in (
         "INSERT INTO ledger_entries",
         "UPDATE ledger_entries",

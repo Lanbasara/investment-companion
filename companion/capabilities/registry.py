@@ -28,6 +28,9 @@ DECISION_RESEARCH_SEPARATION_INVARIANT = (
 RISK_GATE_BOUNDARY_INVARIANT = (
     "investment_action_plan.risk_gate_is_veto_not_thesis/v1"
 )
+CANDIDATE_QUALIFICATION_INVARIANT = (
+    "investment_action_plan.portfolio_qualification_caps_precision/v1"
+)
 ACTION_ACCEPTANCE_INVARIANT = (
     "action_card.acceptance_never_changes_portfolio/v1"
 )
@@ -101,7 +104,7 @@ DECISION_PUBLISH_DESCRIPTION = (
     "把当前组合、约束、已验证研究、替代方案和风险结果冻结为有期限的正式 Investment Decision；不会成交。"
 )
 ACTION_PLAN_DESCRIPTION = (
-    "用当前确认组合、Mandate、行情和市场现实计算 standard 或 bounded 人工行动方案及确定性 Risk Gate。"
+    "用统一候选 Portfolio Qualification、当前 Mandate 和独立 Risk Gate 计算 standard 或 bounded 人工行动方案。"
 )
 ACTION_UPDATE_DESCRIPTION = (
     "把可行动 Opportunity 加入 Action Card 队列，或记录呈现、接受、拒绝、延后和关闭；任何响应都不会成交。"
@@ -1629,6 +1632,107 @@ RISK_GATE_RESULT_SCHEMA = object_schema(
     ],
     additional_properties=True,
 )
+CANDIDATE_QUALIFICATION_VALIDITY_SCHEMA = object_schema(
+    {
+        "status": {"type": "string", "const": "current_at_as_of"},
+        "valid_until": S,
+        "recalculate_on": {
+            "type": "array",
+            "items": {
+                "type": "string",
+                "enum": [
+                    "confirmed_ledger_change",
+                    "reconciliation_change",
+                    "account_continuity_change",
+                    "pending_ledger_change",
+                    "open_execution_change",
+                    "broker_strategy_change",
+                    "related_market_snapshot_change",
+                ],
+            },
+        },
+        "market_snapshot_fresh": B,
+        "broker_realtime_proven": {"type": "boolean", "const": False},
+        "final_broker_preflight_required": {"type": "boolean", "const": True},
+    },
+    [
+        "status",
+        "valid_until",
+        "recalculate_on",
+        "market_snapshot_fresh",
+        "broker_realtime_proven",
+        "final_broker_preflight_required",
+    ],
+)
+CANDIDATE_QUALIFICATION_CANDIDATE_SCHEMA = object_schema(
+    {
+        "account_id": S,
+        "asset_id": S,
+        "direction": {"type": "string", "enum": ["buy", "sell"]},
+        "quantity": {"type": ["string", "null"]},
+        "quantity_kind": {
+            "type": "string",
+            "enum": ["exact_candidate", "withheld_below_range_ready"],
+        },
+        "reference_price": S,
+        "price_range": object_schema(
+            {"min": S, "max": S}, ["min", "max"]
+        ),
+        "valid_until": S,
+    },
+    [
+        "account_id",
+        "asset_id",
+        "direction",
+        "quantity",
+        "quantity_kind",
+        "reference_price",
+        "price_range",
+        "valid_until",
+    ],
+)
+CANDIDATE_QUALIFICATION_MARKET_SCHEMA = object_schema(
+    {
+        "market_snapshot_id": {"type": ["string", "null"]},
+        "latest_relevant_snapshot_id": {"type": ["string", "null"]},
+        "observed_at": {"type": ["string", "null"]},
+        "age_seconds": {"type": ["integer", "null"]},
+        "max_age_seconds": I,
+        "fresh": B,
+    },
+    [
+        "market_snapshot_id",
+        "latest_relevant_snapshot_id",
+        "observed_at",
+        "age_seconds",
+        "max_age_seconds",
+        "fresh",
+    ],
+)
+CANDIDATE_QUALIFICATION_SCHEMA = object_schema(
+    {
+        **PORTFOLIO_QUALIFICATION_COMMON_PROPERTIES,
+        "validity": CANDIDATE_QUALIFICATION_VALIDITY_SCHEMA,
+        "account_calculation_id": S,
+        "account_id": S,
+        "policy_version": {
+            "type": "string",
+            "const": "portfolio-qualification-policy/v1",
+        },
+        "candidate": CANDIDATE_QUALIFICATION_CANDIDATE_SCHEMA,
+        "market_evidence": CANDIDATE_QUALIFICATION_MARKET_SCHEMA,
+        "no_action_inferred": {"type": "boolean", "const": False},
+    },
+    [
+        *PORTFOLIO_QUALIFICATION_COMMON_REQUIRED,
+        "account_calculation_id",
+        "account_id",
+        "policy_version",
+        "candidate",
+        "market_evidence",
+        "no_action_inferred",
+    ],
+)
 ACTION_PLAN_OUTPUT_SCHEMA = object_schema(
     {
         "schema": {
@@ -1640,7 +1744,7 @@ ACTION_PLAN_OUTPUT_SCHEMA = object_schema(
                 "account_id": S,
                 "asset_id": S,
                 "side": {"type": "string", "enum": ["buy", "sell"]},
-                "quantity": S,
+                "quantity": {"type": ["string", "null"]},
                 "reference_price": S,
                 "price_range": O,
                 "valid_until": S,
@@ -1649,6 +1753,7 @@ ACTION_PLAN_OUTPUT_SCHEMA = object_schema(
                     "type": "string",
                     "enum": [
                         "finalizable_after_broker_preflight", "conditional_only",
+                        "withheld_by_qualification",
                     ],
                 },
             },
@@ -1660,17 +1765,19 @@ ACTION_PLAN_OUTPUT_SCHEMA = object_schema(
             additional_properties=True,
         ),
         "risk": RISK_GATE_RESULT_SCHEMA,
+        "candidate_qualification": CANDIDATE_QUALIFICATION_SCHEMA,
         "precision_boundary": PRECISION_BOUNDARY_SCHEMA,
         "truth_freshness": TRUTH_FRESHNESS_SCHEMA,
         "eligible_for_decision": B,
-        "conditional_sizing_available": {"type": "boolean", "const": True},
+        "conditional_sizing_available": B,
         "decision_blockers": SA,
         "action_tier": {"type": "string", "enum": ["standard", "bounded"]},
         "eligible_for_conditional_decision": B,
         "automatic_decision_or_execution": {"type": "boolean", "const": False},
     },
     [
-        "schema", "action", "risk", "precision_boundary", "truth_freshness",
+        "schema", "action", "risk", "candidate_qualification",
+        "precision_boundary", "truth_freshness",
         "eligible_for_decision", "conditional_sizing_available",
         "decision_blockers", "action_tier",
         "eligible_for_conditional_decision", "automatic_decision_or_execution",
@@ -4218,7 +4325,7 @@ CAPABILITY_CONTRACTS: dict[str, CapabilityContract] = {
         ACTION_PLAN_INPUT_SCHEMA,
         ACTION_PLAN_OUTPUT_SCHEMA,
         ("capability.input.invalid", "capability.output.invalid"),
-        (RISK_GATE_BOUNDARY_INVARIANT,),
+        (RISK_GATE_BOUNDARY_INVARIANT, CANDIDATE_QUALIFICATION_INVARIANT),
         ACTION_PLAN_OPERATIONS,
         variant_selectors=("action_tier",),
     ),
