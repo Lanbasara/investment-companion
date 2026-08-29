@@ -24,7 +24,7 @@ from companion.core import Companion, CompanionError
 from companion.interfaces.mcp_profiles import INVESTMENT_TOOLS
 
 
-def test_provider_manifest_contracts_personal_finance_research_decision_program_and_execution_workflows():
+def test_provider_manifest_contracts_all_investment_profile_workflows():
     registry = investment_capability_registry(INVESTMENT_TOOLS)
 
     first = registry.provider_manifest()
@@ -62,6 +62,9 @@ def test_provider_manifest_contracts_personal_finance_research_decision_program_
         "investment_program_update",
         "investment_brief_update",
         "investment_execution_update",
+        "evaluation_context",
+        "investment_performance_calculate",
+        "investment_review_publish",
         "investment_workflow_context",
         "investment_workflow_update",
         "investment_delivery_update",
@@ -219,6 +222,25 @@ def test_provider_manifest_contracts_personal_finance_research_decision_program_
         "investment_execution_update.confirmed_ledger_only_changes_portfolio/v1",
         "investment_execution_update.full_scope_reconciliation_required/v1",
     } <= set(execution_update["invariants"])
+    evaluation = first.document["capabilities"]["evaluation_context"]
+    assert evaluation["handler"] == "investment.evaluation_context"
+    assert evaluation["output_schema"]["properties"]["change_boundary"][
+        "properties"
+    ]["review_may_apply_strategy_change"]["const"] is False
+    performance = first.document["capabilities"]["investment_performance_calculate"]
+    assert performance["handler"] == "investment_commands.performance_calculate"
+    assert set(performance["operations"]) == {"compare", "unavailable"}
+    assert {
+        variant["properties"]["benchmark_mode"]["const"]
+        for variant in performance["input_schema"]["oneOf"]
+    } == {"compare", "unavailable"}
+    review = first.document["capabilities"]["investment_review_publish"]
+    assert review["handler"] == "investment_commands.review_publish"
+    assert set(review["operations"]) == {"create", "supersede"}
+    assert {
+        variant["properties"]["operation"]["const"]
+        for variant in review["input_schema"]["oneOf"]
+    } == {"create", "supersede"}
     workflow_context = first.document["capabilities"]["investment_workflow_context"]
     assert workflow_context["handler"] == "investment.workflow_context"
     assert set(workflow_context["operations"]) == {
@@ -280,6 +302,8 @@ def test_provider_manifest_contracts_personal_finance_research_decision_program_
             "investment_action_update",
             "investment_program_update",
             "investment_brief_update",
+            "investment_performance_calculate",
+            "investment_review_publish",
         )
         for operation in first.document["capabilities"][capability_name][
             "operations"
@@ -303,6 +327,26 @@ def test_provider_manifest_contracts_personal_finance_research_decision_program_
             "provider_manifest",
             "pipeline_metadata",
             "job_metadata",
+        )
+    )
+    model_visible_evaluation_surface = json.dumps(
+        {
+            name: INVESTMENT_TOOLS[name]
+            for name in (
+                "evaluation_context",
+                "investment_performance_calculate",
+                "investment_review_publish",
+            )
+        },
+        sort_keys=True,
+    ).lower()
+    assert all(
+        token not in model_visible_evaluation_surface
+        for token in (
+            "reproducibility_hash",
+            "formulas",
+            "calculation implementation",
+            "audit_trail",
         )
     )
 
@@ -962,8 +1006,15 @@ def test_real_investment_mcp_profile_captures_home_production_health_drift(tmp_p
         "action_card.acceptance_never_changes_portfolio/v1",
         "investment_execution_update.confirmed_ledger_only_changes_portfolio/v1",
         "investment_execution_update.full_scope_reconciliation_required/v1",
+        "investment_performance_calculate.outputs_are_kernel_calculated/v1",
+        "investment_review_publish.revisions_are_append_only/v1",
+        "investment_review_publish.change_proposals_are_inert/v1",
+        "mcp.performance.required-evidence-and-variants/v1",
         "mcp.execution-strategy.grid-reports/v1",
         "mcp.tools-list.execution-update-variants",
+        "mcp.tools-list.evaluation-context",
+        "mcp.tools-list.performance-calculate-variants",
+        "mcp.tools-list.review-publish-variants",
         "mcp.tools-list.decision-publish-variants",
         "mcp.tools-list.action-plan-variants",
         "mcp.tools-list.action-update-variants",
@@ -1252,7 +1303,7 @@ def test_runtime_health_scopes_workflow_requirement_drift_to_affected_workflow(
     } == {"missing_operation"}
 
 
-def test_non_production_receipt_is_content_addressed_and_production_is_blocked(tmp_path):
+def test_receipts_are_content_addressed_and_all_contracted_profile_allows_production(tmp_path):
     provider = investment_capability_registry(INVESTMENT_TOOLS).provider_manifest()
     requirements = baseline_requirements()
     validation = validate_compatibility(provider.document, requirements)
@@ -1294,22 +1345,22 @@ def test_non_production_receipt_is_content_addressed_and_production_is_blocked(t
     }
     assert (receipt_state / "current.json").is_file()
 
-    with pytest.raises(CompanionError, match="uncontracted capabilities"):
-        issue_compatibility_receipt(
-            state_dir=receipt_state,
-            environment="production",
-            provider=provider.document,
-            requirements=requirements,
-            validation=validation,
-            conformance=conformance,
-            mcp_profile="investment",
-            core_identity="core-test",
-            plugin_identity="plugin-test",
-        )
+    production = issue_compatibility_receipt(
+        state_dir=receipt_state,
+        environment="production",
+        provider=provider.document,
+        requirements=requirements,
+        validation=validation,
+        conformance=conformance,
+        mcp_profile="investment",
+        core_identity="core-test",
+        plugin_identity="plugin-test",
+    )
+    assert production["receipt"]["environment"] == "production"
 
     pointer_path = receipt_state / "current.json"
     pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
-    pointer["environment"] = "production"
+    pointer["environment"] = "non_production"
     pointer_path.write_text(json.dumps(pointer), encoding="utf-8")
     with pytest.raises(CompanionError, match="environment mismatch"):
         read_current_receipt(receipt_state)

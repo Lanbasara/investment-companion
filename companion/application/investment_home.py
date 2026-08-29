@@ -369,17 +369,83 @@ class InvestmentHomeService:
         return {
             "schema": "investment-companion.evaluation-context/v1",
             "as_of": iso(),
-            "performance": self.c.financial.calculation_list(
-                kind="account_performance", limit=limit
-            ),
-            "reviews": self._objects_with_current_revision("review", limit),
+            "performance": self._performance_summaries(limit),
+            "reviews": self.c.review.summaries(limit=limit),
             "research_reviews": self.c.research_catalog.reviews(limit=limit),
             "change_boundary": {
                 "review_may_propose": True,
                 "review_may_apply_strategy_change": False,
                 "new_version_and_validation_required": True,
+                "review_history_is_append_only": True,
             },
         }
+
+    def _performance_summaries(self, limit: int) -> list[dict[str, Any]]:
+        summaries = []
+        for calculation in self.c.financial.calculation_list(
+            kind="account_performance", limit=limit
+        ):
+            outputs = dict(calculation["outputs"])
+            warnings = list(calculation["warnings"])
+            attribution_refs = list(outputs.get("attribution_refs", []))
+            transaction_cost = outputs.get("transaction_cost", "0")
+            outputs.setdefault(
+                "time_basis",
+                {
+                    "period_boundary": "start_exclusive_end_inclusive",
+                    "valuation": "point_in_time",
+                },
+            )
+            outputs.setdefault("slippage_cost", "0")
+            outputs.setdefault("total_cost", transaction_cost)
+            outputs.setdefault(
+                "attribution",
+                {
+                    "reference_ids": attribution_refs,
+                    "status": (
+                        "linked" if attribution_refs else "insufficient_evidence"
+                    ),
+                },
+            )
+            outputs.setdefault(
+                "benchmark",
+                {
+                    "mode": (
+                        "compare"
+                        if outputs.get("benchmark_return") is not None
+                        else "unavailable"
+                    ),
+                    "return": outputs.get("benchmark_return"),
+                    "source_ref": None,
+                    "unavailable_reason": (
+                        None
+                        if outputs.get("benchmark_return") is not None
+                        else "historical_calculation_did_not_record_benchmark_source"
+                    ),
+                },
+            )
+            outputs.setdefault(
+                "costs",
+                {
+                    "fees_and_taxes": transaction_cost,
+                    "slippage": "0",
+                    "total": transaction_cost,
+                    "slippage_trade_count": 0,
+                    "period_trade_count": 0,
+                },
+            )
+            outputs.setdefault("caveats", warnings)
+            summaries.append(
+                {
+                    "id": calculation["id"],
+                    "kind": calculation["kind"],
+                    "as_of": calculation["as_of"],
+                    "outputs": outputs,
+                    "warnings": warnings,
+                    "created_at": calculation["created_at"],
+                }
+            )
+        return summaries
 
     def _single_program_account(self) -> str | None:
         program = self.c.operating.program_current()

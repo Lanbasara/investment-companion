@@ -99,3 +99,68 @@ def test_performance_removes_external_cash_flow_from_investment_gain(tmp_path):
     assert result["investment_gain_after_external_flows"] == "0"
     assert result["modified_dietz_return"] == "0"
     assert companion.cognition.object_list("review") == revisions_before
+
+
+def test_performance_derives_fees_slippage_and_caveats_from_confirmed_facts(tmp_path):
+    companion = Companion(tmp_path, gate_scope="test_fixture")
+    companion.initialize()
+    account = companion.financial.account_create("Cost fixture", "CNY")
+    asset = companion.financial.asset_upsert(
+        "stock", "Cost Asset", "CNY", {"synthetic_id": "COST-1"}
+    )
+    start = utc_now() - timedelta(days=10)
+    end = utc_now()
+    opening = companion.financial.ledger_add(
+        account_id=account["id"],
+        entry_type="opening_balance",
+        occurred_at=iso(start - timedelta(days=1)),
+        amount="1000",
+        currency="CNY",
+        source="performance-fixture",
+    )
+    trade = companion.financial.ledger_add(
+        account_id=account["id"],
+        entry_type="trade",
+        asset_id=asset["id"],
+        occurred_at=iso(start + timedelta(days=1)),
+        quantity="10",
+        price="10",
+        amount="-100",
+        fee="5",
+        currency="CNY",
+        source="performance-fixture",
+    )
+    companion.financial.ledger_confirm(opening["id"])
+    companion.financial.ledger_confirm(trade["id"])
+
+    result = companion.performance.calculate_period(
+        account_id=account["id"],
+        period_start=iso(start),
+        period_end=iso(end),
+        period_basis="start_exclusive_end_inclusive",
+        start_prices={},
+        end_prices={asset["id"]: "12"},
+        benchmark_mode="compare",
+        benchmark_start_value="100",
+        benchmark_end_value="105",
+        benchmark_source_ref="synthetic:benchmark",
+        valuation_points=[],
+        price_source_refs=["synthetic:prices"],
+        trade_reference_prices={
+            trade["id"]: {"price": "9.5", "source_ref": "synthetic:quote"}
+        },
+        attribution_refs=["synthetic:decision-revision"],
+    )
+
+    assert result["transaction_cost"] == "5"
+    assert result["slippage_cost"] == "5"
+    assert result["total_cost"] == "10"
+    assert result["costs"]["slippage_trade_count"] == 1
+    assert result["attribution"]["status"] == "linked"
+    assert result["benchmark"] == {
+        "mode": "compare",
+        "return": "0.05",
+        "source_ref": "synthetic:benchmark",
+        "unavailable_reason": None,
+    }
+    assert result["caveats"] == ["maximum_drawdown_uses_endpoints_only"]
