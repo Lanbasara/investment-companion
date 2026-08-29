@@ -6,18 +6,23 @@ from datetime import timedelta
 from pathlib import Path
 import subprocess
 import sys
+import time
 from typing import Any
 
 from ..foundation import CompanionError
-from ..timeutil import iso, utc_now
+from ..timeutil import iso, parse, utc_now
 from .registry import (
     ACTION_ACCEPTANCE_INVARIANT,
+    BRIEF_NO_ACTION_INVARIANT,
+    BRIEF_PROJECTION_INVARIANT,
     CONTEXT_CONFIRMATION_INVARIANT,
     CONTINUITY_INVARIANT,
     DECISION_RESEARCH_SEPARATION_INVARIANT,
     HOME_INVARIANT,
     PORTFOLIO_LEDGER_INVARIANT,
     PORTFOLIO_TRUTH_INVARIANT,
+    PROGRAM_CONFIRMATION_INVARIANT,
+    PROGRAM_PROJECTION_INVARIANT,
     RECONCILIATION_INVARIANT,
     RESEARCH_BOUNDARY_INVARIANT,
     RESEARCH_WORK_INVARIANT,
@@ -89,30 +94,31 @@ def _seed_research_fixture(root: Path) -> dict[str, Any]:
         contexts[f"{context_type}_revision_id"] = companion.cognition.context_confirm(
             draft["id"]
         )["id"]
+    program_content = {
+        "objective": "exercise research contracts without user facts",
+        "success_criteria": ["all research states remain separated"],
+        "benchmark": {"name": "synthetic benchmark"},
+        "risk_budget": {
+            "mode": "no real action",
+            "bounded_action": {
+                "enabled": True,
+                "allowed_asset_types": ["stock"],
+                "allowed_execution_plan_types": ["priced_buy"],
+                "max_trade_weight": "0.02",
+                "max_post_trade_weight": "0.05",
+                "max_validity_sessions": 20,
+                "max_active_bounded_actions": 2,
+            },
+        },
+        "universe": {"kind": "synthetic assets"},
+        "horizons": {"research": "fixture"},
+        "operating_cadence": {"mode": "one shot"},
+        "stop_conditions": ["conformance completed"],
+        "account_ids": [account["id"]],
+    }
     program = companion.operating.program_create(
         name="Synthetic research conformance program",
-        content={
-            "objective": "exercise research contracts without user facts",
-            "success_criteria": ["all research states remain separated"],
-            "benchmark": {"name": "synthetic benchmark"},
-            "risk_budget": {
-                "mode": "no real action",
-                "bounded_action": {
-                    "enabled": True,
-                    "allowed_asset_types": ["stock"],
-                    "allowed_execution_plan_types": ["priced_buy"],
-                    "max_trade_weight": "0.02",
-                    "max_post_trade_weight": "0.05",
-                    "max_validity_sessions": 20,
-                    "max_active_bounded_actions": 2,
-                },
-            },
-            "universe": {"kind": "synthetic assets"},
-            "horizons": {"research": "fixture"},
-            "operating_cadence": {"mode": "one shot"},
-            "stop_conditions": ["conformance completed"],
-            "account_ids": [account["id"]],
-        },
+        content=program_content,
         context_refs=contexts,
         reason="isolated research conformance",
     )
@@ -167,6 +173,8 @@ def _seed_research_fixture(root: Path) -> dict[str, Any]:
         "cutoff": cutoff,
         "valid_until": iso(utc_now() + timedelta(days=7)),
         "next_check_at": iso(utc_now() + timedelta(days=2)),
+        "context_refs": contexts,
+        "program_content": program_content,
     }
 
 
@@ -179,6 +187,42 @@ def _call_error(response: dict[str, Any]) -> str | None:
     if not result.get("isError"):
         return None
     return result.get("content", [{}])[0].get("text")
+
+
+def _without_fields(value: dict[str, Any], *fields: str) -> dict[str, Any]:
+    return {key: item for key, item in value.items() if key not in fields}
+
+
+def _stable_portfolio_projection(
+    value: dict[str, Any], *, include_program_policy: bool
+) -> dict[str, Any]:
+    projection = _without_fields(value, "as_of")
+    freshness = projection.get("truth_freshness")
+    if isinstance(freshness, dict):
+        projection["truth_freshness"] = _without_fields(
+            freshness, "verified_at", "age_seconds"
+        )
+    if not include_program_policy:
+        projection.pop("policy", None)
+    return projection
+
+
+def _stable_research_projection(
+    value: dict[str, Any], *, include_active_program_queue: bool
+) -> dict[str, Any]:
+    projection = _without_fields(value, "as_of")
+    if not include_active_program_queue:
+        queue = projection.get("work_queue") or {}
+        projection["work_queue"] = {"selected": queue.get("selected")}
+    return projection
+
+
+def _stable_evaluation_projection(value: dict[str, Any]) -> dict[str, Any]:
+    return _without_fields(value, "as_of")
+
+
+def _stable_program_projection(value: dict[str, Any]) -> dict[str, Any]:
+    return _without_fields(value, "as_of")
 
 
 def probe_investment_mcp(
@@ -247,6 +291,7 @@ def probe_investment_mcp(
         tools_response = request("tools/list", {}).get("result", {})
         tools = tools_response.get("tools", [])
         home_call = call("investment_home", {})
+        initial_program_context_call = call("investment_program_context", {})
 
         research_before_decision_call = call("decision_context", {})
         research_before_portfolio_call = call(
@@ -520,6 +565,7 @@ def probe_investment_mcp(
                 "owner": "synthetic-researcher",
             },
         )
+        monitoring_release_at = iso(utc_now() + timedelta(seconds=2))
         monitoring_complete_call = call(
             "investment_opportunity_update",
             {
@@ -532,7 +578,7 @@ def probe_investment_mcp(
                     research_fixture["candidate_manifest_id"],
                     predictive_source["id"],
                 ],
-                "next_check_at": research_fixture["next_check_at"],
+                "next_check_at": monitoring_release_at,
             },
         )
         research_context_final_call = call("research_context", {"limit": 20})
@@ -828,6 +874,318 @@ def probe_investment_mcp(
             },
         )
 
+        no_action_brief_call = call(
+            "investment_brief_update",
+            {
+                "operation": "publish",
+                "brief_type": "daily",
+                "period_key": "synthetic-no-action-negative",
+                "as_of": iso(),
+                "conclusion": "no_action",
+                "payload": {
+                    "summary": "synthetic no-action claim with unfinished work",
+                    "what_changed": [],
+                    "decision": "no action",
+                    "risks": [],
+                    "next_check_at": research_fixture["next_check_at"],
+                    "queue_item_ids": [],
+                },
+                "source_refs": [research_fixture["candidate_manifest_id"]],
+                "program_id": research_fixture["program_id"],
+            },
+        )
+        while utc_now() < parse(monitoring_release_at):
+            time.sleep(0.05)
+        from ..core import Companion
+
+        recovery = Companion(fixture_root, gate_scope="test_fixture")
+        recovery.initialize()
+        research_recovery = recovery.recover()
+        resolved_monitoring_claim_call = call(
+            "investment_opportunity_update",
+            {
+                "operation": "work_claim",
+                "item_id": children[2]["id"],
+                "owner": "synthetic-researcher",
+            },
+        )
+        resolved_monitoring_call = call(
+            "investment_opportunity_update",
+            {
+                "operation": "research_complete",
+                "item_id": children[2]["id"],
+                "owner": "synthetic-researcher",
+                "outcome": "rejected",
+                "reason": "synthetic monitoring obligation was resolved",
+                "result_refs": [
+                    research_fixture["candidate_manifest_id"],
+                    predictive_source["id"],
+                ],
+            },
+        )
+        brief_projection_before_portfolio_call = call(
+            "portfolio_context",
+            {
+                "account_id": research_fixture["account_id"],
+                "as_of": research_fixture["cutoff"],
+            },
+        )
+        brief_projection_before_research_call = call(
+            "research_context",
+            {"work_item_id": children[2]["id"], "limit": 20},
+        )
+        brief_projection_before_evaluation_call = call(
+            "evaluation_context", {"limit": 20}
+        )
+        brief_projection_before_program_call = call(
+            "investment_program_context",
+            {"program_id": research_fixture["program_id"]},
+        )
+        metrics_period_start = iso(utc_now() - timedelta(days=1))
+        metrics_period_end = iso()
+        metrics_call = call(
+            "investment_brief_update",
+            {
+                "operation": "metrics_calculate",
+                "period_start": metrics_period_start,
+                "period_end": metrics_period_end,
+                "program_id": research_fixture["program_id"],
+            },
+        )
+        metrics = _call_result(metrics_call)
+        missing_lineage_scorecard_call = call(
+            "investment_brief_update",
+            {
+                "operation": "scorecard_publish",
+                "period_start": metrics_period_start,
+                "period_end": metrics_period_end,
+                "metrics": [
+                    {
+                        "name": "untraceable",
+                        "calculation_id": "calc_missing_lineage",
+                        "output_path": "outputs.value",
+                    }
+                ],
+                "comparisons": [],
+                "source_refs": [],
+                "caveats": ["synthetic missing Calculation lineage"],
+                "program_id": research_fixture["program_id"],
+            },
+        )
+        scorecard_call = call(
+            "investment_brief_update",
+            {
+                "operation": "scorecard_publish",
+                "period_start": metrics_period_start,
+                "period_end": metrics_period_end,
+                "metrics": [
+                    {
+                        "name": "opportunities_created",
+                        "calculation_id": metrics["calculation_id"],
+                        "output_path": "outputs.cohorts.opportunities_created",
+                    }
+                ],
+                "comparisons": [],
+                "source_refs": [metrics["calculation_id"]],
+                "caveats": ["synthetic one-day operating cohort"],
+                "program_id": research_fixture["program_id"],
+            },
+        )
+        scorecard = _call_result(scorecard_call)
+        positive_no_action_brief_call = call(
+            "investment_brief_update",
+            {
+                "operation": "publish",
+                "brief_type": "daily",
+                "period_key": "synthetic-no-action-positive",
+                "as_of": iso(),
+                "conclusion": "no_action",
+                "payload": {
+                    "summary": "synthetic obligations are resolved",
+                    "what_changed": ["the monitoring obligation was resolved"],
+                    "decision": "no action",
+                    "risks": [],
+                    "next_check_at": research_fixture["next_check_at"],
+                    "queue_item_ids": [],
+                },
+                "source_refs": [
+                    research_fixture["candidate_manifest_id"],
+                    metrics["calculation_id"],
+                ],
+                "program_id": research_fixture["program_id"],
+            },
+        )
+        review_brief_call = call(
+            "investment_brief_update",
+            {
+                "operation": "publish",
+                "brief_type": "daily",
+                "period_key": "synthetic-review-required",
+                "as_of": iso(),
+                "conclusion": "review_required",
+                "payload": {
+                    "summary": "synthetic review path after obligations resolved",
+                    "what_changed": ["the monitoring obligation was resolved"],
+                    "decision": "review the completed operating cycle",
+                    "risks": [],
+                    "next_check_at": research_fixture["next_check_at"],
+                    "queue_item_ids": [],
+                },
+                "source_refs": [
+                    research_fixture["candidate_manifest_id"],
+                    metrics["calculation_id"],
+                ],
+                "program_id": research_fixture["program_id"],
+            },
+        )
+        brief_projection_after_portfolio_call = call(
+            "portfolio_context",
+            {
+                "account_id": research_fixture["account_id"],
+                "as_of": research_fixture["cutoff"],
+            },
+        )
+        brief_projection_after_research_call = call(
+            "research_context",
+            {"work_item_id": children[2]["id"], "limit": 20},
+        )
+        brief_projection_after_evaluation_call = call(
+            "evaluation_context", {"limit": 20}
+        )
+        brief_projection_after_program_call = call(
+            "investment_program_context",
+            {"program_id": research_fixture["program_id"]},
+        )
+
+        replacement_program_call = call(
+            "investment_program_update",
+            {
+                "operation": "create",
+                "name": "Synthetic replacement conformance program",
+                "content": research_fixture["program_content"],
+                "context_refs": research_fixture["context_refs"],
+                "reason": "exercise Program lifecycle through MCP",
+            },
+        )
+        replacement_program = _call_result(replacement_program_call)
+        program_context_after_draft_call = call(
+            "investment_program_context", {"program_id": replacement_program["id"]}
+        )
+        unconfirmed_program_brief_call = call(
+            "investment_brief_update",
+            {
+                "operation": "metrics_calculate",
+                "period_start": metrics_period_start,
+                "period_end": metrics_period_end,
+                "program_id": replacement_program["id"],
+            },
+        )
+        revised_content = {
+            **research_fixture["program_content"],
+            "objective": "exercise revised Program contracts without user facts",
+        }
+        revised_program_call = call(
+            "investment_program_update",
+            {
+                "operation": "revise",
+                "program_id": replacement_program["id"],
+                "expected_version": replacement_program["version"],
+                "content": revised_content,
+                "context_refs": research_fixture["context_refs"],
+                "reason": "exercise immutable Program revision",
+            },
+        )
+        revised_program = _call_result(revised_program_call)
+        stale_revision_call = call(
+            "investment_program_update",
+            {
+                "operation": "revise",
+                "program_id": replacement_program["id"],
+                "expected_version": replacement_program["version"],
+                "content": revised_content,
+                "context_refs": research_fixture["context_refs"],
+                "reason": "synthetic stale revision",
+            },
+        )
+        revised_revision_id = revised_program["revisions"][0]["id"]
+        missing_program_approval_call = call(
+            "investment_program_update",
+            {"operation": "confirm", "revision_id": revised_revision_id},
+        )
+        confirmed_program_call = call(
+            "investment_program_update",
+            {
+                "operation": "confirm",
+                "revision_id": revised_revision_id,
+                "user_approval_ref": "synthetic:user-message:approve-program",
+                "supersedes_program_id": research_fixture["program_id"],
+            },
+        )
+        confirmed_program = _call_result(confirmed_program_call)
+        program_context_after_confirm_call = call(
+            "investment_program_context", {"program_id": confirmed_program["id"]}
+        )
+        paused_program_call = call(
+            "investment_program_update",
+            {
+                "operation": "status",
+                "program_id": confirmed_program["id"],
+                "expected_version": confirmed_program["version"],
+                "status": "paused",
+                "reason": "exercise Program pause",
+            },
+        )
+        paused_program = _call_result(paused_program_call)
+        stale_status_call = call(
+            "investment_program_update",
+            {
+                "operation": "status",
+                "program_id": confirmed_program["id"],
+                "expected_version": confirmed_program["version"],
+                "status": "active",
+                "reason": "synthetic stale resume",
+            },
+        )
+        resumed_program_call = call(
+            "investment_program_update",
+            {
+                "operation": "status",
+                "program_id": paused_program["id"],
+                "expected_version": paused_program["version"],
+                "status": "active",
+                "reason": "exercise Program resume",
+            },
+        )
+        resumed_program = _call_result(resumed_program_call)
+        archived_program_call = call(
+            "investment_program_update",
+            {
+                "operation": "status",
+                "program_id": resumed_program["id"],
+                "expected_version": resumed_program["version"],
+                "status": "archived",
+                "reason": "exercise Program archive",
+            },
+        )
+        archived_program = _call_result(archived_program_call)
+        final_program_context_call = call(
+            "investment_program_context", {"program_id": archived_program["id"]}
+        )
+        program_projection_after_portfolio_call = call(
+            "portfolio_context",
+            {
+                "account_id": research_fixture["account_id"],
+                "as_of": research_fixture["cutoff"],
+            },
+        )
+        program_projection_after_research_call = call(
+            "research_context",
+            {"work_item_id": children[2]["id"], "limit": 20},
+        )
+        program_projection_after_evaluation_call = call(
+            "evaluation_context", {"limit": 20}
+        )
+
         context_draft_call = call(
             "investment_context_update",
             {
@@ -1032,6 +1390,7 @@ def probe_investment_mcp(
                 "rejected": _call_result(rejected_complete_call),
                 "monitoring": _call_result(monitoring_complete_call),
             },
+            "monitoring_release_at": monitoring_release_at,
             "context_final": _call_result(research_context_final_call),
             "boundary_before": {
                 "decision": _call_result(research_before_decision_call),
@@ -1075,6 +1434,70 @@ def probe_investment_mcp(
             "after_accept": {
                 "decision": _call_result(decision_after_accept_call),
                 "portfolio": _call_result(portfolio_after_accept_call),
+            },
+        },
+        "program_brief": {
+            "initial_context": _call_result(initial_program_context_call),
+            "brief_projection_before": {
+                "portfolio": _call_result(brief_projection_before_portfolio_call),
+                "research": _call_result(brief_projection_before_research_call),
+                "evaluation": _call_result(
+                    brief_projection_before_evaluation_call
+                ),
+                "program": _call_result(brief_projection_before_program_call),
+            },
+            "brief": {
+                "no_action_error": _call_error(no_action_brief_call),
+                "research_recovery": research_recovery,
+                "resolved_monitoring_claim": _call_result(
+                    resolved_monitoring_claim_call
+                ),
+                "resolved_monitoring": _call_result(resolved_monitoring_call),
+                "metrics": metrics,
+                "missing_lineage_error": _call_error(
+                    missing_lineage_scorecard_call
+                ),
+                "scorecard": scorecard,
+                "no_action": _call_result(positive_no_action_brief_call),
+                "review_required": _call_result(review_brief_call),
+            },
+            "brief_projection_after": {
+                "portfolio": _call_result(brief_projection_after_portfolio_call),
+                "research": _call_result(brief_projection_after_research_call),
+                "evaluation": _call_result(
+                    brief_projection_after_evaluation_call
+                ),
+                "program": _call_result(brief_projection_after_program_call),
+            },
+            "program": {
+                "created": replacement_program,
+                "context_after_draft": _call_result(
+                    program_context_after_draft_call
+                ),
+                "unconfirmed_brief_error": _call_error(
+                    unconfirmed_program_brief_call
+                ),
+                "revised": revised_program,
+                "stale_revision_error": _call_error(stale_revision_call),
+                "missing_approval_error": _call_error(
+                    missing_program_approval_call
+                ),
+                "confirmed": confirmed_program,
+                "context_after_confirm": _call_result(
+                    program_context_after_confirm_call
+                ),
+                "paused": paused_program,
+                "stale_status_error": _call_error(stale_status_call),
+                "resumed": resumed_program,
+                "archived": archived_program,
+                "final_context": _call_result(final_program_context_call),
+            },
+            "program_projection_after": {
+                "portfolio": _call_result(program_projection_after_portfolio_call),
+                "research": _call_result(program_projection_after_research_call),
+                "evaluation": _call_result(
+                    program_projection_after_evaluation_call
+                ),
             },
         },
         "context": {
@@ -1351,6 +1774,85 @@ def evaluate_investment_conformance(observation: dict[str, Any]) -> dict[str, An
             "capability": "investment_action_update",
         },
     )
+    program_context_schema = (
+        tools.get("investment_program_context") or {}
+    ).get("inputSchema", {})
+    check(
+        "mcp.tools-list.program-context",
+        program_context_schema.get("additionalProperties") is False
+        and set(program_context_schema.get("properties", {}))
+        == {"program_id", "status"},
+        {
+            "code": "missing_or_drifted_tool",
+            "capability": "investment_program_context",
+        },
+    )
+    program_variants = (
+        (tools.get("investment_program_update") or {})
+        .get("inputSchema", {})
+        .get("oneOf", [])
+    )
+    program_paths = {
+        (
+            item.get("properties", {}).get("operation", {}).get("const"),
+            item.get("properties", {}).get("status", {}).get("const"),
+        ): set(item.get("required", []))
+        for item in program_variants
+    }
+    check(
+        "mcp.tools-list.program-update-variants",
+        set(program_paths)
+        == {
+            ("create", None),
+            ("revise", None),
+            ("confirm", None),
+            ("status", "active"),
+            ("status", "paused"),
+            ("status", "archived"),
+        }
+        and "expected_version" in program_paths.get(("revise", None), set())
+        and "user_approval_ref" in program_paths.get(("confirm", None), set())
+        and all(
+            "expected_version" in program_paths.get(("status", status), set())
+            for status in ("active", "paused", "archived")
+        ),
+        {
+            "code": "missing_or_drifted_tool",
+            "capability": "investment_program_update",
+        },
+    )
+    brief_variants = (
+        (tools.get("investment_brief_update") or {})
+        .get("inputSchema", {})
+        .get("oneOf", [])
+    )
+    brief_paths = {
+        (
+            item.get("properties", {}).get("operation", {}).get("const"),
+            item.get("properties", {}).get("brief_type", {}).get("const"),
+        ): set(item.get("required", []))
+        for item in brief_variants
+    }
+    check(
+        "mcp.tools-list.brief-update-variants",
+        set(brief_paths)
+        == {
+            ("publish", "daily"),
+            ("publish", "weekly"),
+            ("publish", "monthly"),
+            ("presented", None),
+            ("metrics_calculate", None),
+            ("scorecard_publish", None),
+        }
+        and {"period_start", "period_end"}
+        <= brief_paths.get(("metrics_calculate", None), set())
+        and {"metrics", "comparisons", "source_refs", "caveats"}
+        <= brief_paths.get(("scorecard_publish", None), set()),
+        {
+            "code": "missing_or_drifted_tool",
+            "capability": "investment_brief_update",
+        },
+    )
 
     home = observation.get("home_result")
     health = home.get("production_health") if isinstance(home, dict) else None
@@ -1405,7 +1907,7 @@ def evaluate_investment_conformance(observation: dict[str, Any]) -> dict[str, An
         and monitoring_outcome.get("status") == "monitoring"
         and monitoring_outcome.get("disposition", {}).get("outcome") == "monitoring"
         and monitoring_outcome.get("next_check_at")
-        == (research.get("fixture") or {}).get("next_check_at"),
+        == research.get("monitoring_release_at"),
         {
             "code": "research_outcome_drift",
             "capability": "investment_opportunity_update",
@@ -1580,6 +2082,200 @@ def evaluate_investment_conformance(observation: dict[str, Any]) -> dict[str, An
             "capability": "investment_action_update",
             "invariant": ACTION_ACCEPTANCE_INVARIANT,
             "counterexample": "Action Card response created an Execution or changed Portfolio Ledger truth",
+        },
+    )
+
+    program_brief = observation.get("program_brief", {})
+    program_flow = program_brief.get("program", {})
+    created_program = program_flow.get("created") or {}
+    revised_program = program_flow.get("revised") or {}
+    confirmed_program = program_flow.get("confirmed") or {}
+    confirmed_revision = confirmed_program.get("current_revision") or {}
+    context_after_draft = program_flow.get("context_after_draft") or {}
+    context_after_confirm = program_flow.get("context_after_confirm") or {}
+    final_program_context = program_flow.get("final_context") or {}
+    check(
+        PROGRAM_CONFIRMATION_INVARIANT,
+        created_program.get("status") == "draft"
+        and (context_after_draft.get("selected") or {}).get("status") == "draft"
+        and (context_after_draft.get("current") or {}).get("id")
+        != created_program.get("id")
+        and isinstance(program_flow.get("unconfirmed_brief_error"), str)
+        and program_flow["unconfirmed_brief_error"].startswith(
+            "investment_program.not_active:"
+        )
+        and revised_program.get("version") == created_program.get("version", 0) + 1
+        and len(revised_program.get("revisions", [])) == 2
+        and isinstance(program_flow.get("stale_revision_error"), str)
+        and program_flow["stale_revision_error"].startswith(
+            "investment_program.version_conflict:"
+        )
+        and isinstance(program_flow.get("missing_approval_error"), str)
+        and program_flow["missing_approval_error"].startswith(
+            "capability.input.invalid:"
+        )
+        and confirmed_program.get("status") == "active"
+        and confirmed_revision.get("status") == "current"
+        and confirmed_revision.get("user_approval_ref")
+        == "synthetic:user-message:approve-program"
+        and (context_after_confirm.get("current") or {}).get("id")
+        == confirmed_program.get("id")
+        and (program_flow.get("paused") or {}).get("status") == "paused"
+        and isinstance(program_flow.get("stale_status_error"), str)
+        and program_flow["stale_status_error"].startswith(
+            "investment_program.version_conflict:"
+        )
+        and (program_flow.get("resumed") or {}).get("status") == "active"
+        and (program_flow.get("archived") or {}).get("status") == "archived"
+        and final_program_context.get("current") is None
+        and len((final_program_context.get("selected") or {}).get("revisions", []))
+        == 2,
+        {
+            "code": "invariant_violation",
+            "capability": "investment_program_update",
+            "invariant": PROGRAM_CONFIRMATION_INVARIANT,
+            "counterexample": "an unconfirmed or stale Investment Program change became effective without the required user approval and optimistic version",
+        },
+    )
+
+    brief_flow = program_brief.get("brief", {})
+    metrics = brief_flow.get("metrics") or {}
+    scorecard = brief_flow.get("scorecard") or {}
+    published_brief = brief_flow.get("no_action") or {}
+    published_snapshot = (published_brief.get("payload") or {}).get(
+        "execution_snapshot", {}
+    )
+    check(
+        BRIEF_NO_ACTION_INVARIANT,
+        isinstance(brief_flow.get("no_action_error"), str)
+        and brief_flow["no_action_error"].startswith(
+            "investment_brief.unresolved_obligations:"
+        )
+        and (brief_flow.get("research_recovery") or {})
+        .get("recovered", {})
+        .get("research_work_monitors", 0)
+        == 1
+        and (brief_flow.get("resolved_monitoring") or {}).get("status")
+        == "rejected"
+        and published_brief.get("conclusion") == "no_action",
+        {
+            "code": "invariant_violation",
+            "capability": "investment_brief_update",
+            "invariant": BRIEF_NO_ACTION_INVARIANT,
+            "counterexample": "no_action was published while a declared Research Work obligation remained open",
+        },
+    )
+    check(
+        "mcp.brief.calculation-lineage-required/v1",
+        isinstance(brief_flow.get("missing_lineage_error"), str)
+        and brief_flow["missing_lineage_error"].startswith(
+            "investment_brief.calculation_lineage_required:"
+        )
+        and isinstance(metrics.get("calculation_id"), str)
+        and scorecard.get("status") == "ready"
+        and (scorecard.get("metrics") or [{}])[0].get("calculation_id")
+        == metrics.get("calculation_id")
+        and scorecard.get("source_refs") == [metrics.get("calculation_id")]
+        and scorecard.get("caveats") == ["synthetic one-day operating cohort"],
+        {
+            "code": "missing_calculation_lineage",
+            "capability": "investment_brief_update",
+        },
+    )
+
+    brief_projection_before = program_brief.get("brief_projection_before", {})
+    brief_projection_after = program_brief.get("brief_projection_after", {})
+    program_projection_after = program_brief.get("program_projection_after", {})
+    brief_truth_unchanged = (
+        _stable_portfolio_projection(
+            brief_projection_before.get("portfolio") or {},
+            include_program_policy=True,
+        )
+        == _stable_portfolio_projection(
+            brief_projection_after.get("portfolio") or {},
+            include_program_policy=True,
+        )
+        and _stable_research_projection(
+            brief_projection_before.get("research") or {},
+            include_active_program_queue=True,
+        )
+        == _stable_research_projection(
+            brief_projection_after.get("research") or {},
+            include_active_program_queue=True,
+        )
+        and _stable_evaluation_projection(
+            brief_projection_before.get("evaluation") or {}
+        )
+        == _stable_evaluation_projection(
+            brief_projection_after.get("evaluation") or {}
+        )
+        and _stable_program_projection(
+            brief_projection_before.get("program") or {}
+        )
+        == _stable_program_projection(
+            brief_projection_after.get("program") or {}
+        )
+    )
+    program_truth_unchanged = (
+        _stable_portfolio_projection(
+            brief_projection_after.get("portfolio") or {},
+            include_program_policy=False,
+        )
+        == _stable_portfolio_projection(
+            program_projection_after.get("portfolio") or {},
+            include_program_policy=False,
+        )
+        and _stable_research_projection(
+            brief_projection_after.get("research") or {},
+            include_active_program_queue=False,
+        )
+        == _stable_research_projection(
+            program_projection_after.get("research") or {},
+            include_active_program_queue=False,
+        )
+        and _stable_evaluation_projection(
+            brief_projection_after.get("evaluation") or {}
+        )
+        == _stable_evaluation_projection(
+            program_projection_after.get("evaluation") or {}
+        )
+    )
+    context_refs = (observation.get("research", {}).get("fixture") or {}).get(
+        "context_refs"
+    )
+    original_program_revision = (
+        (brief_projection_after.get("program") or {}).get("selected") or {}
+    ).get("current_revision", {})
+    check(
+        PROGRAM_PROJECTION_INVARIANT,
+        program_truth_unchanged
+        and original_program_revision.get("context_refs") == context_refs
+        and confirmed_revision.get("context_refs") == context_refs
+        and ((final_program_context.get("selected") or {}).get(
+            "current_revision"
+        ) or {}).get("context_refs") == context_refs,
+        {
+            "code": "invariant_violation",
+            "capability": "investment_program_update",
+            "invariant": PROGRAM_PROJECTION_INVARIANT,
+            "counterexample": "Program lifecycle copied or changed Context, Portfolio, Research or Performance truth instead of referencing it",
+        },
+    )
+    check(
+        BRIEF_PROJECTION_INVARIANT,
+        brief_truth_unchanged
+        and published_brief.get("conclusion") == "no_action"
+        and published_snapshot.get("truth") == "confirmed_ledger_replay"
+        and published_snapshot.get("frozen") is True
+        and published_snapshot.get("calculation_id")
+        in published_brief.get("source_refs", [])
+        and metrics.get("calculation_id")
+        in published_brief.get("source_refs", []),
+        {
+            "code": "invariant_violation",
+            "capability": "investment_brief_update",
+            "invariant": BRIEF_PROJECTION_INVARIANT,
+            "counterexample": "Brief or Scorecard replaced Portfolio, Context, Research or Performance truth instead of projecting source references",
         },
     )
 

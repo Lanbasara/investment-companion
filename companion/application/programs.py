@@ -257,7 +257,9 @@ class InvestmentProgramService:
         if program["status"] in {"superseded", "archived"}:
             raise CompanionError("closed InvestmentProgram cannot be revised")
         if program["version"] != expected_version:
-            raise CompanionError("InvestmentProgram version conflict")
+            raise CompanionError(
+                "investment_program.version_conflict: InvestmentProgram version conflict"
+            )
         reason = self._text(reason, "InvestmentProgram revision reason")
         content = self._validate_program_content(content)
         refs = self._validate_context_refs(context_refs, require_current=False)
@@ -296,7 +298,9 @@ class InvestmentProgramService:
                 (now, program_id, expected_version),
             ).rowcount
             if changed != 1:
-                raise CompanionError("InvestmentProgram version conflict")
+                raise CompanionError(
+                    "investment_program.version_conflict: InvestmentProgram version conflict"
+                )
             con.execute(
                 "INSERT INTO investment_program_revisions(id,program_id,revision,status,content_json,context_refs_json,parent_id,reason,expires_at,content_hash,created_at) "
                 "VALUES(?,?,?,'draft',?,?,?,?,?,?,?)",
@@ -398,6 +402,7 @@ class InvestmentProgramService:
         program_id: str,
         status: str,
         *,
+        expected_version: int | None = None,
         reason: str,
         actor: str = "primary-codex",
     ) -> dict[str, Any]:
@@ -406,6 +411,10 @@ class InvestmentProgramService:
         self._expire_trial_programs()
         reason = self._text(reason, "InvestmentProgram status reason")
         program = self.program_get(program_id)
+        if expected_version is not None and program["version"] != expected_version:
+            raise CompanionError(
+                "investment_program.version_conflict: InvestmentProgram version conflict"
+            )
         if program["status"] in {"superseded", "archived"}:
             raise CompanionError("closed InvestmentProgram status cannot be changed")
         if status == "active":
@@ -418,10 +427,21 @@ class InvestmentProgramService:
                 raise CompanionError("another InvestmentProgram is already active")
         now = iso()
         with self.db.transaction() as con:
-            con.execute(
-                "UPDATE investment_programs SET status=?,updated_at=?,closed_at=?,version=version+1 WHERE id=?",
-                (status, now, now if status == "archived" else None, program_id),
-            )
+            changed = con.execute(
+                "UPDATE investment_programs SET status=?,updated_at=?,closed_at=?,version=version+1 "
+                "WHERE id=? AND version=?",
+                (
+                    status,
+                    now,
+                    now if status == "archived" else None,
+                    program_id,
+                    program["version"],
+                ),
+            ).rowcount
+            if changed != 1:
+                raise CompanionError(
+                    "investment_program.version_conflict: InvestmentProgram version conflict"
+                )
             self.c.audit.record(
                 con,
                 actor,
@@ -437,9 +457,14 @@ class InvestmentProgramService:
     def _require_active_program(self, program_id: str | None = None) -> dict[str, Any]:
         current = self.program_current()
         if not current:
-            raise CompanionError("no active InvestmentProgram")
+            raise CompanionError(
+                "investment_program.not_active: no active InvestmentProgram"
+            )
         if program_id and current["id"] != program_id:
-            raise CompanionError("operation must use the active InvestmentProgram")
+            raise CompanionError(
+                "investment_program.not_active: operation must use the active "
+                "InvestmentProgram"
+            )
         alignment = self._program_alignment(current)
         if not alignment["aligned"]:
             raise CompanionError(

@@ -31,6 +31,18 @@ RISK_GATE_BOUNDARY_INVARIANT = (
 ACTION_ACCEPTANCE_INVARIANT = (
     "action_card.acceptance_never_changes_portfolio/v1"
 )
+PROGRAM_CONFIRMATION_INVARIANT = (
+    "investment_program.confirmation_and_versioning_required/v1"
+)
+PROGRAM_PROJECTION_INVARIANT = (
+    "investment_program.references_context_without_owning_truth/v1"
+)
+BRIEF_NO_ACTION_INVARIANT = (
+    "investment_brief.no_action_requires_resolved_obligations/v1"
+)
+BRIEF_PROJECTION_INVARIANT = (
+    "investment_brief.references_calculations_without_owning_truth/v1"
+)
 
 HOME_DESCRIPTION = (
     "读取今天的行动、异常、研究工作队列、绩效和交付总入口；未完成研究返回 review_required。"
@@ -68,6 +80,15 @@ ACTION_PLAN_DESCRIPTION = (
 )
 ACTION_UPDATE_DESCRIPTION = (
     "把可行动 Opportunity 加入 Action Card 队列，或记录呈现、接受、拒绝、延后和关闭；任何响应都不会成交。"
+)
+PROGRAM_CONTEXT_DESCRIPTION = (
+    "读取当前或历史 Investment Program、不可变 revision、状态与确认 Context 引用。"
+)
+PROGRAM_UPDATE_DESCRIPTION = (
+    "创建、修订、确认、暂停、恢复或归档 Investment Program；变更使用乐观版本，确认需要用户批准引用。"
+)
+BRIEF_UPDATE_DESCRIPTION = (
+    "发布日周月 Brief、记录实际呈现、冻结过程指标或发布引用 Calculation 的 Scorecard；不会复制投资事实。"
 )
 
 SET_LIKE_ARRAY_KEYS = {
@@ -1695,6 +1716,537 @@ DECISION_CONTEXT_OUTPUT_SCHEMA = object_schema(
     additional_properties=True,
 )
 
+PROGRAM_CONTENT_SCHEMA = object_schema(
+    {
+        "objective": S,
+        "success_criteria": SA,
+        "benchmark": O,
+        "risk_budget": O,
+        "universe": O,
+        "horizons": O,
+        "operating_cadence": O,
+        "stop_conditions": SA,
+        "account_ids": SA,
+    },
+    [
+        "objective",
+        "success_criteria",
+        "benchmark",
+        "risk_budget",
+        "universe",
+        "horizons",
+        "operating_cadence",
+        "stop_conditions",
+        "account_ids",
+    ],
+)
+PROGRAM_CONTEXT_REFS_SCHEMA = object_schema(
+    {
+        "investor_revision_id": S,
+        "mandate_revision_id": S,
+        "attention_revision_id": S,
+    },
+    [
+        "investor_revision_id",
+        "mandate_revision_id",
+        "attention_revision_id",
+    ],
+)
+PROGRAM_REVISION_SCHEMA = object_schema(
+    {
+        "id": S,
+        "program_id": S,
+        "revision": I,
+        "status": {
+            "type": "string",
+            "enum": ["draft", "trial", "current", "superseded", "expired"],
+        },
+        "content": PROGRAM_CONTENT_SCHEMA,
+        "context_refs": PROGRAM_CONTEXT_REFS_SCHEMA,
+        "parent_id": {},
+        "reason": {},
+        "effective_from": {},
+        "expires_at": {},
+        "user_approval_ref": {},
+        "content_hash": S,
+        "created_at": S,
+        "confirmed_at": {},
+    },
+    [
+        "id",
+        "program_id",
+        "revision",
+        "status",
+        "content",
+        "context_refs",
+        "parent_id",
+        "reason",
+        "effective_from",
+        "expires_at",
+        "user_approval_ref",
+        "content_hash",
+        "created_at",
+        "confirmed_at",
+    ],
+    additional_properties=True,
+)
+PROGRAM_LIST_ITEM_SCHEMA = object_schema(
+    {
+        "id": S,
+        "name": S,
+        "status": {
+            "type": "string",
+            "enum": ["draft", "active", "paused", "superseded", "archived"],
+        },
+        "current_revision_id": {},
+        "version": I,
+        "activated_at": {},
+        "closed_at": {},
+        "created_at": S,
+        "updated_at": S,
+    },
+    [
+        "id",
+        "name",
+        "status",
+        "current_revision_id",
+        "version",
+        "activated_at",
+        "closed_at",
+        "created_at",
+        "updated_at",
+    ],
+    additional_properties=True,
+)
+PROGRAM_SCHEMA = object_schema(
+    {
+        **PROGRAM_LIST_ITEM_SCHEMA["properties"],
+        "current_revision": {
+            "oneOf": [PROGRAM_REVISION_SCHEMA, {"type": "null"}],
+        },
+        "revisions": {"type": "array", "items": PROGRAM_REVISION_SCHEMA},
+    },
+    [
+        *PROGRAM_LIST_ITEM_SCHEMA["required"],
+        "current_revision",
+        "revisions",
+    ],
+    additional_properties=True,
+)
+PROGRAM_DRAFT_OUTPUT_SCHEMA = object_schema(
+    {
+        **PROGRAM_SCHEMA["properties"],
+        "status": {"type": "string", "const": "draft"},
+    },
+    PROGRAM_SCHEMA["required"],
+    additional_properties=True,
+)
+CONFIRMED_PROGRAM_REVISION_SCHEMA = object_schema(
+    {
+        **PROGRAM_REVISION_SCHEMA["properties"],
+        "status": {"type": "string", "enum": ["current", "trial"]},
+        "user_approval_ref": S,
+        "confirmed_at": S,
+    },
+    PROGRAM_REVISION_SCHEMA["required"],
+    additional_properties=True,
+)
+PROGRAM_CONFIRMED_OUTPUT_SCHEMA = object_schema(
+    {
+        **PROGRAM_SCHEMA["properties"],
+        "status": {"type": "string", "const": "active"},
+        "current_revision": CONFIRMED_PROGRAM_REVISION_SCHEMA,
+    },
+    PROGRAM_SCHEMA["required"],
+    additional_properties=True,
+)
+PROGRAM_CONTEXT_INPUT_SCHEMA = object_schema(
+    {
+        "program_id": S,
+        "status": {
+            "type": "string",
+            "enum": ["draft", "active", "paused", "superseded", "archived"],
+        },
+    }
+)
+PROGRAM_CONTEXT_OUTPUT_SCHEMA = object_schema(
+    {
+        "schema": {
+            "type": "string",
+            "const": "investment-companion.program-context/v1",
+        },
+        "as_of": S,
+        "current": {"oneOf": [PROGRAM_SCHEMA, {"type": "null"}]},
+        "selected": {"oneOf": [PROGRAM_SCHEMA, {"type": "null"}]},
+        "programs": {"type": "array", "items": PROGRAM_LIST_ITEM_SCHEMA},
+        "truth": {
+            "type": "string",
+            "const": "immutable_program_revisions_and_confirmed_context_refs",
+        },
+    },
+    ["schema", "as_of", "current", "selected", "programs", "truth"],
+)
+PROGRAM_OPERATIONS = {
+    "create": {
+        "input_schema": operation_schema(
+            "create",
+            {
+                "name": S,
+                "content": PROGRAM_CONTENT_SCHEMA,
+                "context_refs": PROGRAM_CONTEXT_REFS_SCHEMA,
+                "reason": S,
+                "expires_at": S,
+            },
+            ["name", "content", "context_refs", "reason"],
+        ),
+        "output_schema": PROGRAM_DRAFT_OUTPUT_SCHEMA,
+    },
+    "revise": {
+        "input_schema": operation_schema(
+            "revise",
+            {
+                "program_id": S,
+                "expected_version": I,
+                "content": PROGRAM_CONTENT_SCHEMA,
+                "context_refs": PROGRAM_CONTEXT_REFS_SCHEMA,
+                "reason": S,
+                "expires_at": S,
+            },
+            [
+                "program_id",
+                "expected_version",
+                "content",
+                "context_refs",
+                "reason",
+            ],
+        ),
+        "output_schema": PROGRAM_SCHEMA,
+    },
+    "confirm": {
+        "input_schema": operation_schema(
+            "confirm",
+            {
+                "revision_id": S,
+                "user_approval_ref": S,
+                "trial": B,
+                "supersedes_program_id": S,
+            },
+            ["revision_id", "user_approval_ref"],
+        ),
+        "output_schema": PROGRAM_CONFIRMED_OUTPUT_SCHEMA,
+    },
+    "status": {
+        "input_schema": {
+            "oneOf": [
+                operation_schema(
+                    "status",
+                    {
+                        "program_id": S,
+                        "expected_version": I,
+                        "status": {"type": "string", "const": status},
+                        "reason": S,
+                    },
+                    ["program_id", "expected_version", "status", "reason"],
+                )
+                for status in ("active", "paused", "archived")
+            ]
+        },
+        "output_schema": PROGRAM_SCHEMA,
+    },
+}
+PROGRAM_UPDATE_INPUT_SCHEMA = operation_union(PROGRAM_OPERATIONS)
+PROGRAM_UPDATE_OUTPUT_SCHEMA = PROGRAM_SCHEMA
+
+BRIEF_BASE_PAYLOAD_INPUT_PROPERTIES = {
+    "summary": S,
+    "what_changed": SA,
+    "decision": S,
+    "risks": SA,
+    "next_check_at": S,
+    "queue_item_ids": SA,
+}
+BRIEF_BASE_PAYLOAD_INPUT_REQUIRED = list(BRIEF_BASE_PAYLOAD_INPUT_PROPERTIES)
+
+
+def brief_publish_input_schema(
+    brief_type: str,
+    extra_payload_properties: dict[str, Any] | None = None,
+    extra_payload_required: list[str] | None = None,
+) -> dict[str, Any]:
+    payload_properties = {
+        **BRIEF_BASE_PAYLOAD_INPUT_PROPERTIES,
+        **(extra_payload_properties or {}),
+    }
+    payload_required = [
+        *BRIEF_BASE_PAYLOAD_INPUT_REQUIRED,
+        *(extra_payload_required or []),
+    ]
+    return operation_schema(
+        "publish",
+        {
+            "brief_type": {"type": "string", "const": brief_type},
+            "period_key": S,
+            "as_of": S,
+            "conclusion": {
+                "type": "string",
+                "enum": [
+                    "no_action",
+                    "action",
+                    "review_required",
+                    "insufficient_evidence",
+                ],
+            },
+            "payload": object_schema(payload_properties, payload_required),
+            "source_refs": SA,
+            "idempotency_key": S,
+            "program_id": S,
+        },
+        [
+            "brief_type",
+            "period_key",
+            "as_of",
+            "conclusion",
+            "payload",
+            "source_refs",
+        ],
+    )
+
+
+EXECUTION_SNAPSHOT_REFERENCE_SCHEMA = object_schema(
+    {
+        "calculation_id": S,
+        "program_id": S,
+        "program_revision_id": {},
+        "truth": {"type": "string", "const": "confirmed_ledger_replay"},
+        "frozen": {"type": "boolean", "const": True},
+    },
+    [
+        "calculation_id",
+        "program_id",
+        "program_revision_id",
+        "truth",
+        "frozen",
+    ],
+    additional_properties=True,
+)
+BRIEF_PAYLOAD_OUTPUT_SCHEMA = object_schema(
+    {
+        **BRIEF_BASE_PAYLOAD_INPUT_PROPERTIES,
+        "program_progress": O,
+        "research_pipeline": O,
+        "scorecard_id": S,
+        "lessons": SA,
+        "proposed_changes": SA,
+        "execution_snapshot": EXECUTION_SNAPSHOT_REFERENCE_SCHEMA,
+    },
+    [*BRIEF_BASE_PAYLOAD_INPUT_REQUIRED, "execution_snapshot"],
+    additional_properties=True,
+)
+OPERATING_BRIEF_SCHEMA = object_schema(
+    {
+        "id": S,
+        "program_id": S,
+        "program_revision_id": S,
+        "brief_type": {"type": "string", "enum": ["daily", "weekly", "monthly"]},
+        "period_key": S,
+        "revision": I,
+        "as_of": S,
+        "conclusion": {
+            "type": "string",
+            "enum": ["no_action", "action", "review_required", "insufficient_evidence"],
+        },
+        "payload": BRIEF_PAYLOAD_OUTPUT_SCHEMA,
+        "source_refs": SA,
+        "content_hash": S,
+        "idempotency_key": S,
+        "status": {"type": "string", "enum": ["ready", "presented", "superseded"]},
+        "supersedes": {},
+        "attention_decision_id": {},
+        "presented_at": {},
+        "created_at": S,
+        "updated_at": S,
+    },
+    [
+        "id",
+        "program_id",
+        "program_revision_id",
+        "brief_type",
+        "period_key",
+        "revision",
+        "as_of",
+        "conclusion",
+        "payload",
+        "source_refs",
+        "content_hash",
+        "idempotency_key",
+        "status",
+        "supersedes",
+        "attention_decision_id",
+        "presented_at",
+        "created_at",
+        "updated_at",
+    ],
+    additional_properties=True,
+)
+PRESENTED_BRIEF_SCHEMA = object_schema(
+    {
+        **OPERATING_BRIEF_SCHEMA["properties"],
+        "status": {"type": "string", "const": "presented"},
+    },
+    OPERATING_BRIEF_SCHEMA["required"],
+    additional_properties=True,
+)
+PROGRAM_METRICS_SCHEMA = object_schema(
+    {
+        "period": object_schema({"start": S, "end": S}, ["start", "end"]),
+        "opportunity_flow": O,
+        "decision_flow": O,
+        "brief_flow": O,
+        "cohorts": O,
+        "rates": O,
+        "coverage": O,
+        "calculation_id": S,
+    },
+    [
+        "period",
+        "opportunity_flow",
+        "decision_flow",
+        "brief_flow",
+        "cohorts",
+        "rates",
+        "coverage",
+        "calculation_id",
+    ],
+    additional_properties=True,
+)
+SCORECARD_METRIC_INPUT_SCHEMA = object_schema(
+    {"name": S, "calculation_id": S, "output_path": S},
+    ["name", "calculation_id", "output_path"],
+)
+SCORECARD_COMPARISON_INPUT_SCHEMA = object_schema(
+    {
+        "label": S,
+        "left_metric": S,
+        "right_metric": S,
+        "interpretation": S,
+    },
+    ["label", "left_metric", "right_metric", "interpretation"],
+)
+SCORECARD_METRIC_OUTPUT_SCHEMA = object_schema(
+    {
+        **SCORECARD_METRIC_INPUT_SCHEMA["properties"],
+        "value": {},
+        "as_of": S,
+        "engine_version": S,
+    },
+    [*SCORECARD_METRIC_INPUT_SCHEMA["required"], "value", "as_of", "engine_version"],
+)
+PROGRAM_SCORECARD_SCHEMA = object_schema(
+    {
+        "id": S,
+        "program_id": S,
+        "program_revision_id": S,
+        "period_start": S,
+        "period_end": S,
+        "revision": I,
+        "status": {"type": "string", "enum": ["ready", "insufficient_evidence"]},
+        "metrics": {"type": "array", "items": SCORECARD_METRIC_OUTPUT_SCHEMA},
+        "comparisons": {"type": "array", "items": SCORECARD_COMPARISON_INPUT_SCHEMA},
+        "source_refs": SA,
+        "caveats": SA,
+        "content_hash": S,
+        "supersedes": {},
+        "created_at": S,
+    },
+    [
+        "id",
+        "program_id",
+        "program_revision_id",
+        "period_start",
+        "period_end",
+        "revision",
+        "status",
+        "metrics",
+        "comparisons",
+        "source_refs",
+        "caveats",
+        "content_hash",
+        "supersedes",
+        "created_at",
+    ],
+    additional_properties=True,
+)
+BRIEF_OPERATIONS = {
+    "publish": {
+        "input_schema": {
+            "oneOf": [
+                brief_publish_input_schema("daily"),
+                brief_publish_input_schema(
+                    "weekly",
+                    {"program_progress": O, "research_pipeline": O},
+                    ["program_progress", "research_pipeline"],
+                ),
+                brief_publish_input_schema(
+                    "monthly",
+                    {"scorecard_id": S, "lessons": SA, "proposed_changes": SA},
+                    ["scorecard_id", "lessons", "proposed_changes"],
+                ),
+            ]
+        },
+        "output_schema": OPERATING_BRIEF_SCHEMA,
+    },
+    "presented": {
+        "input_schema": operation_schema(
+            "presented",
+            {"brief_id": S, "attention_decision_id": S},
+            ["brief_id", "attention_decision_id"],
+        ),
+        "output_schema": PRESENTED_BRIEF_SCHEMA,
+    },
+    "metrics_calculate": {
+        "input_schema": operation_schema(
+            "metrics_calculate",
+            {"period_start": S, "period_end": S, "program_id": S},
+            ["period_start", "period_end"],
+        ),
+        "output_schema": PROGRAM_METRICS_SCHEMA,
+    },
+    "scorecard_publish": {
+        "input_schema": operation_schema(
+            "scorecard_publish",
+            {
+                "period_start": S,
+                "period_end": S,
+                "metrics": {"type": "array", "items": SCORECARD_METRIC_INPUT_SCHEMA},
+                "comparisons": {
+                    "type": "array",
+                    "items": SCORECARD_COMPARISON_INPUT_SCHEMA,
+                },
+                "source_refs": SA,
+                "caveats": SA,
+                "program_id": S,
+            },
+            [
+                "period_start",
+                "period_end",
+                "metrics",
+                "comparisons",
+                "source_refs",
+                "caveats",
+            ],
+        ),
+        "output_schema": PROGRAM_SCORECARD_SCHEMA,
+    },
+}
+BRIEF_UPDATE_INPUT_SCHEMA = operation_union(BRIEF_OPERATIONS)
+BRIEF_UPDATE_OUTPUT_SCHEMA = {
+    "oneOf": [
+        OPERATING_BRIEF_SCHEMA,
+        PROGRAM_METRICS_SCHEMA,
+        PROGRAM_SCORECARD_SCHEMA,
+    ]
+}
+
 
 @dataclass(frozen=True)
 class CapabilityContract:
@@ -1829,6 +2381,44 @@ CAPABILITY_CONTRACTS: dict[str, CapabilityContract] = {
             "respond.snoozed": "snoozed",
             "respond.closed": "closed",
         },
+    ),
+    "investment_program_context": CapabilityContract(
+        PROGRAM_CONTEXT_DESCRIPTION,
+        "investment.program_context",
+        PROGRAM_CONTEXT_INPUT_SCHEMA,
+        PROGRAM_CONTEXT_OUTPUT_SCHEMA,
+        ("capability.input.invalid", "capability.output.invalid"),
+        (PROGRAM_PROJECTION_INVARIANT,),
+    ),
+    "investment_program_update": CapabilityContract(
+        PROGRAM_UPDATE_DESCRIPTION,
+        "investment_commands.program_update",
+        PROGRAM_UPDATE_INPUT_SCHEMA,
+        PROGRAM_UPDATE_OUTPUT_SCHEMA,
+        (
+            "capability.input.invalid",
+            "capability.output.invalid",
+            "investment_program.version_conflict",
+        ),
+        (PROGRAM_CONFIRMATION_INVARIANT, PROGRAM_PROJECTION_INVARIANT),
+        PROGRAM_OPERATIONS,
+        actor_aware=True,
+    ),
+    "investment_brief_update": CapabilityContract(
+        BRIEF_UPDATE_DESCRIPTION,
+        "investment_commands.brief_update",
+        BRIEF_UPDATE_INPUT_SCHEMA,
+        BRIEF_UPDATE_OUTPUT_SCHEMA,
+        (
+            "capability.input.invalid",
+            "capability.output.invalid",
+            "investment_program.not_active",
+            "investment_brief.unresolved_obligations",
+            "investment_brief.calculation_lineage_required",
+        ),
+        (BRIEF_NO_ACTION_INVARIANT, BRIEF_PROJECTION_INVARIANT),
+        BRIEF_OPERATIONS,
+        actor_aware=True,
     ),
 }
 CONTRACTED_CAPABILITY_NAMES = frozenset(CAPABILITY_CONTRACTS)

@@ -24,7 +24,7 @@ from companion.core import Companion, CompanionError
 from companion.interfaces.mcp_profiles import INVESTMENT_TOOLS
 
 
-def test_provider_manifest_contracts_personal_finance_research_and_decision_workflows():
+def test_provider_manifest_contracts_personal_finance_research_decision_and_program_workflows():
     registry = investment_capability_registry(INVESTMENT_TOOLS)
 
     first = registry.provider_manifest()
@@ -58,6 +58,9 @@ def test_provider_manifest_contracts_personal_finance_research_and_decision_work
         "investment_decision_publish",
         "investment_action_plan",
         "investment_action_update",
+        "investment_program_context",
+        "investment_program_update",
+        "investment_brief_update",
     }
     assert {
         name for name, capability in first.document["capabilities"].items()
@@ -144,11 +147,53 @@ def test_provider_manifest_contracts_personal_finance_research_and_decision_work
         "snoozed",
         "closed",
     }
+    program_context = first.document["capabilities"]["investment_program_context"]
+    assert program_context["handler"] == "investment.program_context"
+    assert program_context["output_schema"]["properties"]["truth"]["const"] == (
+        "immutable_program_revisions_and_confirmed_context_refs"
+    )
+    program_update = first.document["capabilities"]["investment_program_update"]
+    assert program_update["handler"] == "investment_commands.program_update"
+    assert set(program_update["operations"]) == {
+        "create", "revise", "confirm", "status"
+    }
+    assert set(program_update["errors"]) == {
+        "capability.input.invalid",
+        "capability.output.invalid",
+        "investment_program.version_conflict",
+    }
+    assert {
+        variant["properties"]["operation"]["const"]
+        for variant in program_update["input_schema"]["oneOf"]
+    } == {"create", "revise", "confirm", "status"}
+    assert {
+        variant["properties"]["status"]["const"]
+        for variant in program_update["input_schema"]["oneOf"]
+        if variant["properties"]["operation"]["const"] == "status"
+    } == {"active", "paused", "archived"}
+    brief_update = first.document["capabilities"]["investment_brief_update"]
+    assert brief_update["handler"] == "investment_commands.brief_update"
+    assert set(brief_update["operations"]) == {
+        "publish", "presented", "metrics_calculate", "scorecard_publish"
+    }
+    assert set(brief_update["errors"]) == {
+        "capability.input.invalid",
+        "capability.output.invalid",
+        "investment_program.not_active",
+        "investment_brief.unresolved_obligations",
+        "investment_brief.calculation_lineage_required",
+    }
+    assert {
+        variant["properties"]["brief_type"]["const"]
+        for variant in brief_update["input_schema"]["oneOf"]
+        if variant["properties"]["operation"]["const"] == "publish"
+    } == {"daily", "weekly", "monthly"}
     for capability_name in (
         "decision_context",
         "investment_decision_publish",
         "investment_action_plan",
         "investment_action_update",
+        "investment_program_update",
     ):
         assert first.document["capabilities"][capability_name]["output_schema"][
             "additionalProperties"
@@ -159,10 +204,32 @@ def test_provider_manifest_contracts_personal_finance_research_and_decision_work
             "investment_decision_publish",
             "investment_action_plan",
             "investment_action_update",
+            "investment_program_update",
+            "investment_brief_update",
         )
         for operation in first.document["capabilities"][capability_name][
             "operations"
         ].values()
+    )
+    model_visible_program_surface = json.dumps(
+        {
+            name: INVESTMENT_TOOLS[name]
+            for name in (
+                "investment_program_context",
+                "investment_program_update",
+                "investment_brief_update",
+            )
+        },
+        sort_keys=True,
+    ).lower()
+    assert all(
+        token not in model_visible_program_surface
+        for token in (
+            "receipt",
+            "provider_manifest",
+            "pipeline_metadata",
+            "job_metadata",
+        )
     )
 
 
@@ -562,6 +629,74 @@ def test_registry_rejects_incomplete_decision_and_action_variants(capability, ar
         registry.invoke(SimpleNamespace(), capability, arguments, actor="test")
 
 
+@pytest.mark.parametrize(
+    ("capability", "arguments"),
+    [
+        (
+            "investment_program_update",
+            {"operation": "confirm", "revision_id": "programrev_1"},
+        ),
+        (
+            "investment_program_update",
+            {
+                "operation": "status",
+                "program_id": "program_1",
+                "status": "paused",
+                "reason": "missing optimistic version",
+            },
+        ),
+        (
+            "investment_program_update",
+            {
+                "operation": "revise",
+                "program_id": "program_1",
+                "expected_version": 1,
+                "reason": "cross-variant field",
+                "user_approval_ref": "message_1",
+            },
+        ),
+        (
+            "investment_brief_update",
+            {
+                "operation": "publish",
+                "brief_type": "weekly",
+                "period_key": "2026-W35",
+                "as_of": "2026-08-29T00:00:00Z",
+                "conclusion": "review_required",
+                "payload": {
+                    "summary": "missing weekly projections",
+                    "what_changed": [],
+                    "decision": "review",
+                    "risks": [],
+                    "next_check_at": "2026-08-30T00:00:00Z",
+                    "queue_item_ids": [],
+                },
+                "source_refs": [],
+            },
+        ),
+        (
+            "investment_brief_update",
+            {
+                "operation": "scorecard_publish",
+                "period_start": "2026-08-01T00:00:00Z",
+                "period_end": "2026-08-29T00:00:00Z",
+                "metrics": [{"name": "return", "value": "0.1"}],
+                "comparisons": [],
+                "source_refs": [],
+                "caveats": [],
+            },
+        ),
+    ],
+)
+def test_registry_rejects_incomplete_program_and_brief_variants(
+    capability, arguments
+):
+    registry = investment_capability_registry(INVESTMENT_TOOLS)
+
+    with pytest.raises(CompanionError, match="capability.input.invalid"):
+        registry.invoke(SimpleNamespace(), capability, arguments, actor="test")
+
+
 def test_platform_health_uses_an_injected_registry_without_interface_dependency(
     tmp_path,
 ):
@@ -613,6 +748,14 @@ def test_real_investment_mcp_profile_captures_home_production_health_drift(tmp_p
         "mcp.tools-list.decision-publish-variants",
         "mcp.tools-list.action-plan-variants",
         "mcp.tools-list.action-update-variants",
+        "investment_program.confirmation_and_versioning_required/v1",
+        "investment_program.references_context_without_owning_truth/v1",
+        "investment_brief.no_action_requires_resolved_obligations/v1",
+        "investment_brief.references_calculations_without_owning_truth/v1",
+        "mcp.brief.calculation-lineage-required/v1",
+        "mcp.tools-list.program-context",
+        "mcp.tools-list.program-update-variants",
+        "mcp.tools-list.brief-update-variants",
     }
     assert negative["passed"] is False
     assert negative["failures"] == [{
@@ -670,6 +813,36 @@ def test_real_investment_mcp_profile_captures_home_production_health_drift(tmp_p
     assert decision_action["queue"]["accepted"]["state"] == "accepted"
     assert decision_action["queue"]["rejected"]["state"] == "rejected"
     assert decision_action["after_accept"]["decision"]["executions"] == []
+    program_brief = observation["program_brief"]
+    assert program_brief["program"]["created"]["status"] == "draft"
+    assert program_brief["program"]["confirmed"]["current_revision"][
+        "user_approval_ref"
+    ] == "synthetic:user-message:approve-program"
+    assert program_brief["program"]["archived"]["status"] == "archived"
+    assert program_brief["program"]["stale_revision_error"].startswith(
+        "investment_program.version_conflict:"
+    )
+    assert program_brief["program"]["stale_status_error"].startswith(
+        "investment_program.version_conflict:"
+    )
+    assert program_brief["program"]["unconfirmed_brief_error"].startswith(
+        "investment_program.not_active:"
+    )
+    assert program_brief["brief"]["no_action_error"].startswith(
+        "investment_brief.unresolved_obligations:"
+    )
+    assert program_brief["brief"]["missing_lineage_error"].startswith(
+        "investment_brief.calculation_lineage_required:"
+    )
+    assert program_brief["brief"]["no_action"]["conclusion"] == (
+        "no_action"
+    )
+    assert program_brief["brief"]["review_required"]["conclusion"] == (
+        "review_required"
+    )
+    assert program_brief["brief"]["scorecard"]["metrics"][0][
+        "calculation_id"
+    ] == program_brief["brief"]["metrics"]["calculation_id"]
 
 
 def test_contract_digest_normalizes_set_like_array_order():
