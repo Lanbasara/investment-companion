@@ -1634,7 +1634,10 @@ RISK_GATE_RESULT_SCHEMA = object_schema(
 )
 CANDIDATE_QUALIFICATION_VALIDITY_SCHEMA = object_schema(
     {
-        "status": {"type": "string", "const": "current_at_as_of"},
+        "status": {
+            "type": "string",
+            "enum": ["current_at_as_of", "expired_at_as_of"],
+        },
         "valid_until": S,
         "recalculate_on": {
             "type": "array",
@@ -1652,6 +1655,7 @@ CANDIDATE_QUALIFICATION_VALIDITY_SCHEMA = object_schema(
             },
         },
         "market_snapshot_fresh": B,
+        "market_evidence_usable_for_preflight": B,
         "broker_realtime_proven": {"type": "boolean", "const": False},
         "final_broker_preflight_required": {"type": "boolean", "const": True},
     },
@@ -1660,6 +1664,7 @@ CANDIDATE_QUALIFICATION_VALIDITY_SCHEMA = object_schema(
         "valid_until",
         "recalculate_on",
         "market_snapshot_fresh",
+        "market_evidence_usable_for_preflight",
         "broker_realtime_proven",
         "final_broker_preflight_required",
     ],
@@ -1672,7 +1677,7 @@ CANDIDATE_QUALIFICATION_CANDIDATE_SCHEMA = object_schema(
         "quantity": {"type": ["string", "null"]},
         "quantity_kind": {
             "type": "string",
-            "enum": ["exact_candidate", "withheld_below_range_ready"],
+            "enum": ["exact_candidate", "withheld_below_preflight_ready"],
         },
         "reference_price": S,
         "price_range": object_schema(
@@ -1699,6 +1704,7 @@ CANDIDATE_QUALIFICATION_MARKET_SCHEMA = object_schema(
         "age_seconds": {"type": ["integer", "null"]},
         "max_age_seconds": I,
         "fresh": B,
+        "usable_for_preflight": B,
     },
     [
         "market_snapshot_id",
@@ -1707,6 +1713,7 @@ CANDIDATE_QUALIFICATION_MARKET_SCHEMA = object_schema(
         "age_seconds",
         "max_age_seconds",
         "fresh",
+        "usable_for_preflight",
     ],
 )
 CANDIDATE_QUALIFICATION_SCHEMA = object_schema(

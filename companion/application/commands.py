@@ -887,7 +887,7 @@ class InvestmentCommandService:
                 "account_id": trade["account_id"],
                 "asset_id": trade["asset_id"],
                 "side": "buy" if quantity > 0 else "sell",
-                "quantity": dtext(abs(quantity)) if conditional_sizing else None,
+                "quantity": dtext(abs(quantity)) if exact_sizing else None,
                 "reference_price": dtext(dec(trade["price"], "action price")),
                 "price_range": trade["price_range"],
                 "valid_until": trade["valid_until"],

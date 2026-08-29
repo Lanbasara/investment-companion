@@ -386,6 +386,7 @@ def test_candidate_qualification_combines_account_and_market_evidence_without_wr
     assert calculation.candidate.valid_until == valid_until
     assert calculation.market_evidence.market_snapshot_id == market["id"]
     assert calculation.market_evidence.fresh is True
+    assert calculation.market_evidence.usable_for_preflight is True
     assert calculation.market_evidence.latest_relevant_snapshot_id == market["id"]
     assert calculation.market_fact_fingerprint
 
@@ -405,6 +406,7 @@ def test_candidate_qualification_combines_account_and_market_evidence_without_wr
     }
     assert projection["market_evidence"]["market_snapshot_id"] == market["id"]
     assert projection["market_evidence"]["fresh"] is True
+    assert projection["market_evidence"]["usable_for_preflight"] is True
     assert projection["validity"]["valid_until"] == valid_until
     assert "related_market_snapshot_change" in projection["validity"][
         "recalculate_on"
@@ -462,6 +464,10 @@ def test_candidate_market_gaps_cap_precision_and_directional_level_withholds_qua
     )
     assert stale.level == "range_ready"
     assert reason_codes(stale) == ["market_snapshot_stale"]
+    assert stale.stable_projection()["candidate"]["quantity"] is None
+    assert stale.stable_projection()["candidate"]["quantity_kind"] == (
+        "withheld_below_preflight_ready"
+    )
 
     directional_account = create_account_with_ledger(
         companion, name="Directional candidate"
@@ -661,6 +667,8 @@ def test_action_plan_projects_candidate_qualification_and_derives_legacy_eligibi
     assert missing_market["risk"]["status"] == "blocked"
     assert missing_market["eligible_for_decision"] is False
     assert missing_market["conditional_sizing_available"] is True
+    assert missing_market["action"]["quantity"] is None
+    assert missing_market["action"]["quantity_status"] == "conditional_only"
     assert missing_market["decision_blockers"] == [
         "risk_gate",
         "portfolio_qualification",
@@ -686,3 +694,13 @@ def test_action_plan_projects_candidate_qualification_and_derives_legacy_eligibi
     assert directional["action"]["quantity"] is None
     assert directional["action"]["quantity_status"] == "withheld_by_qualification"
     assert directional["decision_blockers"] == ["portfolio_qualification"]
+
+    expired = companion.investment_commands.action_plan(
+        **{**trade, "valid_until": checked_at}
+    )
+    assert expired["candidate_qualification"]["level"] == "preflight_ready"
+    assert expired["candidate_qualification"]["validity"]["status"] == (
+        "expired_at_as_of"
+    )
+    assert expired["risk"]["status"] == "blocked"
+    assert expired["eligible_for_decision"] is False

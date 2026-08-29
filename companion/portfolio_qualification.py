@@ -88,6 +88,31 @@ class PortfolioQualificationBlocker:
         }
 
 
+def _stable_qualification_projection(
+    *,
+    calculation_id: str,
+    level: str,
+    allowed_uses: tuple[str, ...],
+    blockers: tuple[PortfolioQualificationBlocker, ...],
+    required_actions: tuple[tuple[str, str], ...],
+    as_of: str,
+    validity: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "calculation_id": calculation_id,
+        "level": level,
+        "allowed_uses": list(allowed_uses),
+        "blockers": [blocker.projection() for blocker in blockers],
+        "reason_codes": [blocker.code for blocker in blockers],
+        "required_actions": [
+            {"code": code, "summary": summary}
+            for code, summary in required_actions
+        ],
+        "as_of": as_of,
+        "validity": validity,
+    }
+
+
 @dataclass(frozen=True)
 class PortfolioQualificationFactLineage:
     confirmed_ledger_entry_ids: tuple[str, ...]
@@ -137,24 +162,20 @@ class PortfolioQualificationCalculation:
     material_fact_fingerprint: str
 
     def stable_projection(self, *, compact: bool = False) -> dict[str, Any]:
-        projection: dict[str, Any] = {
-            "calculation_id": self.calculation_id,
-            "level": self.level,
-            "allowed_uses": list(self.allowed_uses),
-            "blockers": [blocker.projection() for blocker in self.blockers],
-            "reason_codes": [blocker.code for blocker in self.blockers],
-            "required_actions": [
-                {"code": code, "summary": summary}
-                for code, summary in self.required_actions
-            ],
-            "as_of": self.as_of,
-            "validity": {
+        projection = _stable_qualification_projection(
+            calculation_id=self.calculation_id,
+            level=self.level,
+            allowed_uses=self.allowed_uses,
+            blockers=self.blockers,
+            required_actions=self.required_actions,
+            as_of=self.as_of,
+            validity={
                 "status": "current_at_as_of",
                 "recalculate_on": list(MATERIAL_DRIFT_EVENTS),
                 "broker_realtime_proven": False,
                 "final_broker_preflight_required": True,
             },
-        }
+        )
         if compact:
             return projection
         return {
@@ -304,7 +325,7 @@ class PortfolioQualificationCandidate:
     valid_until: str
 
     def projection(self, *, level: str) -> dict[str, Any]:
-        quantity_available = LEVEL_RANK[level] >= LEVEL_RANK["range_ready"]
+        quantity_available = level == "preflight_ready"
         return {
             "account_id": self.account_id,
             "asset_id": self.asset_id,
@@ -313,7 +334,7 @@ class PortfolioQualificationCandidate:
             "quantity_kind": (
                 "exact_candidate"
                 if quantity_available
-                else "withheld_below_range_ready"
+                else "withheld_below_preflight_ready"
             ),
             "reference_price": self.reference_price,
             "price_range": {
@@ -332,6 +353,7 @@ class PortfolioQualificationMarketEvidence:
     age_seconds: int | None
     max_age_seconds: int
     fresh: bool
+    usable_for_preflight: bool
 
     def projection(self) -> dict[str, Any]:
         return {
@@ -341,6 +363,7 @@ class PortfolioQualificationMarketEvidence:
             "age_seconds": self.age_seconds,
             "max_age_seconds": self.max_age_seconds,
             "fresh": self.fresh,
+            "usable_for_preflight": self.usable_for_preflight,
         }
 
 
@@ -363,26 +386,33 @@ class PortfolioCandidateQualificationCalculation:
         return self.candidate.as_of
 
     def stable_projection(self) -> dict[str, Any]:
-        return {
-            "calculation_id": self.calculation_id,
-            "account_calculation_id": self.account_qualification.calculation_id,
-            "level": self.level,
-            "allowed_uses": list(self.allowed_uses),
-            "blockers": [blocker.projection() for blocker in self.blockers],
-            "reason_codes": [blocker.code for blocker in self.blockers],
-            "required_actions": [
-                {"code": code, "summary": summary}
-                for code, summary in self.required_actions
-            ],
-            "as_of": self.as_of,
-            "validity": {
-                "status": "current_at_as_of",
+        validity_status = (
+            "current_at_as_of"
+            if parse(self.as_of) < parse(self.candidate.valid_until)
+            else "expired_at_as_of"
+        )
+        projection = _stable_qualification_projection(
+            calculation_id=self.calculation_id,
+            level=self.level,
+            allowed_uses=self.allowed_uses,
+            blockers=self.blockers,
+            required_actions=self.required_actions,
+            as_of=self.as_of,
+            validity={
+                "status": validity_status,
                 "valid_until": self.candidate.valid_until,
                 "recalculate_on": list(CANDIDATE_MATERIAL_DRIFT_EVENTS),
                 "market_snapshot_fresh": self.market_evidence.fresh,
+                "market_evidence_usable_for_preflight": (
+                    self.market_evidence.usable_for_preflight
+                ),
                 "broker_realtime_proven": False,
                 "final_broker_preflight_required": True,
             },
+        )
+        return {
+            **projection,
+            "account_calculation_id": self.account_qualification.calculation_id,
             "account_id": self.candidate.account_id,
             "policy_version": self.policy_version,
             "candidate": self.candidate.projection(level=self.level),
@@ -822,6 +852,7 @@ class PortfolioQualificationService:
             )
 
         age_seconds = None
+        market_temporally_fresh = False
         if not selected_market:
             market_block(
                 code="market_snapshot_missing",
@@ -857,6 +888,7 @@ class PortfolioQualificationService:
                 )
             else:
                 age_seconds = max(0, int((cutoff - observed_at).total_seconds()))
+                market_temporally_fresh = age_seconds <= max_market_age_seconds
                 if age_seconds > max_market_age_seconds:
                     market_block(
                         code="market_snapshot_stale",
@@ -885,14 +917,15 @@ class PortfolioQualificationService:
                     required_action_summary="Recalculate the candidate using the frozen Market Snapshot price.",
                 )
 
-        market_fresh = not market_blockers
+        market_usable_for_preflight = not market_blockers
         market_evidence = PortfolioQualificationMarketEvidence(
             market_snapshot_id=(selected_market["id"] if selected_market else market_snapshot_id),
             latest_relevant_snapshot_id=(latest_market["id"] if latest_market else None),
             observed_at=(selected_market["observed_at"] if selected_market else None),
             age_seconds=age_seconds,
             max_age_seconds=max_market_age_seconds,
-            fresh=market_fresh,
+            fresh=market_temporally_fresh,
+            usable_for_preflight=market_usable_for_preflight,
         )
         blockers = tuple((*account_qualification.blockers, *market_blockers))
         level = self._level_for_blockers(blockers)

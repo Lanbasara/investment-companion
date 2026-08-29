@@ -210,6 +210,18 @@ def test_provider_manifest_contracts_all_investment_profile_workflows():
         "type": "boolean",
         "const": False,
     }
+    assert candidate_qualification["properties"]["validity"]["properties"][
+        "status"
+    ]["enum"] == ["current_at_as_of", "expired_at_as_of"]
+    assert candidate_qualification["properties"]["candidate"]["properties"][
+        "quantity_kind"
+    ]["enum"] == [
+        "exact_candidate",
+        "withheld_below_preflight_ready",
+    ]
+    assert candidate_qualification["properties"]["market_evidence"][
+        "properties"
+    ]["usable_for_preflight"] == {"type": "boolean"}
     action_schema = action_plan["output_schema"]["properties"]["action"]
     assert action_schema["properties"]["quantity"]["type"] == ["string", "null"]
     assert action_schema["properties"]["quantity_status"]["enum"] == [
