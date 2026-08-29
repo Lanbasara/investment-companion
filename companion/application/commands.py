@@ -858,34 +858,50 @@ class InvestmentCommandService:
     def action_plan(self, **trade: Any) -> dict[str, Any]:
         risk = self.risk_assess(**trade)
         quantity = dec(trade["quantity"], "action quantity")
-        portfolio_context = self.c.investment.portfolio_context(
+        qualification = self.c.portfolio_qualification.evaluate_candidate(
             account_id=trade["account_id"],
+            asset_id=trade["asset_id"],
+            quantity=trade["quantity"],
+            price=trade["price"],
+            price_range=trade["price_range"],
+            market_snapshot_id=trade["market_snapshot_id"],
+            max_market_age_seconds=trade["max_market_age_seconds"],
             as_of=trade["as_of"],
-            prices={trade["asset_id"]: trade["price"]},
+            valid_until=trade["valid_until"],
         )
-        precision = portfolio_context["precision_boundary"]
-        exact_sizing = precision["precise_position_advice_allowed"]
+        precision = qualification.account_qualification.legacy_precision_boundary()
+        truth_freshness = qualification.account_qualification.legacy_truth_freshness()
+        exact_sizing = "precise_decision_support" in qualification.allowed_uses
+        conditional_sizing = "quantity_ranges" in qualification.allowed_uses
         risk_clear = not risk["blocked"]
+        quantity_status = (
+            "finalizable_after_broker_preflight"
+            if exact_sizing
+            else "conditional_only"
+            if conditional_sizing
+            else "withheld_by_qualification"
+        )
         return {
             "schema": "investment-companion.portfolio-action-plan/v1",
             "action": {
                 "account_id": trade["account_id"],
                 "asset_id": trade["asset_id"],
                 "side": "buy" if quantity > 0 else "sell",
-                "quantity": dtext(abs(quantity)),
+                "quantity": dtext(abs(quantity)) if conditional_sizing else None,
                 "reference_price": dtext(dec(trade["price"], "action price")),
                 "price_range": trade["price_range"],
                 "valid_until": trade["valid_until"],
                 "validity_sessions": trade.get("validity_sessions"),
-                "quantity_status": "finalizable_after_broker_preflight" if exact_sizing else "conditional_only",
+                "quantity_status": quantity_status,
             },
             "risk": risk,
+            "candidate_qualification": qualification.stable_projection(),
             "precision_boundary": precision,
-            "truth_freshness": portfolio_context["truth_freshness"],
+            "truth_freshness": truth_freshness,
             "eligible_for_decision": risk_clear and exact_sizing,
-            "conditional_sizing_available": True,
+            "conditional_sizing_available": conditional_sizing,
             "decision_blockers": (["risk_gate"] if not risk_clear else [])
-            + (["ledger_continuity_confirmation"] if not exact_sizing else []),
+            + (["portfolio_qualification"] if not exact_sizing else []),
             "action_tier": trade.get("action_tier", "standard"),
             "eligible_for_conditional_decision": trade.get("action_tier", "standard") == "bounded"
             and risk_clear and exact_sizing,

@@ -174,9 +174,52 @@ def test_provider_manifest_contracts_all_investment_profile_workflows():
     action_plan = first.document["capabilities"]["investment_action_plan"]
     assert set(action_plan["operations"]) == {"standard", "bounded"}
     assert {
+        "investment_action_plan.risk_gate_is_veto_not_thesis/v1",
+        "investment_action_plan.portfolio_qualification_caps_precision/v1",
+    } == set(action_plan["invariants"])
+    assert {
         variant["properties"]["action_tier"]["const"]
         for variant in action_plan["input_schema"]["oneOf"]
     } == {"standard", "bounded"}
+    candidate_qualification = action_plan["output_schema"]["properties"][
+        "candidate_qualification"
+    ]
+    assert candidate_qualification["properties"]["level"]["enum"] == [
+        "unavailable",
+        "directional_only",
+        "range_ready",
+        "preflight_ready",
+    ]
+    assert {
+        "calculation_id",
+        "account_calculation_id",
+        "level",
+        "allowed_uses",
+        "blockers",
+        "reason_codes",
+        "required_actions",
+        "as_of",
+        "validity",
+        "account_id",
+        "policy_version",
+        "candidate",
+        "market_evidence",
+        "no_action_inferred",
+    } == set(candidate_qualification["required"])
+    assert candidate_qualification["properties"]["no_action_inferred"] == {
+        "type": "boolean",
+        "const": False,
+    }
+    action_schema = action_plan["output_schema"]["properties"]["action"]
+    assert action_schema["properties"]["quantity"]["type"] == ["string", "null"]
+    assert action_schema["properties"]["quantity_status"]["enum"] == [
+        "finalizable_after_broker_preflight",
+        "conditional_only",
+        "withheld_by_qualification",
+    ]
+    assert action_plan["output_schema"]["properties"][
+        "conditional_sizing_available"
+    ] == {"type": "boolean"}
     action_update = first.document["capabilities"]["investment_action_update"]
     assert action_update["handler"] == "investment_commands.action_update"
     assert set(action_update["operations"]) == {
@@ -1067,6 +1110,7 @@ def test_real_investment_mcp_profile_captures_home_production_health_drift(tmp_p
         "mcp.required-confirmation-references.rejected/v1",
         "decision.research_validation_is_not_decision/v1",
         "investment_action_plan.risk_gate_is_veto_not_thesis/v1",
+        "investment_action_plan.portfolio_qualification_caps_precision/v1",
         "action_card.acceptance_never_changes_portfolio/v1",
         "investment_execution_update.confirmed_ledger_only_changes_portfolio/v1",
         "investment_execution_update.full_scope_reconciliation_required/v1",

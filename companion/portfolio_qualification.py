@@ -4,9 +4,9 @@ from dataclasses import dataclass
 import json
 from typing import Any
 
-from .db import rows_dict
-from .financial import reconciliation_is_full_match
-from .foundation import canonical, digest
+from .db import row_dict, rows_dict
+from .financial import dec, dtext, reconciliation_is_full_match
+from .foundation import CompanionError, canonical, digest
 from .timeutil import iso, parse
 
 
@@ -26,6 +26,10 @@ MATERIAL_DRIFT_EVENTS = (
     "pending_ledger_change",
     "open_execution_change",
     "broker_strategy_change",
+)
+CANDIDATE_MATERIAL_DRIFT_EVENTS = (
+    *MATERIAL_DRIFT_EVENTS,
+    "related_market_snapshot_change",
 )
 LEVEL_RANK = {
     "unavailable": 0,
@@ -286,6 +290,107 @@ class PortfolioQualificationCalculation:
         }
 
 
+@dataclass(frozen=True)
+class PortfolioQualificationCandidate:
+    account_id: str
+    asset_id: str
+    direction: str
+    quantity: str
+    reference_price: str
+    price_range: tuple[str, str]
+    market_snapshot_id: str | None
+    max_market_age_seconds: int
+    as_of: str
+    valid_until: str
+
+    def projection(self, *, level: str) -> dict[str, Any]:
+        quantity_available = LEVEL_RANK[level] >= LEVEL_RANK["range_ready"]
+        return {
+            "account_id": self.account_id,
+            "asset_id": self.asset_id,
+            "direction": self.direction,
+            "quantity": self.quantity if quantity_available else None,
+            "quantity_kind": (
+                "exact_candidate"
+                if quantity_available
+                else "withheld_below_range_ready"
+            ),
+            "reference_price": self.reference_price,
+            "price_range": {
+                "min": self.price_range[0],
+                "max": self.price_range[1],
+            },
+            "valid_until": self.valid_until,
+        }
+
+
+@dataclass(frozen=True)
+class PortfolioQualificationMarketEvidence:
+    market_snapshot_id: str | None
+    latest_relevant_snapshot_id: str | None
+    observed_at: str | None
+    age_seconds: int | None
+    max_age_seconds: int
+    fresh: bool
+
+    def projection(self) -> dict[str, Any]:
+        return {
+            "market_snapshot_id": self.market_snapshot_id,
+            "latest_relevant_snapshot_id": self.latest_relevant_snapshot_id,
+            "observed_at": self.observed_at,
+            "age_seconds": self.age_seconds,
+            "max_age_seconds": self.max_age_seconds,
+            "fresh": self.fresh,
+        }
+
+
+@dataclass(frozen=True)
+class PortfolioCandidateQualificationCalculation:
+    calculation_id: str
+    account_qualification: PortfolioQualificationCalculation
+    candidate: PortfolioQualificationCandidate
+    market_evidence: PortfolioQualificationMarketEvidence
+    policy_version: str
+    level: str
+    allowed_uses: tuple[str, ...]
+    blockers: tuple[PortfolioQualificationBlocker, ...]
+    required_actions: tuple[tuple[str, str], ...]
+    market_fact_fingerprint: str
+    material_fact_fingerprint: str
+
+    @property
+    def as_of(self) -> str:
+        return self.candidate.as_of
+
+    def stable_projection(self) -> dict[str, Any]:
+        return {
+            "calculation_id": self.calculation_id,
+            "account_calculation_id": self.account_qualification.calculation_id,
+            "level": self.level,
+            "allowed_uses": list(self.allowed_uses),
+            "blockers": [blocker.projection() for blocker in self.blockers],
+            "reason_codes": [blocker.code for blocker in self.blockers],
+            "required_actions": [
+                {"code": code, "summary": summary}
+                for code, summary in self.required_actions
+            ],
+            "as_of": self.as_of,
+            "validity": {
+                "status": "current_at_as_of",
+                "valid_until": self.candidate.valid_until,
+                "recalculate_on": list(CANDIDATE_MATERIAL_DRIFT_EVENTS),
+                "market_snapshot_fresh": self.market_evidence.fresh,
+                "broker_realtime_proven": False,
+                "final_broker_preflight_required": True,
+            },
+            "account_id": self.candidate.account_id,
+            "policy_version": self.policy_version,
+            "candidate": self.candidate.projection(level=self.level),
+            "market_evidence": self.market_evidence.projection(),
+            "no_action_inferred": False,
+        }
+
+
 class PortfolioQualificationService:
     """Single read-only authority for account portfolio-fact qualification."""
 
@@ -525,25 +630,8 @@ class PortfolioQualificationService:
         ordered_blockers = tuple(
             blocker for _, blocker in sorted(blockers, key=lambda item: (item[0], item[1].code))
         )
-        level = "preflight_ready"
-        for blocker in ordered_blockers:
-            if LEVEL_RANK[blocker.level_cap] < LEVEL_RANK[level]:
-                level = blocker.level_cap
-
-        required_actions: list[tuple[str, str]] = []
-        for blocker in ordered_blockers:
-            action = (
-                blocker.required_action_code,
-                blocker.required_action_summary,
-            )
-            if action not in required_actions:
-                required_actions.append(action)
-        required_actions.append(
-            (
-                "broker_preflight_required",
-                "Verify available cash, holdings, open orders, and broker constraints in the broker App before submission.",
-            )
-        )
+        level = self._level_for_blockers(ordered_blockers)
+        required_actions = self._required_actions(ordered_blockers)
 
         material_facts = {
             "confirmed_ledger": confirmed_ledger,
@@ -634,11 +722,293 @@ class PortfolioQualificationService:
             level=level,
             allowed_uses=ALLOWED_USES[level],
             blockers=ordered_blockers,
-            required_actions=tuple(required_actions),
+            required_actions=required_actions,
             fact_lineage=lineage,
             facts=facts,
             material_fact_fingerprint=fact_fingerprint,
         )
+
+    def evaluate_candidate(
+        self,
+        *,
+        account_id: str,
+        asset_id: str,
+        quantity: Any,
+        price: Any,
+        price_range: dict[str, Any],
+        market_snapshot_id: str | None,
+        max_market_age_seconds: int,
+        as_of: str,
+        valid_until: str,
+    ) -> PortfolioCandidateQualificationCalculation:
+        """Qualify one bounded candidate without owning portfolio or market truth."""
+
+        account_qualification = self.evaluate_account(
+            account_id=account_id,
+            as_of=as_of,
+        )
+        self.c.financial.asset_get(asset_id)
+        effective_at = account_qualification.as_of
+        cutoff = parse(effective_at)
+        if (
+            isinstance(max_market_age_seconds, bool)
+            or not isinstance(max_market_age_seconds, int)
+            or max_market_age_seconds <= 0
+        ):
+            raise CompanionError(
+                "candidate max_market_age_seconds must be a positive integer"
+            )
+        if not isinstance(price_range, dict) or set(price_range) != {"min", "max"}:
+            raise CompanionError("candidate price_range must contain exactly min and max")
+        signed_quantity = dec(quantity, "candidate quantity")
+        reference_price = dec(price, "candidate price")
+        minimum_price = dec(price_range["min"], "candidate minimum price")
+        maximum_price = dec(price_range["max"], "candidate maximum price")
+        if signed_quantity == 0:
+            raise CompanionError("candidate quantity must be non-zero")
+        if reference_price <= 0 or minimum_price <= 0 or minimum_price > maximum_price:
+            raise CompanionError("candidate price and price_range must be positive and ordered")
+
+        candidate = PortfolioQualificationCandidate(
+            account_id=account_id,
+            asset_id=asset_id,
+            direction="buy" if signed_quantity > 0 else "sell",
+            quantity=dtext(abs(signed_quantity)),
+            reference_price=dtext(reference_price),
+            price_range=(dtext(minimum_price), dtext(maximum_price)),
+            market_snapshot_id=market_snapshot_id,
+            max_market_age_seconds=max_market_age_seconds,
+            as_of=effective_at,
+            valid_until=iso(parse(valid_until)),
+        )
+        with self.c.db.connect() as con:
+            selected_market = (
+                row_dict(
+                    con.execute(
+                        "SELECT * FROM market_snapshots WHERE id=?",
+                        (market_snapshot_id,),
+                    ).fetchone()
+                )
+                if market_snapshot_id
+                else None
+            )
+            latest_market = row_dict(
+                con.execute(
+                    "SELECT * FROM market_snapshots WHERE asset_id=? AND metric='close' "
+                    "AND julianday(observed_at)<=julianday(?) "
+                    "ORDER BY julianday(observed_at) DESC,julianday(created_at) DESC,rowid DESC "
+                    "LIMIT 1",
+                    (asset_id, effective_at),
+                ).fetchone()
+            )
+
+        market_blockers: list[PortfolioQualificationBlocker] = []
+
+        def market_block(
+            *,
+            code: str,
+            summary: str,
+            required_action_code: str,
+            required_action_summary: str,
+        ) -> None:
+            market_blockers.append(
+                PortfolioQualificationBlocker(
+                    code=code,
+                    summary=summary,
+                    required_action_code=required_action_code,
+                    required_action_summary=required_action_summary,
+                    level_cap="range_ready",
+                )
+            )
+
+        age_seconds = None
+        if not selected_market:
+            market_block(
+                code="market_snapshot_missing",
+                summary="The candidate has no related frozen Market Snapshot.",
+                required_action_code="refresh_market_snapshot",
+                required_action_summary="Freeze a current healthy close-price Market Snapshot for this asset.",
+            )
+        else:
+            if (
+                selected_market["asset_id"] != asset_id
+                or selected_market["metric"] != "close"
+            ):
+                market_block(
+                    code="market_snapshot_mismatch",
+                    summary="The selected Market Snapshot does not represent this asset's close price.",
+                    required_action_code="select_matching_market_snapshot",
+                    required_action_summary="Select a close-price Market Snapshot for the candidate asset.",
+                )
+            if selected_market["quality"] != "healthy":
+                market_block(
+                    code="market_snapshot_unhealthy",
+                    summary="The selected Market Snapshot is not marked healthy.",
+                    required_action_code="refresh_market_snapshot",
+                    required_action_summary="Freeze a healthy Market Snapshot before exact sizing.",
+                )
+            observed_at = parse(selected_market["observed_at"])
+            if observed_at > cutoff:
+                market_block(
+                    code="market_snapshot_from_future",
+                    summary="The selected Market Snapshot was not available at the decision time.",
+                    required_action_code="select_point_in_time_market_snapshot",
+                    required_action_summary="Use a Market Snapshot observed no later than the decision time.",
+                )
+            else:
+                age_seconds = max(0, int((cutoff - observed_at).total_seconds()))
+                if age_seconds > max_market_age_seconds:
+                    market_block(
+                        code="market_snapshot_stale",
+                        summary="The selected Market Snapshot exceeds the candidate freshness limit.",
+                        required_action_code="refresh_market_snapshot",
+                        required_action_summary="Freeze a newer healthy Market Snapshot before exact sizing.",
+                    )
+            if latest_market and latest_market["id"] != selected_market["id"]:
+                market_block(
+                    code="market_snapshot_superseded",
+                    summary="A newer relevant Market Snapshot exists for the candidate asset.",
+                    required_action_code="use_latest_market_snapshot",
+                    required_action_summary="Recalculate the candidate with the latest relevant Market Snapshot.",
+                )
+            try:
+                market_price = dec(
+                    selected_market["value_text"], "candidate market snapshot price"
+                )
+            except CompanionError:
+                market_price = None
+            if market_price != reference_price:
+                market_block(
+                    code="market_price_mismatch",
+                    summary="The candidate reference price does not match the frozen Market Snapshot.",
+                    required_action_code="align_candidate_market_price",
+                    required_action_summary="Recalculate the candidate using the frozen Market Snapshot price.",
+                )
+
+        market_fresh = not market_blockers
+        market_evidence = PortfolioQualificationMarketEvidence(
+            market_snapshot_id=(selected_market["id"] if selected_market else market_snapshot_id),
+            latest_relevant_snapshot_id=(latest_market["id"] if latest_market else None),
+            observed_at=(selected_market["observed_at"] if selected_market else None),
+            age_seconds=age_seconds,
+            max_age_seconds=max_market_age_seconds,
+            fresh=market_fresh,
+        )
+        blockers = tuple((*account_qualification.blockers, *market_blockers))
+        level = self._level_for_blockers(blockers)
+        required_actions = self._required_actions(blockers)
+        market_facts = {
+            "selected_market": selected_market,
+            "latest_relevant_market": latest_market,
+        }
+        market_fact_fingerprint = digest(
+            "portfolio-qualification-candidate-market/v1",
+            asset_id,
+            market_facts,
+        )
+        material_fact_fingerprint = digest(
+            "portfolio-qualification-candidate-material-facts/v1",
+            account_qualification.material_fact_fingerprint,
+            market_fact_fingerprint,
+        )
+        calculation_id = "pqual_candidate_" + digest(
+            "portfolio-qualification-candidate-calculation/v1",
+            POLICY_VERSION,
+            {
+                "account_id": candidate.account_id,
+                "asset_id": candidate.asset_id,
+                "direction": candidate.direction,
+                "quantity": candidate.quantity,
+                "reference_price": candidate.reference_price,
+                "price_range": candidate.price_range,
+                "market_snapshot_id": candidate.market_snapshot_id,
+                "max_market_age_seconds": candidate.max_market_age_seconds,
+                "as_of": candidate.as_of,
+                "valid_until": candidate.valid_until,
+            },
+            material_fact_fingerprint,
+        )[:24]
+        return PortfolioCandidateQualificationCalculation(
+            calculation_id=calculation_id,
+            account_qualification=account_qualification,
+            candidate=candidate,
+            market_evidence=market_evidence,
+            policy_version=POLICY_VERSION,
+            level=level,
+            allowed_uses=ALLOWED_USES[level],
+            blockers=blockers,
+            required_actions=required_actions,
+            market_fact_fingerprint=market_fact_fingerprint,
+            material_fact_fingerprint=material_fact_fingerprint,
+        )
+
+    def candidate_is_current(
+        self,
+        calculation: PortfolioCandidateQualificationCalculation,
+        *,
+        as_of: str,
+    ) -> bool:
+        """Return whether an immutable candidate still supports its recorded uses."""
+
+        effective_at = iso(parse(as_of))
+        if parse(effective_at) < parse(calculation.as_of):
+            return False
+        if parse(effective_at) >= parse(calculation.candidate.valid_until):
+            return False
+        signed_quantity = (
+            calculation.candidate.quantity
+            if calculation.candidate.direction == "buy"
+            else f"-{calculation.candidate.quantity}"
+        )
+        current = self.evaluate_candidate(
+            account_id=calculation.candidate.account_id,
+            asset_id=calculation.candidate.asset_id,
+            quantity=signed_quantity,
+            price=calculation.candidate.reference_price,
+            price_range={
+                "min": calculation.candidate.price_range[0],
+                "max": calculation.candidate.price_range[1],
+            },
+            market_snapshot_id=calculation.candidate.market_snapshot_id,
+            max_market_age_seconds=calculation.candidate.max_market_age_seconds,
+            as_of=effective_at,
+            valid_until=calculation.candidate.valid_until,
+        )
+        return bool(
+            current.material_fact_fingerprint
+            == calculation.material_fact_fingerprint
+            and current.level == calculation.level
+        )
+
+    @staticmethod
+    def _level_for_blockers(
+        blockers: tuple[PortfolioQualificationBlocker, ...],
+    ) -> str:
+        level = "preflight_ready"
+        for blocker in blockers:
+            if LEVEL_RANK[blocker.level_cap] < LEVEL_RANK[level]:
+                level = blocker.level_cap
+        return level
+
+    @staticmethod
+    def _required_actions(
+        blockers: tuple[PortfolioQualificationBlocker, ...],
+    ) -> tuple[tuple[str, str], ...]:
+        required_actions: list[tuple[str, str]] = []
+        for blocker in blockers:
+            action = (
+                blocker.required_action_code,
+                blocker.required_action_summary,
+            )
+            if action not in required_actions:
+                required_actions.append(action)
+        required_actions.append(
+            (
+                "broker_preflight_required",
+                "Verify available cash, holdings, open orders, and broker constraints in the broker App before submission.",
+            )
+        )
+        return tuple(required_actions)
 
     @staticmethod
     def _execution_account_id(execution: dict[str, Any]) -> str | None:
