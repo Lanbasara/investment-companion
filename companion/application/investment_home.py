@@ -226,20 +226,22 @@ class InvestmentHomeService:
     def decision_context(self, *, limit: int = 20) -> dict[str, Any]:
         queue = self.c.operating.queue_list(limit=limit)
         executions = self.c.execution.list(limit=limit)
-        cards, invalid = [], []
-        for item in queue:
-            if item["state"] not in {"ready", "presented", "accepted"}:
-                continue
-            try:
-                cards.append(self.c.operating.queue_card(item["id"]))
-            except CompanionError as exc:
-                invalid.append({"queue_id": item["id"], "error": str(exc)})
+        current_program = self.c.operating.program_current()
+        actionability = self.c.operating.revalidate_actionable_queue(
+            [
+                item
+                for item in queue
+                if item["state"] in {"ready", "presented", "accepted"}
+            ],
+            program_id=current_program["id"] if current_program else "",
+            max_cards=None,
+        )
         return {
             "schema": "investment-companion.decision-context/v1",
             "as_of": iso(),
             "queue": queue,
-            "action_cards": cards,
-            "invalid": invalid,
+            "action_cards": actionability["cards"],
+            "invalid": actionability["invalid"],
             "recent_decisions": self._objects_with_current_revision("decision", limit),
             "executions": executions,
             "execution_boundary": {

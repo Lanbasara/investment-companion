@@ -1024,7 +1024,7 @@ class PortfolioQualificationService:
         )
 
     def evaluate_risk_candidate(
-        self, risk: dict[str, Any]
+        self, risk: dict[str, Any], *, as_of: str | None = None
     ) -> PortfolioCandidateQualificationCalculation:
         """Rebuild the candidate qualification described by one Risk Calculation."""
 
@@ -1038,7 +1038,7 @@ class PortfolioQualificationService:
             max_market_age_seconds=risk["assumptions"][
                 "max_market_age_seconds"
             ],
-            as_of=risk["as_of"],
+            as_of=as_of or risk["as_of"],
             valid_until=risk["assumptions"]["valid_until"],
         )
 

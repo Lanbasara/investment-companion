@@ -266,7 +266,7 @@ class CognitiveLedger:
             con.execute("INSERT OR IGNORE INTO cognitive_links(id,from_id,to_id,link_type,metadata_json,created_at) VALUES(?,?,?,?,?,?)",(lid,from_id,to_id,link_type,canonical(metadata or {}),now));row=con.execute("SELECT * FROM cognitive_links WHERE from_id=? AND to_id=? AND link_type=?",(from_id,to_id,link_type)).fetchone()
         return row_dict(row)
 
-    def execution_create(self,decision_id:str|None,details:dict,decision_revision_id:str|None=None,manual_action_spec_hash:str|None=None,idempotency_key:str|None=None,status:str="proposed")->dict:
+    def execution_create(self,decision_id:str|None,details:dict,decision_revision_id:str|None=None,manual_action_spec_hash:str|None=None,idempotency_key:str|None=None,status:str="proposed",revalidate_action:bool=True)->dict:
         if decision_id:
             obj=self.object_get(decision_id)
             if obj["object_type"]!="decision" or obj["status"]!="issued":raise CompanionError("execution requires an issued decision")
@@ -276,7 +276,7 @@ class CognitiveLedger:
                 if revision["object_id"]!=decision_id:raise CompanionError("execution decision revision belongs to another object")
                 if obj.get("current_revision_id")!=decision_revision_id:raise CompanionError("execution requires the current Decision revision")
                 if str(revision["metadata"].get("decision_contract_version"))=="4" and not manual_action_spec_hash:raise CompanionError("V4 execution requires ManualActionSpec hash")
-                if str(revision["metadata"].get("decision_contract_version"))=="1":self.c.actionability.validate_decision(decision_revision_id)
+                if str(revision["metadata"].get("decision_contract_version"))=="1" and revalidate_action:self.c.actionability.validate_decision(decision_revision_id)
         if status not in {"proposed","presented"}:raise CompanionError("new execution must be proposed or presented")
         if manual_action_spec_hash and not decision_revision_id:raise CompanionError("ManualActionSpec hash requires exact decision_revision_id")
         if idempotency_key is not None and (not isinstance(idempotency_key,str) or not idempotency_key.strip()):raise CompanionError("Execution idempotency_key must be a non-empty string")

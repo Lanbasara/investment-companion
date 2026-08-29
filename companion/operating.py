@@ -97,6 +97,8 @@ class InvestmentOperatingSystem(PortfolioDecisionService):
             for item in active_queue
             if item["state"] in {"ready", "presented", "snoozed", "accepted"}
         ]
+        if conclusion == "no_action":
+            self.require_no_action_qualification_resolved(program_id=program["id"])
         if conclusion == "no_action" and (queue_items or active_queue):
             raise CompanionError(
                 "investment_brief.unresolved_obligations: no_action brief conflicts "
@@ -135,6 +137,9 @@ class InvestmentOperatingSystem(PortfolioDecisionService):
         brief_id, now = new_id("brief"), iso()
         with self.db.transaction() as con:
             if conclusion == "no_action":
+                self.require_no_action_qualification_resolved(
+                    program_id=program["id"], connection=con
+                )
                 conflict = con.execute(
                     "SELECT id FROM decision_queue_items WHERE program_id=? "
                     "AND state IN ('ready','presented','snoozed','accepted') AND valid_until>? LIMIT 1",
@@ -709,18 +714,10 @@ class InvestmentOperatingSystem(PortfolioDecisionService):
             if item["state"] in {"ready", "presented", "accepted"}
         ]
         snoozed = [item for item in queue_items if item["state"] == "snoozed"]
-        cards: list[dict[str, Any]] = []
-        valid_queue: list[dict[str, Any]] = []
-        invalidated_queue: list[dict[str, Any]] = []
-        for item in queue:
-            try:
-                card = self.queue_card(item["id"])
-                valid_queue.append(item)
-                if len(cards) < 3:
-                    cards.append(card)
-            except CompanionError as exc:
-                invalidated_queue.append({"queue_id": item["id"], "error": str(exc)})
-        queue = valid_queue
+        actionability = self.revalidate_actionable_queue(queue, program_id=current["id"], max_cards=3)
+        queue = actionability["queue"]
+        cards = actionability["cards"]
+        invalidated_queue = actionability["invalid"]
         briefs = {
             brief_type: (self.brief_list(program_id=current["id"], brief_type=brief_type, limit=1) or [None])[0]
             for brief_type in ("daily", "weekly", "monthly")
@@ -747,7 +744,7 @@ class InvestmentOperatingSystem(PortfolioDecisionService):
                 message = f"有 {len(queue)} 项仍在有效期内、等待你判断的人工操作建议。"
         elif invalidated_queue:
             mode = "review_required"
-            message = f"有 {len(invalidated_queue)} 项旧行动已因依据变化而失效，需要重新研究或形成新 Decision。"
+            message = f"有 {len(invalidated_queue)} 项旧行动因组合事实资格不足或依据变化而失效；这表示需要重新核实事实与形成新 Decision，不表示 no_action。"
         elif snoozed:
             mode = "review_required"
             next_resume = min(item.get("snoozed_until") or item["valid_until"] for item in snoozed)
@@ -782,6 +779,10 @@ class InvestmentOperatingSystem(PortfolioDecisionService):
             },
             "action_cards": cards,
             "invalidated_queue": invalidated_queue,
+            "portfolio_fact_sufficiency": {
+                "status": "insufficient_for_action" if invalidated_queue else "no_unresolved_actionability_gap",
+                "no_action_inferred": False,
+            },
             "deferred_queue": [
                 {"queue_id": item["id"], "snoozed_until": item.get("snoozed_until")}
                 for item in snoozed

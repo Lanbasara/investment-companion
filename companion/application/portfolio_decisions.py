@@ -5,13 +5,14 @@ from typing import Any
 from ..db import row_dict, rows_dict
 from ..foundation import CompanionError, canonical, digest, new_id
 from ..timeutil import iso, parse, utc_now
+from .actionability_lifecycle import ActionabilityLifecycleMixin
 from .programs import InvestmentProgramService
 
 
 STAGE_ORDER = {"observed": 0, "researching": 1, "qualified": 2, "actionable": 3}
 
 
-class PortfolioDecisionService(InvestmentProgramService):
+class PortfolioDecisionService(ActionabilityLifecycleMixin, InvestmentProgramService):
     """Opportunity qualification and human DecisionQueue lifecycle."""
 
     def _exists(self, table: str, identifier: str) -> None:
@@ -502,7 +503,11 @@ class PortfolioDecisionService(InvestmentProgramService):
             raise CompanionError("DecisionQueue accepts only active actionable Opportunities")
         if opportunity.get("decision_revision_id") != decision_revision_id:
             raise CompanionError("DecisionQueue Decision differs from the Opportunity")
-        gate = self.c.actionability.validate_decision(decision_revision_id)
+        gate = self.c.actionability.validate_action_card(
+            opportunity=opportunity,
+            decision_revision_id=decision_revision_id,
+            stage="enqueue",
+        )
         revision = gate["revision"]
         bounded_limit = None
         if revision.get("metadata", {}).get("action_tier") == "bounded":
@@ -658,7 +663,7 @@ class PortfolioDecisionService(InvestmentProgramService):
             item = row_dict(con.execute("SELECT * FROM decision_queue_items WHERE id=?", (queue_id,)).fetchone())
         if not item:
             raise CompanionError(f"DecisionQueue item not found: {queue_id}")
-        return item
+        return self._queue_item_projection(item)
 
     def queue_list(
         self,
@@ -682,100 +687,10 @@ class PortfolioDecisionService(InvestmentProgramService):
         query += " ORDER BY CASE state WHEN 'ready' THEN 0 WHEN 'presented' THEN 1 ELSE 2 END,valid_until,created_at LIMIT ?"
         params.append(limit)
         with self.db.connect() as con:
-            return rows_dict(con.execute(query, params).fetchall())
-
-    def _invalidate_queue_item(self, item: dict[str, Any], reason: str) -> None:
-        now = iso()
-        with self.db.transaction() as con:
-            changed = con.execute(
-                "UPDATE decision_queue_items SET state='expired',snoozed_until=NULL,response_reason=?,"
-                "responded_at=?,version=version+1,updated_at=? WHERE id=? AND version=? "
-                "AND state IN ('ready','presented','snoozed','accepted')",
-                (reason, now, now, item["id"], item["version"]),
-            ).rowcount
-            if changed:
-                self.c.audit.record(
-                    con,
-                    "system",
-                    "invalidate",
-                    "decision_queue_item",
-                    item["id"],
-                    before={"state": item["state"]},
-                    after={"state": "expired"},
-                    reason=reason,
-                )
-
-    def queue_card(self, queue_id: str) -> dict[str, Any]:
-        item = self.queue_get(queue_id)
-        if item["state"] not in {"ready", "presented", "snoozed", "accepted"}:
-            raise CompanionError(f"DecisionQueue item is not active: {item['state']}")
-        self._require_active_program(item["program_id"])
-        opportunity = self.opportunity_get(item["opportunity_id"])
-        try:
-            gate = self.c.actionability.validate_decision(item["decision_revision_id"])
-        except CompanionError as exc:
-            self._invalidate_queue_item(item, f"Decision invalidated: {exc}")
-            raise
-        revision = gate["revision"]
-        metadata = revision["metadata"]
-        action_payload = None
-        executable = None
-        reasons: list[str] = []
-        research_validation = gate["research_validation"]
-        risk_gate = None
-        if item.get("manual_action_spec_id"):
-            validation = self.c.cognition.manual_action_validate(item["manual_action_spec_id"])
-            action = validation["spec"]
-            if action["status"] not in {"draft", "presented", "accepted"}:
-                reason = f"ManualActionSpec invalidated: {validation['reasons'] or [action['status']]}"
-                self._invalidate_queue_item(item, reason)
-                raise CompanionError(reason)
-            action_payload = {
-                key: action["spec"].get(key)
-                for key in ("account_id", "asset_id", "side", "quantity", "price_range", "priority", "alternatives")
-            }
-            executable = validation["executable"]
-            reasons = validation["reasons"]
-        else:
-            try:
-                current = self.c.actionability.revalidate_generic_action(revision["id"])
-            except CompanionError as exc:
-                self._invalidate_queue_item(item, f"Action Card validation failed: {exc}")
-                raise
-            action_payload = current["action"]
-            executable = current["executable"]
-            reasons = current["reasons"]
-            research_validation = current["research_validation"]
-            risk_gate = {
-                "frozen_calculation_id": current["frozen_risk_calculation_id"],
-                "current_calculation_id": current["risk_calculation_id"],
-                "market_snapshot_id": current["market_snapshot_id"],
-                "status": "pass" if executable else "blocked",
-            }
-            if not executable:
-                reason = f"Action Card invalidated by current Risk Gate: {reasons}"
-                self._invalidate_queue_item(item, reason)
-                raise CompanionError(reason)
-        return {
-            "schema": "investment-companion.action-card/v1",
-            "queue_id": item["id"],
-            "state": item["state"],
-            "subject": opportunity["subject"],
-            "valid_until": item["valid_until"],
-            "evidence_band": opportunity["evidence_band"],
-            "decision_revision_id": revision["id"],
-            "action": action_payload,
-            "executable_now": executable,
-            "blocking_reasons": reasons,
-            "research_validation": research_validation,
-            "risk_gate": risk_gate,
-            "invalidators": metadata["invalidators"],
-            "no_action_alternative": metadata["no_action"],
-            "source_refs": metadata.get("source_refs", []),
-            "human_execution_only": True,
-            "execution_created": False,
-            "guarantees": {"profit": False, "high_win_rate": False},
-        }
+            return [
+                self._queue_item_projection(item)
+                for item in rows_dict(con.execute(query, params).fetchall())
+            ]
 
     def queue_respond(
         self,
@@ -822,13 +737,25 @@ class PortfolioDecisionService(InvestmentProgramService):
                 and item.get("attention_decision_id") != attention_decision_id
             ):
                 raise CompanionError("idempotent DecisionQueue presentation supplied a different AttentionDecision")
+            if state in {"presented", "accepted"} and not (
+                state == "accepted" and self.queue_execution_started(queue_id)
+            ):
+                self.queue_card(
+                    queue_id,
+                    actionability_stage=(
+                        "present" if state == "presented" else "accept"
+                    ),
+                )
             return {**item, "user_confirmation_ref": user_confirmation_ref} if user_confirmation_ref else item
         if state not in transitions.get(item["state"], set()):
             raise CompanionError(f"invalid DecisionQueue transition: {item['state']} -> {state}")
         attention = None
         card = None
         if state in {"presented", "accepted"}:
-            card = self.queue_card(queue_id)
+            card = self.queue_card(
+                queue_id,
+                actionability_stage=("present" if state == "presented" else "accept"),
+            )
             if not card["executable_now"]:
                 raise CompanionError(f"Action Card is not executable: {card['blocking_reasons']}")
         if state == "presented":

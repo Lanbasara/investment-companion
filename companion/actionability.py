@@ -14,6 +14,26 @@ QUALIFICATION_FIELDS = {
     "decision_basis",
 }
 
+PORTFOLIO_QUALIFICATION_REASON_PREFIX = "actionability.portfolio_qualification."
+PORTFOLIO_QUALIFICATION_REASON_CODES = {
+    "missing": f"{PORTFOLIO_QUALIFICATION_REASON_PREFIX}missing",
+    "lineage_mismatch": f"{PORTFOLIO_QUALIFICATION_REASON_PREFIX}lineage_mismatch",
+    "candidate_mismatch": f"{PORTFOLIO_QUALIFICATION_REASON_PREFIX}candidate_mismatch",
+    "expired": f"{PORTFOLIO_QUALIFICATION_REASON_PREFIX}expired",
+    "facts_drifted": f"{PORTFOLIO_QUALIFICATION_REASON_PREFIX}facts_drifted",
+    "below_preflight_ready": (
+        f"{PORTFOLIO_QUALIFICATION_REASON_PREFIX}below_preflight_ready"
+    ),
+}
+
+
+class ActionabilityError(CompanionError):
+    """Stable, machine-readable failure from an Actionability lifecycle seam."""
+
+    def __init__(self, reason_code: str, message: str):
+        self.reason_code = reason_code
+        super().__init__(f"{reason_code}: {message}")
+
 
 class ActionabilityService:
     """Prove that research and risk still support a human investment action.
@@ -57,20 +77,31 @@ class ActionabilityService:
         for key in ("valid_until", "invalidators", "no_action"):
             if key not in metadata:
                 raise CompanionError(f"actionable Decision metadata missing: {key}")
+        contract = str(metadata.get("decision_contract_version", ""))
         if parse(metadata["valid_until"]) <= utc_now():
+            if contract == "1" and metadata.get("decision_kind") in {
+                "action",
+                "conditional_action",
+            }:
+                self._portfolio_qualification_failure(
+                    "expired",
+                    "the actionable Decision and its candidate Portfolio Qualification have expired",
+                )
             raise CompanionError("actionable Decision has expired")
         if not isinstance(metadata["invalidators"], list) or not metadata["invalidators"]:
             raise CompanionError("actionable Decision requires explicit invalidators")
         if not isinstance(metadata["no_action"], dict) or not metadata["no_action"]:
             raise CompanionError("actionable Decision requires a concrete no-action alternative")
 
-        contract = str(metadata.get("decision_contract_version", ""))
         result = {
             "contract": contract,
             "revision": revision,
             "decision": decision,
             "research_validation": None,
             "frozen_risk": None,
+            "portfolio_qualification": None,
+            "portfolio_qualification_lineage": None,
+            "actionability": None,
         }
         if contract == "4":
             return result
@@ -136,6 +167,17 @@ class ActionabilityService:
             or risk["outputs"].get("portfolio_calculation_id") != portfolio_id
         ):
             raise CompanionError("action Decision Risk Gate and Portfolio lineage differ")
+        subject_asset = decision.get("subject", {}).get("asset_id")
+        if subject_asset and risk["inputs"].get("asset_id") != subject_asset:
+            self._portfolio_qualification_failure(
+                "candidate_mismatch",
+                "action Decision, Risk and Portfolio Qualification identify different assets",
+            )
+        qualification, qualification_lineage = self._validate_portfolio_qualification(
+            revision=revision,
+            risk=risk,
+            current_at=iso(utc_now()),
+        )
 
         investor = self.c.cognition.context_current("investor")
         mandate = self.c.cognition.context_current("mandate")
@@ -161,12 +203,195 @@ class ActionabilityService:
                 raise CompanionError("bounded action Program revision has changed")
             if risk["assumptions"].get("bounded_action_policy") != policy:
                 raise CompanionError("bounded action risk policy has changed")
-        subject_asset = decision.get("subject", {}).get("asset_id")
-        if subject_asset and risk["inputs"].get("asset_id") != subject_asset:
-            raise CompanionError("action Decision Risk Gate belongs to another asset")
         result["research_validation"] = validation
         result["frozen_risk"] = risk
+        result["portfolio_qualification"] = qualification
+        result["portfolio_qualification_lineage"] = qualification_lineage
         return result
+
+    @staticmethod
+    def _portfolio_qualification_failure(code: str, message: str) -> None:
+        raise ActionabilityError(PORTFOLIO_QUALIFICATION_REASON_CODES[code], message)
+
+    def _validate_portfolio_qualification(
+        self,
+        *,
+        revision: dict[str, Any],
+        risk: dict[str, Any],
+        current_at: str,
+    ):
+        metadata = revision["metadata"]
+        context_refs = revision.get("context_refs", {})
+        qualification_id = metadata.get("portfolio_qualification_calculation_id")
+        if not qualification_id:
+            self._portfolio_qualification_failure(
+                "missing",
+                "the action Decision lacks its candidate Portfolio Qualification",
+            )
+
+        frozen = metadata.get("portfolio_qualification")
+        lineage = metadata.get("portfolio_qualification_lineage")
+        risk_frozen = risk["outputs"].get("portfolio_qualification")
+        risk_lineage = risk["assumptions"].get("portfolio_qualification_lineage")
+        linked_ids = {
+            qualification_id,
+            context_refs.get("portfolio_qualification_calculation_id"),
+            frozen.get("calculation_id") if isinstance(frozen, dict) else None,
+            lineage.get("calculation_id") if isinstance(lineage, dict) else None,
+            risk["inputs"].get("portfolio_qualification_calculation_id"),
+            risk_frozen.get("calculation_id") if isinstance(risk_frozen, dict) else None,
+            risk_lineage.get("calculation_id") if isinstance(risk_lineage, dict) else None,
+        }
+        if (
+            not isinstance(frozen, dict)
+            or not isinstance(lineage, dict)
+            or not isinstance(risk_frozen, dict)
+            or not isinstance(risk_lineage, dict)
+            or linked_ids != {qualification_id}
+            or frozen != risk_frozen
+            or lineage != risk_lineage
+        ):
+            self._portfolio_qualification_failure(
+                "lineage_mismatch",
+                "Opportunity, Decision and Risk must preserve one candidate Portfolio Qualification lineage",
+            )
+
+        if parse(current_at) >= parse(metadata["valid_until"]):
+            self._portfolio_qualification_failure(
+                "expired",
+                "the candidate Portfolio Qualification validity has elapsed",
+            )
+
+        try:
+            qualification, checked_lineage = (
+                self.c.portfolio_qualification.revalidate_frozen_risk_candidate(
+                    risk=risk,
+                    calculation_id=qualification_id,
+                    account_id=risk["inputs"]["account_id"],
+                    as_of=risk["as_of"],
+                    valid_until=metadata["valid_until"],
+                    current_at=current_at,
+                )
+            )
+        except CompanionError as exc:
+            message = str(exc)
+            if (
+                "facts have drifted" in message
+                or "candidate has expired" in message
+                or "frozen lineage is inconsistent" in message
+            ):
+                current = self.c.portfolio_qualification.evaluate_risk_candidate(
+                    risk, as_of=current_at
+                )
+                level_detail = (
+                    f"; current level {current.level} is below preflight_ready"
+                    if current.level != "preflight_ready"
+                    else ""
+                )
+                self._portfolio_qualification_failure(
+                    "facts_drifted",
+                    "the frozen candidate facts have drifted"
+                    f"{level_detail}; recalculate Portfolio Qualification, Risk and Decision",
+                )
+            if "another account" in message or "another candidate" in message:
+                self._portfolio_qualification_failure("candidate_mismatch", message)
+            self._portfolio_qualification_failure("lineage_mismatch", message)
+
+        candidate = checked_lineage.get("candidate", {})
+        signed_quantity = dec(risk["inputs"].get("quantity"), "Risk candidate quantity")
+        risk_price_range = risk["assumptions"].get("price_range", {})
+        expected_candidate = {
+            "account_id": risk["inputs"].get("account_id"),
+            "asset_id": risk["inputs"].get("asset_id"),
+            "direction": "buy" if signed_quantity > 0 else "sell",
+            "quantity": dtext(abs(signed_quantity)),
+            "reference_price": dtext(dec(risk["inputs"].get("price"), "Risk candidate price")),
+            "price_range": {
+                "min": dtext(dec(risk_price_range.get("min"), "Risk minimum price")),
+                "max": dtext(dec(risk_price_range.get("max"), "Risk maximum price")),
+            },
+            "market_snapshot_id": risk["inputs"].get("market_snapshot_id"),
+            "max_market_age_seconds": risk["assumptions"].get(
+                "max_market_age_seconds"
+            ),
+            "as_of": risk["as_of"],
+            "valid_until": risk["assumptions"].get("valid_until"),
+        }
+        if candidate != expected_candidate:
+            self._portfolio_qualification_failure(
+                "candidate_mismatch",
+                "the Risk candidate differs from the frozen Portfolio Qualification candidate",
+            )
+        if qualification.level != "preflight_ready" or (
+            "precise_decision_support" not in qualification.allowed_uses
+        ):
+            self._portfolio_qualification_failure(
+                "below_preflight_ready",
+                f"candidate level {qualification.level} cannot form an action or conditional-action Action Card",
+            )
+        if risk["outputs"].get("precise_action_eligible") is not True:
+            self._portfolio_qualification_failure(
+                "below_preflight_ready",
+                "Risk does not authorize precise action under the shared Portfolio Qualification",
+            )
+        return qualification, checked_lineage
+
+    def validate_action_card(
+        self,
+        *,
+        opportunity: dict[str, Any],
+        decision_revision_id: str,
+        stage: str,
+    ) -> dict[str, Any]:
+        """Revalidate one candidate lineage at an Action Card lifecycle seam."""
+
+        if stage not in {"enqueue", "project", "present", "accept", "execution"}:
+            raise CompanionError("unsupported Actionability lifecycle stage")
+        gate = self.validate_decision(decision_revision_id)
+        if gate["contract"] == "4":
+            return gate
+        if (
+            opportunity.get("status") != "active"
+            or opportunity.get("stage") != "actionable"
+            or opportunity.get("decision_revision_id") != decision_revision_id
+        ):
+            self._portfolio_qualification_failure(
+                "candidate_mismatch",
+                "the Opportunity no longer identifies this actionable Decision candidate",
+            )
+        revision = gate["revision"]
+        validation_id = (opportunity.get("qualification") or {}).get(
+            "validation_calculation_id"
+        )
+        if validation_id != revision["metadata"].get(
+            "research_validation_calculation_id"
+        ):
+            self._portfolio_qualification_failure(
+                "lineage_mismatch",
+                "Opportunity and Decision research lineage differ for the qualified candidate",
+            )
+        opportunity_asset = opportunity.get("subject", {}).get("asset_id")
+        candidate = gate["portfolio_qualification"].candidate
+        if opportunity_asset and opportunity_asset != candidate.asset_id:
+            self._portfolio_qualification_failure(
+                "candidate_mismatch",
+                "Opportunity, Decision, Risk and Portfolio Qualification identify different candidates",
+            )
+        gate["actionability"] = {
+            "schema": "investment-companion.actionability/v1",
+            "stage": stage,
+            "status": "actionable",
+            "reason_code": None,
+            "portfolio_qualification_calculation_id": gate[
+                "portfolio_qualification"
+            ].calculation_id,
+            "portfolio_qualification_level": gate["portfolio_qualification"].level,
+            "allowed_uses": list(gate["portfolio_qualification"].allowed_uses),
+            "no_action_inferred": False,
+            "human_acceptance_required": True,
+            "final_broker_preflight_required": True,
+        }
+        return gate
 
     def validate_qualification(
         self,
@@ -311,6 +536,10 @@ class ActionabilityService:
             validity_sessions=assumptions.get("validity_sessions"),
         )
         reasons = [item["rule"] for item in current["violations"]]
+        if current.get("precise_action_eligible") is not True:
+            reasons.append(
+                PORTFOLIO_QUALIFICATION_REASON_CODES["below_preflight_ready"]
+            )
         sell_current = None
         execution_plan = gate["revision"]["metadata"].get("execution_plan")
         if execution_plan and execution_plan.get("plan_type") == "moving_grid":
@@ -335,14 +564,32 @@ class ActionabilityService:
             reasons.extend(
                 f"grid_sell:{item['rule']}" for item in sell_current["violations"]
             )
+            if sell_current.get("precise_action_eligible") is not True:
+                reasons.append(
+                    "grid_sell:"
+                    + PORTFOLIO_QUALIFICATION_REASON_CODES[
+                        "below_preflight_ready"
+                    ]
+                )
         return {
             "action": action,
             "executable": not current["blocked"]
-            and (sell_current is None or not sell_current["blocked"]),
+            and current.get("precise_action_eligible") is True
+            and (
+                sell_current is None
+                or (
+                    not sell_current["blocked"]
+                    and sell_current.get("precise_action_eligible") is True
+                )
+            ),
             "reasons": reasons,
             "market_snapshot_id": market["id"],
             "risk_calculation_id": current["calculation_id"],
             "sell_risk_calculation_id": sell_current["calculation_id"] if sell_current else None,
+            "portfolio_qualification": current["portfolio_qualification"],
+            "sell_portfolio_qualification": (
+                sell_current["portfolio_qualification"] if sell_current else None
+            ),
             "research_validation": gate["research_validation"],
             "frozen_risk_calculation_id": risk["id"],
         }

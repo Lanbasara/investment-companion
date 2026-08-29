@@ -488,6 +488,13 @@ def test_v5_program_opportunity_queue_and_user_briefs(tmp_path: Path):
     assert card["executable_now"] is True
     assert card["research_validation"]["eligible_for_decision"] is True
     assert card["risk_gate"]["status"] == "pass"
+    assert card["portfolio_qualification"]["calculation_id"] == (
+        built["risk"]["portfolio_qualification"]["calculation_id"]
+    )
+    assert card["portfolio_qualification"]["level"] == "preflight_ready"
+    assert card["actionability"]["status"] == "actionable"
+    assert card["actionability"]["no_action_inferred"] is False
+    assert card["no_action_inferred"] is False
     assert card["human_execution_only"] is True
     assert card["execution_created"] is False
     assert card["guarantees"] == {"profit": False, "high_win_rate": False}
@@ -604,8 +611,16 @@ def test_v5_program_opportunity_queue_and_user_briefs(tmp_path: Path):
         state="presented",
         attention_decision_id=attention["id"],
     )
-    accepted = companion.operating.queue_respond(queue["id"], state="accepted")
+    ledger_before_acceptance = companion.financial.confirmed_ledger_hash()
+    accepted = companion.investment_commands.action_update(
+        operation="respond",
+        queue_id=queue["id"],
+        state="accepted",
+        user_confirmation_ref="pytest:user-accepted-action-card",
+    )
     assert accepted["state"] == "accepted"
+    assert accepted["user_confirmation_ref"] == "pytest:user-accepted-action-card"
+    assert companion.financial.confirmed_ledger_hash() == ledger_before_acceptance
     assert companion.operating.today()["mode"] == "action"
     assert companion.system_status()["counts"]["executions"] == 0
     metrics = companion.operating.program_metrics_calculate(
@@ -618,6 +633,239 @@ def test_v5_program_opportunity_queue_and_user_briefs(tmp_path: Path):
     assert metrics["decision_flow"]["accepted"] == 1
     assert metrics["rates"]["created_cohort_actionable_by_period_end"] == "1.0000"
     assert metrics["rates"]["presented_cohort_accepted_by_period_end"] == "1.0000"
+
+
+@pytest.mark.parametrize("lifecycle_stage", ["enqueue", "present", "accept"])
+def test_actionability_revalidates_portfolio_qualification_at_all_queue_seams(
+    tmp_path: Path, lifecycle_stage: str
+):
+    companion, fixture = setup_operating_system(tmp_path)
+    built = build_actionable_opportunity(companion, fixture)
+    queue = None
+    if lifecycle_stage != "enqueue":
+        queue = companion.operating.queue_enqueue(
+            built["opportunity"]["id"],
+            decision_revision_id=built["decision_revision"]["id"],
+        )
+    if lifecycle_stage == "accept":
+        attention = companion.attention.decide(
+            topic=f"qualification-stage-{queue['id']}",
+            materiality="high",
+            confidence="decision_grade",
+            reason="Present the still-current fixture Action Card",
+            evidence=[queue["id"]],
+        )
+        companion.attention.mark_delivered(attention["id"])
+        companion.operating.queue_respond(
+            queue["id"],
+            state="presented",
+            attention_decision_id=attention["id"],
+        )
+
+    confirmed_before = companion.financial.confirmed_ledger_hash()
+    pending = companion.financial.ledger_add(
+        account_id=fixture["account"]["id"],
+        entry_type="fee",
+        occurred_at=iso(),
+        amount="-1",
+        currency="CNY",
+        source=f"qualification-{lifecycle_stage}-drift",
+    )
+    current = companion.portfolio_qualification.evaluate_risk_candidate(
+        companion.financial.calculation_get(built["risk"]["calculation_id"]),
+        as_of=iso(),
+    )
+    assert pending["status"] == "needs_confirmation"
+    assert current.level == "range_ready"
+
+    with pytest.raises(
+        CompanionError,
+        match="actionability.portfolio_qualification.facts_drifted",
+    ) as failure:
+        if lifecycle_stage == "enqueue":
+            companion.operating.queue_enqueue(
+                built["opportunity"]["id"],
+                decision_revision_id=built["decision_revision"]["id"],
+            )
+        elif lifecycle_stage == "present":
+            attention = companion.attention.decide(
+                topic=f"qualification-stage-{queue['id']}",
+                materiality="high",
+                confidence="decision_grade",
+                reason="Attempt to present a drifted fixture Action Card",
+                evidence=[queue["id"]],
+            )
+            companion.attention.mark_delivered(attention["id"])
+            companion.operating.queue_respond(
+                queue["id"],
+                state="presented",
+                attention_decision_id=attention["id"],
+            )
+        else:
+            companion.investment_commands.action_update(
+                operation="respond",
+                queue_id=queue["id"],
+                state="accepted",
+                user_confirmation_ref="pytest:user-choice-must-not-bypass-drift",
+            )
+
+    assert "current level range_ready is below preflight_ready" in str(failure.value)
+    if queue is None:
+        assert not [
+            item
+            for item in companion.operating.queue_list(limit=100)
+            if item["decision_revision_id"] == built["decision_revision"]["id"]
+        ]
+    else:
+        expired = companion.operating.queue_get(queue["id"])
+        assert expired["state"] == "expired"
+        assert expired["reason_code"] == (
+            "actionability.portfolio_qualification.facts_drifted"
+        )
+        assert expired["no_action_inferred"] is False
+    assert companion.financial.confirmed_ledger_hash() == confirmed_before
+    assert companion.system_status()["counts"]["executions"] == 0
+    historical = companion.cognition.revision_get(built["decision_revision"]["id"])
+    frozen_risk = companion.financial.calculation_get(built["risk"]["calculation_id"])
+    assert historical["metadata"]["portfolio_qualification_calculation_id"] == (
+        built["risk"]["portfolio_qualification"]["calculation_id"]
+    )
+    assert frozen_risk["inputs"]["portfolio_qualification_calculation_id"] == (
+        built["risk"]["portfolio_qualification"]["calculation_id"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("mismatch", "reason_code"),
+    [
+        (
+            "decision_risk_lineage",
+            "actionability.portfolio_qualification.lineage_mismatch",
+        ),
+        (
+            "opportunity_candidate",
+            "actionability.portfolio_qualification.candidate_mismatch",
+        ),
+    ],
+)
+def test_actionability_rejects_mismatched_candidate_qualification_lineage(
+    tmp_path: Path, mismatch: str, reason_code: str
+):
+    companion, fixture = setup_operating_system(tmp_path)
+    built = build_actionable_opportunity(companion, fixture)
+    if mismatch == "decision_risk_lineage":
+        revision = companion.cognition.revision_get(built["decision_revision"]["id"])
+        metadata = {
+            **revision["metadata"],
+            "portfolio_qualification_calculation_id": "pqual_candidate_tampered",
+        }
+        with companion.db.transaction() as con:
+            con.execute(
+                "UPDATE cognitive_revisions SET metadata_json=? WHERE id=?",
+                (canonical(metadata), revision["id"]),
+            )
+    else:
+        other_asset = companion.financial.asset_upsert(
+            asset_type="stock",
+            name="Different candidate",
+            currency="CNY",
+            identifiers={"ts_code": "000002.SZ"},
+        )
+        with companion.db.transaction() as con:
+            con.execute(
+                "UPDATE opportunities SET subject_json=? WHERE id=?",
+                (
+                    canonical({"asset_id": other_asset["id"], "intent": "different"}),
+                    built["opportunity"]["id"],
+                ),
+            )
+
+    with pytest.raises(CompanionError, match=reason_code):
+        companion.operating.queue_enqueue(
+            built["opportunity"]["id"],
+            decision_revision_id=built["decision_revision"]["id"],
+        )
+    assert companion.system_status()["counts"]["executions"] == 0
+
+
+def test_portfolio_qualification_gap_remains_insufficient_evidence_not_no_action(
+    tmp_path: Path,
+):
+    companion, fixture = setup_operating_system(tmp_path)
+    built = build_actionable_opportunity(companion, fixture)
+    queue = companion.operating.queue_enqueue(
+        built["opportunity"]["id"],
+        decision_revision_id=built["decision_revision"]["id"],
+    )
+    companion.financial.ledger_add(
+        account_id=fixture["account"]["id"],
+        entry_type="fee",
+        occurred_at=iso(),
+        amount="-1",
+        currency="CNY",
+        source="qualification-brief-gap",
+    )
+
+    first = companion.operating.today()
+    second = companion.operating.today()
+    assert first["mode"] == second["mode"] == "review_required"
+    assert second["invalidated_queue"][0]["queue_id"] == queue["id"]
+    assert second["invalidated_queue"][0]["no_action_inferred"] is False
+    assert second["portfolio_fact_sufficiency"] == {
+        "status": "insufficient_for_action",
+        "no_action_inferred": False,
+    }
+
+    payload = {
+        "summary": "Portfolio facts no longer support exact action.",
+        "what_changed": ["A pending account fact invalidated exact sizing."],
+        "decision": "Repair or confirm the account facts before a new Decision.",
+        "risks": ["Missing precision is not an investment no-action conclusion."],
+        "next_check_at": iso(utc_now() + timedelta(hours=1)),
+        "queue_item_ids": [],
+    }
+    with pytest.raises(
+        CompanionError,
+        match="investment_brief.portfolio_qualification_unresolved",
+    ):
+        companion.operating.brief_prepare(
+            brief_type="daily",
+            period_key="qualification-gap-no-action",
+            as_of=iso(),
+            conclusion="no_action",
+            payload=payload,
+            source_refs=[built["decision_revision"]["id"]],
+        )
+    brief = companion.operating.brief_prepare(
+        brief_type="daily",
+        period_key="qualification-gap-insufficient",
+        as_of=iso(),
+        conclusion="insufficient_evidence",
+        payload=payload,
+        source_refs=[],
+    )
+    assert brief["conclusion"] == "insufficient_evidence"
+
+
+def test_expired_candidate_qualification_cannot_enter_action_card_queue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    companion, fixture = setup_operating_system(tmp_path)
+    built = build_actionable_opportunity(companion, fixture)
+    monkeypatch.setattr(
+        "companion.actionability.utc_now",
+        lambda: utc_now() + timedelta(days=8),
+    )
+
+    with pytest.raises(
+        CompanionError,
+        match="actionability.portfolio_qualification.expired",
+    ):
+        companion.operating.queue_enqueue(
+            built["opportunity"]["id"],
+            decision_revision_id=built["decision_revision"]["id"],
+        )
+    assert companion.operating.queue_list(limit=100) == []
 
 
 def test_action_card_is_revalidated_before_it_is_presented(tmp_path: Path):
@@ -644,7 +892,10 @@ def test_action_card_is_revalidated_before_it_is_presented(tmp_path: Path):
         evidence=[queue["id"]],
     )
     companion.attention.mark_delivered(attention["id"])
-    with pytest.raises(CompanionError, match="confirmed Ledger has changed"):
+    with pytest.raises(
+        CompanionError,
+        match="actionability.portfolio_qualification.facts_drifted",
+    ):
         companion.operating.queue_respond(
             queue["id"], state="presented", attention_decision_id=attention["id"]
         )
@@ -780,7 +1031,10 @@ def test_v5_confirmed_ledger_change_invalidates_existing_action_card(tmp_path: P
     assert today["invalidated_queue"][0]["queue_id"] == queue["id"]
     expired = companion.operating.queue_get(queue["id"])
     assert expired["state"] == "expired"
-    assert "confirmed Ledger has changed" in expired["response_reason"]
+    assert expired["reason_code"] == (
+        "actionability.portfolio_qualification.facts_drifted"
+    )
+    assert expired["no_action_inferred"] is False
 
 
 def test_v5_latest_market_price_rechecks_risk_before_presenting_action(tmp_path: Path, monkeypatch):
@@ -808,7 +1062,12 @@ def test_v5_latest_market_price_rechecks_risk_before_presenting_action(tmp_path:
     assert today["invalidated_queue"][0]["queue_id"] == queue["id"]
     expired = companion.operating.queue_get(queue["id"])
     assert expired["state"] == "expired"
-    assert "price_out_of_range" in expired["response_reason"]
+    assert expired["reason_code"] == (
+        "actionability.portfolio_qualification.facts_drifted"
+    )
+    assert "current level range_ready is below preflight_ready" in expired[
+        "response_reason"
+    ]
 
 
 def test_execution_lifecycle_separates_acceptance_order_report_and_confirmed_fill(tmp_path: Path):
@@ -877,18 +1136,6 @@ def test_public_ordered_execution_caps_only_its_account_portfolio_qualification(
     built = build_actionable_opportunity(companion, fixture)
     queue = accept_action_card(companion, built)
     checked_at = iso()
-    companion.financial.reconcile(
-        fixture["account"]["id"],
-        checked_at,
-        {
-            "cash": {"CNY": "100000"},
-            "positions": {},
-            "position_values": {},
-            "position_total_by_currency": {"CNY": "0"},
-            "total_by_currency": {"CNY": "100000"},
-        },
-        "portfolio-qualification-primary-statement",
-    )
     execution = companion.investment_commands.execution_update(
         operation="prepare",
         queue_id=queue["id"],
@@ -948,18 +1195,6 @@ def test_active_broker_strategy_caps_account_portfolio_qualification(tmp_path: P
     built = build_actionable_opportunity(companion, fixture, builder)
     queue = accept_action_card(companion, built)
     checked_at = iso()
-    companion.financial.reconcile(
-        fixture["account"]["id"],
-        checked_at,
-        {
-            "cash": {"CNY": "100000"},
-            "positions": {},
-            "position_values": {},
-            "position_total_by_currency": {"CNY": "0"},
-            "total_by_currency": {"CNY": "100000"},
-        },
-        "portfolio-qualification-broker-strategy-statement",
-    )
     spec = _plan_spec(
         "priced_buy", fixture["account"]["id"], built["asset"]["id"]
     )

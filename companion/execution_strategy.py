@@ -368,7 +368,7 @@ class BrokerExecutionStrategyService:
         risk_id=authorization.get("sell_risk_calculation_id") if plan["plan_type"]=="moving_grid" and side=="sell" else authorization["buy_risk_calculation_id"]
         risk=self.c.financial.calculation_get(risk_id)
         details={"execution_contract_version":1,"queue_id":plan["queue_id"],"action":{"account_id":plan["account_id"],"asset_id":plan["asset_id"],"side":side,"quantity":dtext(quantity),"price_range":risk["assumptions"]["price_range"],"valid_until":plan["valid_until"]},"decision_revision_id":revision["id"],"frozen_risk_calculation_id":risk_id,"prepared_risk_calculation_id":risk_id,"prepared_market_snapshot_id":risk["outputs"]["market_snapshot_id"],"valid_until":plan["valid_until"],"human_execution_only":True,"broker_strategy_plan_id":plan["id"],"broker_managed_order_id":order_id}
-        execution=self.c.cognition.execution_create(revision["object_id"],details,decision_revision_id=revision["id"],idempotency_key=f"strategy-order:{plan['id']}:{broker_order_ref}",status="proposed")
+        execution=self.c.cognition.execution_create(revision["object_id"],details,decision_revision_id=revision["id"],idempotency_key=f"strategy-order:{plan['id']}:{broker_order_ref}",status="proposed",revalidate_action=False)
         return self.c.execution.mark_ordered(execution_id=execution["id"],broker_order_ref=broker_order_ref,ordered_at=ordered_at)
 
     def _require_not_expired(self,plan:dict[str,Any],*,allow_terminated:bool=False)->None:

@@ -73,7 +73,9 @@ class ExecutionLifecycleService:
         queue = self.c.operating.queue_get(queue_id)
         if queue["state"] != "accepted":
             raise CompanionError("Execution preparation requires an accepted Action Card")
-        card = self.c.operating.queue_card(queue_id)
+        card = self.c.operating.queue_card(
+            queue_id, actionability_stage="execution"
+        )
         if not card["executable_now"]:
             raise CompanionError(
                 f"Action Card is not currently executable: {card['blocking_reasons']}"
@@ -376,7 +378,9 @@ class ExecutionLifecycleService:
         queue = self.c.operating.queue_get(queue_id)
         if queue["state"] != "accepted":
             raise CompanionError("Execution requires a currently accepted Action Card")
-        card = self.c.operating.queue_card(queue_id)
+        card = self.c.operating.queue_card(
+            queue_id, actionability_stage="execution"
+        )
         if not card["executable_now"]:
             raise CompanionError(f"Action Card is no longer executable: {card['blocking_reasons']}")
         return card
