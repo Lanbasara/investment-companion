@@ -29,10 +29,6 @@ A = {"type": "array", "items": S}
 RECONCILIATION_STATEMENT = RECONCILIATION_STATEMENT_SCHEMA
 
 UNCONTRACTED_INVESTMENT_TOOLS = {
-    "decision_context": (
-        "读取当前建议、行动卡、失效原因和人工执行边界。",
-        schema({"limit": I}),
-    ),
     "evaluation_context": (
         "读取客观绩效、复盘和待验证的变更提案。",
         schema({"limit": I}),
@@ -82,25 +78,6 @@ UNCONTRACTED_INVESTMENT_TOOLS = {
                 "trial": {"type": "boolean"},
                 "supersedes_program_id": S,
                 "status": {"type": "string", "enum": ["active", "paused", "archived"]},
-            },
-            ["operation"],
-        ),
-    ),
-    "investment_action_update": (
-        "把可行动机会加入用户队列，或记录呈现、接受、拒绝、延后和关闭；接受不会成交。",
-        schema(
-            {
-                "operation": {"type": "string", "enum": ["enqueue", "respond"]},
-                "opportunity_id": S,
-                "decision_revision_id": S,
-                "manual_action_spec_id": S,
-                "valid_until": S,
-                "idempotency_key": S,
-                "queue_id": S,
-                "state": S,
-                "reason": S,
-                "snoozed_until": S,
-                "attention_decision_id": S,
             },
             ["operation"],
         ),
@@ -227,56 +204,6 @@ UNCONTRACTED_INVESTMENT_TOOLS = {
             ["operation"],
         ),
     ),
-    "investment_decision_publish": (
-        "冻结当前组合、约束、已验证研究、替代方案和风险结果为正式 Decision；行动判断必须同时通过研究与风险闸门，不会成交。",
-        schema(
-            {
-                "subject": O,
-                "content": S,
-                "decision_kind": {
-                    "type": "string",
-                    "enum": ["action", "conditional_action", "no_action", "watch"],
-                },
-                "account_id": S,
-                "as_of": S,
-                "knowledge_cutoff": S,
-                "valid_until": S,
-                "thesis_revision_ids": A,
-                "evidence_manifest_ids": A,
-                "invalidators": A,
-                "no_action": O,
-                "alternatives": {"type": "array", "items": O},
-                "prices": O,
-                "risk_calculation_id": S,
-                "research_validation_calculation_id": S,
-                "execution_plan": O,
-                "execution_sell_risk_calculation_id": S,
-            },
-            ["subject", "content", "decision_kind", "account_id", "as_of", "knowledge_cutoff", "valid_until", "thesis_revision_ids", "evidence_manifest_ids", "invalidators", "no_action", "alternatives"],
-        ),
-    ),
-    "investment_action_plan": (
-        "用当前确认组合、Mandate、行情和市场现实构建一份带确定性风险结果的人工行动方案。",
-        schema(
-            {
-                "as_of": S,
-                "account_id": S,
-                "asset_id": S,
-                "quantity": {},
-                "price": {},
-                "fee": {},
-                "reality_spec": O,
-                "market_snapshot_id": S,
-                "max_market_age_seconds": I,
-                "valid_until": S,
-                "price_range": O,
-                "average_daily_amount": {},
-                "action_tier": {"type": "string", "enum": ["standard", "bounded"]},
-                "validity_sessions": {"type": "integer", "enum": [5, 20, 60, 180]},
-            },
-            ["as_of", "account_id", "asset_id", "quantity", "price", "reality_spec", "market_snapshot_id", "max_market_age_seconds", "valid_until", "price_range"],
-        ),
-    ),
     "investment_performance_calculate": (
         "按确认账本、现金流、基准和成本计算一个周期的客观投资结果。",
         schema(
@@ -365,8 +292,6 @@ def call_investment(companion, name: str, arguments: dict[str, Any], actor: str)
         return INVESTMENT_CAPABILITY_REGISTRY.invoke(
             companion, name, arguments, actor=actor
         )
-    if name == "decision_context":
-        return companion.investment.decision_context(**arguments)
     if name == "evaluation_context":
         return companion.investment.evaluation_context(**arguments)
     if name == "investment_program_context":
@@ -377,13 +302,6 @@ def call_investment(companion, name: str, arguments: dict[str, Any], actor: str)
     if name == "investment_program_update":
         operation = arguments["operation"]
         return commands.program_update(
-            operation=operation,
-            actor=actor,
-            **{key: value for key, value in arguments.items() if key != "operation"},
-        )
-    if name == "investment_action_update":
-        operation = arguments["operation"]
-        return commands.action_update(
             operation=operation,
             actor=actor,
             **{key: value for key, value in arguments.items() if key != "operation"},
@@ -408,10 +326,6 @@ def call_investment(companion, name: str, arguments: dict[str, Any], actor: str)
             operation=operation,
             **{key: value for key, value in arguments.items() if key != "operation"},
         )
-    if name == "investment_decision_publish":
-        return commands.decision_publish(**arguments)
-    if name == "investment_action_plan":
-        return commands.action_plan(**arguments)
     if name == "investment_performance_calculate":
         return commands.performance_calculate(**arguments)
     if name == "investment_review_publish":

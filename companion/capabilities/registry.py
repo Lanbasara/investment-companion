@@ -22,6 +22,15 @@ RESEARCH_BOUNDARY_INVARIANT = (
 RESEARCH_WORK_INVARIANT = (
     "investment_opportunity_update.explicit_candidate_disposition/v1"
 )
+DECISION_RESEARCH_SEPARATION_INVARIANT = (
+    "decision.research_validation_is_not_decision/v1"
+)
+RISK_GATE_BOUNDARY_INVARIANT = (
+    "investment_action_plan.risk_gate_is_veto_not_thesis/v1"
+)
+ACTION_ACCEPTANCE_INVARIANT = (
+    "action_card.acceptance_never_changes_portfolio/v1"
+)
 
 HOME_DESCRIPTION = (
     "读取今天的行动、异常、研究工作队列、绩效和交付总入口；未完成研究返回 review_required。"
@@ -47,6 +56,18 @@ EVIDENCE_UPDATE_DESCRIPTION = (
 )
 RESEARCH_PUBLISH_DESCRIPTION = (
     "把 Evidence 冻结为不可变 Investment Thesis，并可执行 Research Validation；资格不会自动形成 Decision 或交易。"
+)
+DECISION_CONTEXT_DESCRIPTION = (
+    "读取正式 Decision、Action Card 状态、失效原因和人工执行边界；接受 Action Card 不代表成交。"
+)
+DECISION_PUBLISH_DESCRIPTION = (
+    "把当前组合、约束、已验证研究、替代方案和风险结果冻结为有期限的正式 Investment Decision；不会成交。"
+)
+ACTION_PLAN_DESCRIPTION = (
+    "用当前确认组合、Mandate、行情和市场现实计算 standard 或 bounded 人工行动方案及确定性 Risk Gate。"
+)
+ACTION_UPDATE_DESCRIPTION = (
+    "把可行动 Opportunity 加入 Action Card 队列，或记录呈现、接受、拒绝、延后和关闭；任何响应都不会成交。"
 )
 
 SET_LIKE_ARRAY_KEYS = {
@@ -1202,6 +1223,479 @@ RESEARCH_PUBLISH_OUTPUT_SCHEMA = object_schema(
 )
 
 
+DECISION_OBJECT_SCHEMA = object_schema(
+    {
+        "id": S,
+        "object_type": {"type": "string", "const": "decision"},
+        "subject": O,
+        "status": {"type": "string", "const": "issued"},
+        "current_revision_id": S,
+        "created_at": S,
+        "updated_at": S,
+    },
+    [
+        "id", "object_type", "subject", "status", "current_revision_id",
+        "created_at", "updated_at",
+    ],
+    additional_properties=True,
+)
+DECISION_METADATA_SCHEMA = object_schema(
+    {
+        "decision_contract_version": {"type": "integer", "const": 1},
+        "decision_kind": {
+            "type": "string",
+            "enum": ["action", "conditional_action", "no_action", "watch"],
+        },
+        "action_tier": {},
+        "valid_until": S,
+        "invalidators": SA,
+        "no_action": O,
+        "alternatives": {"type": "array", "items": O},
+        "source_refs": SA,
+        "risk_calculation_id": {},
+        "research_validation_calculation_id": {},
+        "confirmed_ledger_hash": S,
+        "human_execution_only": {"type": "boolean", "const": True},
+        "automatic_trade": {"type": "boolean", "const": False},
+        "execution_plan": {},
+        "published_at": S,
+    },
+    [
+        "decision_contract_version", "decision_kind", "action_tier", "valid_until",
+        "invalidators", "no_action", "alternatives", "source_refs",
+        "risk_calculation_id", "research_validation_calculation_id",
+        "confirmed_ledger_hash", "human_execution_only", "automatic_trade",
+        "execution_plan", "published_at",
+    ],
+    additional_properties=True,
+)
+DECISION_REVISION_SCHEMA = object_schema(
+    {
+        "id": S,
+        "object_id": S,
+        "revision": I,
+        "status": {"type": "string", "const": "published"},
+        "path": S,
+        "content_hash": S,
+        "parent_id": NULLABLE_STRING,
+        "knowledge_cutoff": S,
+        "context_refs": object_schema(
+            {
+                "investor_revision_id": S,
+                "mandate_revision_id": S,
+                "portfolio_calculation_id": S,
+                "thesis_revision_ids": SA,
+                "research_validation_calculation_id": {},
+            },
+            [
+                "investor_revision_id", "mandate_revision_id",
+                "portfolio_calculation_id", "thesis_revision_ids",
+                "research_validation_calculation_id",
+            ],
+            additional_properties=True,
+        ),
+        "calculation_ids": SA,
+        "metadata": DECISION_METADATA_SCHEMA,
+        "created_at": S,
+    },
+    [
+        "id", "object_id", "revision", "status", "path", "content_hash",
+        "parent_id", "knowledge_cutoff", "context_refs", "calculation_ids",
+        "metadata", "created_at",
+    ],
+    additional_properties=True,
+)
+
+DECISION_COMMON_PROPERTIES = {
+    "subject": O,
+    "content": S,
+    "account_id": S,
+    "as_of": S,
+    "knowledge_cutoff": S,
+    "valid_until": S,
+    "thesis_revision_ids": {
+        "type": "array", "items": S, "minItems": 1, "uniqueItems": True,
+    },
+    "evidence_manifest_ids": {
+        "type": "array", "items": S, "minItems": 1, "uniqueItems": True,
+    },
+    "invalidators": {"type": "array", "items": S, "minItems": 1},
+    "no_action": O,
+    "alternatives": {"type": "array", "items": O, "minItems": 1},
+    "prices": O,
+}
+DECISION_COMMON_REQUIRED = [
+    "subject", "content", "decision_kind", "account_id", "as_of",
+    "knowledge_cutoff", "valid_until", "thesis_revision_ids",
+    "evidence_manifest_ids", "invalidators", "no_action", "alternatives",
+]
+
+
+def decision_input_schema(decision_kind: str, *, action: bool) -> dict[str, Any]:
+    properties = {
+        "decision_kind": {"type": "string", "const": decision_kind},
+        **DECISION_COMMON_PROPERTIES,
+    }
+    required = list(DECISION_COMMON_REQUIRED)
+    if action:
+        properties.update(
+            {
+                "risk_calculation_id": S,
+                "research_validation_calculation_id": S,
+                "execution_plan": O,
+                "execution_sell_risk_calculation_id": S,
+            }
+        )
+        required.extend(
+            ["risk_calculation_id", "research_validation_calculation_id"]
+        )
+    return object_schema(properties, required)
+
+
+DECISION_PUBLISH_OUTPUT_SCHEMA = object_schema(
+    {
+        "decision": DECISION_OBJECT_SCHEMA,
+        "revision": DECISION_REVISION_SCHEMA,
+        "portfolio_calculation_id": S,
+        "risk_calculation_id": {},
+        "research_validation_calculation_id": {},
+    },
+    [
+        "decision", "revision", "portfolio_calculation_id",
+        "risk_calculation_id", "research_validation_calculation_id",
+    ],
+    additional_properties=True,
+)
+DECISION_OPERATIONS = {
+    "standard_action": {
+        "input_schema": decision_input_schema("action", action=True),
+        "output_schema": DECISION_PUBLISH_OUTPUT_SCHEMA,
+    },
+    "bounded_action": {
+        "input_schema": decision_input_schema("conditional_action", action=True),
+        "output_schema": DECISION_PUBLISH_OUTPUT_SCHEMA,
+    },
+    "no_action": {
+        "input_schema": decision_input_schema("no_action", action=False),
+        "output_schema": DECISION_PUBLISH_OUTPUT_SCHEMA,
+    },
+    "watch": {
+        "input_schema": decision_input_schema("watch", action=False),
+        "output_schema": DECISION_PUBLISH_OUTPUT_SCHEMA,
+    },
+}
+DECISION_PUBLISH_INPUT_SCHEMA = operation_union(DECISION_OPERATIONS)
+
+RISK_GATE_RESULT_SCHEMA = object_schema(
+    {
+        "status": {"type": "string", "enum": ["pass", "blocked"]},
+        "blocked": B,
+        "violations": {"type": "array", "items": O},
+        "trade_impact_calculation_id": S,
+        "portfolio_calculation_id": S,
+        "market_snapshot_id": {},
+        "metrics": O,
+        "calculation_id": S,
+    },
+    [
+        "status", "blocked", "violations", "trade_impact_calculation_id",
+        "portfolio_calculation_id", "market_snapshot_id", "metrics",
+        "calculation_id",
+    ],
+    additional_properties=True,
+)
+ACTION_PLAN_OUTPUT_SCHEMA = object_schema(
+    {
+        "schema": {
+            "type": "string",
+            "const": "investment-companion.portfolio-action-plan/v1",
+        },
+        "action": object_schema(
+            {
+                "account_id": S,
+                "asset_id": S,
+                "side": {"type": "string", "enum": ["buy", "sell"]},
+                "quantity": S,
+                "reference_price": S,
+                "price_range": O,
+                "valid_until": S,
+                "validity_sessions": {},
+                "quantity_status": {
+                    "type": "string",
+                    "enum": [
+                        "finalizable_after_broker_preflight", "conditional_only",
+                    ],
+                },
+            },
+            [
+                "account_id", "asset_id", "side", "quantity",
+                "reference_price", "price_range", "valid_until",
+                "validity_sessions", "quantity_status",
+            ],
+            additional_properties=True,
+        ),
+        "risk": RISK_GATE_RESULT_SCHEMA,
+        "precision_boundary": PRECISION_BOUNDARY_SCHEMA,
+        "truth_freshness": TRUTH_FRESHNESS_SCHEMA,
+        "eligible_for_decision": B,
+        "conditional_sizing_available": {"type": "boolean", "const": True},
+        "decision_blockers": SA,
+        "action_tier": {"type": "string", "enum": ["standard", "bounded"]},
+        "eligible_for_conditional_decision": B,
+        "automatic_decision_or_execution": {"type": "boolean", "const": False},
+    },
+    [
+        "schema", "action", "risk", "precision_boundary", "truth_freshness",
+        "eligible_for_decision", "conditional_sizing_available",
+        "decision_blockers", "action_tier",
+        "eligible_for_conditional_decision", "automatic_decision_or_execution",
+    ],
+    additional_properties=True,
+)
+ACTION_PLAN_COMMON_PROPERTIES = {
+    "as_of": S,
+    "account_id": S,
+    "asset_id": S,
+    "quantity": {},
+    "price": {},
+    "fee": {},
+    "reality_spec": O,
+    "market_snapshot_id": S,
+    "max_market_age_seconds": {"type": "integer", "minimum": 1},
+    "valid_until": S,
+    "price_range": O,
+    "average_daily_amount": {},
+}
+ACTION_PLAN_COMMON_REQUIRED = [
+    "action_tier", "as_of", "account_id", "asset_id", "quantity", "price",
+    "reality_spec", "market_snapshot_id", "max_market_age_seconds",
+    "valid_until", "price_range",
+]
+ACTION_PLAN_OPERATIONS = {
+    "standard": {
+        "input_schema": object_schema(
+            {
+                "action_tier": {"type": "string", "const": "standard"},
+                **ACTION_PLAN_COMMON_PROPERTIES,
+            },
+            ACTION_PLAN_COMMON_REQUIRED,
+        ),
+        "output_schema": ACTION_PLAN_OUTPUT_SCHEMA,
+    },
+    "bounded": {
+        "input_schema": object_schema(
+            {
+                "action_tier": {"type": "string", "const": "bounded"},
+                **ACTION_PLAN_COMMON_PROPERTIES,
+                "validity_sessions": {
+                    "type": "integer", "enum": [5, 20, 60, 180],
+                },
+            },
+            [*ACTION_PLAN_COMMON_REQUIRED, "validity_sessions"],
+        ),
+        "output_schema": ACTION_PLAN_OUTPUT_SCHEMA,
+    },
+}
+ACTION_PLAN_INPUT_SCHEMA = operation_union(ACTION_PLAN_OPERATIONS)
+
+DECISION_QUEUE_SCHEMA = object_schema(
+    {
+        "id": S,
+        "program_id": S,
+        "opportunity_id": S,
+        "decision_revision_id": S,
+        "manual_action_spec_id": {},
+        "state": {
+            "type": "string",
+            "enum": [
+                "ready", "presented", "snoozed", "accepted", "rejected",
+                "expired", "closed",
+            ],
+        },
+        "version": I,
+        "attention_decision_id": {},
+        "valid_until": S,
+        "idempotency_key": S,
+        "response_reason": {},
+        "presented_at": {},
+        "snoozed_until": {},
+        "responded_at": {},
+        "created_at": S,
+        "updated_at": S,
+        "user_confirmation_ref": S,
+    },
+    [
+        "id", "program_id", "opportunity_id", "decision_revision_id",
+        "manual_action_spec_id", "state", "version", "attention_decision_id",
+        "valid_until", "idempotency_key", "response_reason", "presented_at",
+        "snoozed_until", "responded_at", "created_at", "updated_at",
+    ],
+    additional_properties=True,
+)
+
+
+def queue_output_schema(
+    state: str, *, confirmation_required: bool = False
+) -> dict[str, Any]:
+    properties = {
+        **DECISION_QUEUE_SCHEMA["properties"],
+        "state": {"type": "string", "const": state},
+    }
+    required = list(DECISION_QUEUE_SCHEMA["required"])
+    if confirmation_required:
+        required.append("user_confirmation_ref")
+    return object_schema(properties, required, additional_properties=True)
+
+
+ACTION_UPDATE_OPERATIONS = {
+    "enqueue": {
+        "input_schema": operation_schema(
+            "enqueue",
+            {
+                "opportunity_id": S,
+                "decision_revision_id": S,
+                "manual_action_spec_id": S,
+                "valid_until": S,
+                "idempotency_key": S,
+            },
+            ["opportunity_id", "decision_revision_id"],
+        ),
+        "output_schema": queue_output_schema("ready"),
+    },
+    "presented": {
+        "input_schema": object_schema(
+            {
+                "operation": {"type": "string", "const": "respond"},
+                "queue_id": S,
+                "state": {"type": "string", "const": "presented"},
+                "attention_decision_id": S,
+            },
+            ["operation", "queue_id", "state", "attention_decision_id"],
+        ),
+        "output_schema": queue_output_schema("presented"),
+    },
+    "accepted": {
+        "input_schema": object_schema(
+            {
+                "operation": {"type": "string", "const": "respond"},
+                "queue_id": S,
+                "state": {"type": "string", "const": "accepted"},
+                "user_confirmation_ref": S,
+            },
+            ["operation", "queue_id", "state", "user_confirmation_ref"],
+        ),
+        "output_schema": queue_output_schema("accepted", confirmation_required=True),
+    },
+    "rejected": {
+        "input_schema": object_schema(
+            {
+                "operation": {"type": "string", "const": "respond"},
+                "queue_id": S,
+                "state": {"type": "string", "const": "rejected"},
+                "reason": S,
+                "user_confirmation_ref": S,
+            },
+            ["operation", "queue_id", "state", "reason", "user_confirmation_ref"],
+        ),
+        "output_schema": queue_output_schema("rejected", confirmation_required=True),
+    },
+    "snoozed": {
+        "input_schema": object_schema(
+            {
+                "operation": {"type": "string", "const": "respond"},
+                "queue_id": S,
+                "state": {"type": "string", "const": "snoozed"},
+                "reason": S,
+                "snoozed_until": S,
+                "user_confirmation_ref": S,
+            },
+            [
+                "operation", "queue_id", "state", "reason", "snoozed_until",
+                "user_confirmation_ref",
+            ],
+        ),
+        "output_schema": queue_output_schema("snoozed", confirmation_required=True),
+    },
+    "closed": {
+        "input_schema": object_schema(
+            {
+                "operation": {"type": "string", "const": "respond"},
+                "queue_id": S,
+                "state": {"type": "string", "const": "closed"},
+                "reason": S,
+            },
+            ["operation", "queue_id", "state", "reason"],
+        ),
+        "output_schema": queue_output_schema("closed"),
+    },
+}
+ACTION_UPDATE_INPUT_SCHEMA = operation_union(ACTION_UPDATE_OPERATIONS)
+ACTION_UPDATE_OUTPUT_SCHEMA = DECISION_QUEUE_SCHEMA
+
+ACTION_CARD_SCHEMA = object_schema(
+    {
+        "schema": {"type": "string", "const": "investment-companion.action-card/v1"},
+        "queue_id": S,
+        "state": {"type": "string", "enum": ["ready", "presented", "snoozed", "accepted"]},
+        "subject": O,
+        "valid_until": S,
+        "evidence_band": S,
+        "decision_revision_id": S,
+        "action": O,
+        "executable_now": B,
+        "blocking_reasons": SA,
+        "research_validation": O,
+        "risk_gate": {"type": ["object", "null"]},
+        "invalidators": SA,
+        "no_action_alternative": O,
+        "source_refs": SA,
+        "human_execution_only": {"type": "boolean", "const": True},
+        "execution_created": {"type": "boolean", "const": False},
+        "guarantees": O,
+    },
+    [
+        "schema", "queue_id", "state", "subject", "valid_until",
+        "evidence_band", "decision_revision_id", "action", "executable_now",
+        "blocking_reasons", "research_validation", "risk_gate", "invalidators",
+        "no_action_alternative", "source_refs", "human_execution_only",
+        "execution_created", "guarantees",
+    ],
+    additional_properties=True,
+)
+DECISION_CONTEXT_INPUT_SCHEMA = object_schema(
+    {"limit": {"type": "integer", "minimum": 1, "maximum": 100}}
+)
+DECISION_CONTEXT_OUTPUT_SCHEMA = object_schema(
+    {
+        "schema": {"type": "string", "const": "investment-companion.decision-context/v1"},
+        "as_of": S,
+        "queue": {"type": "array", "items": DECISION_QUEUE_SCHEMA},
+        "action_cards": {"type": "array", "items": ACTION_CARD_SCHEMA},
+        "invalid": {"type": "array", "items": O},
+        "recent_decisions": {"type": "array", "items": O},
+        "executions": A,
+        "execution_boundary": object_schema(
+            {
+                "mode": {"type": "string", "const": "human_manual_only"},
+                "accepted_action_card_is_order": {"type": "boolean", "const": False},
+                "reported_fill_changes_portfolio": {"type": "boolean", "const": False},
+                "confirmed_ledger_fill_changes_portfolio": {"type": "boolean", "const": True},
+            },
+            [
+                "mode", "accepted_action_card_is_order",
+                "reported_fill_changes_portfolio",
+                "confirmed_ledger_fill_changes_portfolio",
+            ],
+        ),
+    },
+    [
+        "schema", "as_of", "queue", "action_cards", "invalid",
+        "recent_decisions", "executions", "execution_boundary",
+    ],
+    additional_properties=True,
+)
+
+
 @dataclass(frozen=True)
 class CapabilityContract:
     description: str
@@ -1212,6 +1706,8 @@ class CapabilityContract:
     invariants: tuple[str, ...]
     operations: Mapping[str, dict[str, Any]] | None = None
     actor_aware: bool = False
+    variant_selectors: tuple[str, ...] = ("operation",)
+    variant_aliases: Mapping[str, str] | None = None
 
 
 CAPABILITY_CONTRACTS: dict[str, CapabilityContract] = {
@@ -1284,6 +1780,56 @@ CAPABILITY_CONTRACTS: dict[str, CapabilityContract] = {
         ("capability.input.invalid", "capability.output.invalid"),
         (RESEARCH_BOUNDARY_INVARIANT,),
     ),
+    "decision_context": CapabilityContract(
+        DECISION_CONTEXT_DESCRIPTION,
+        "investment.decision_context",
+        DECISION_CONTEXT_INPUT_SCHEMA,
+        DECISION_CONTEXT_OUTPUT_SCHEMA,
+        ("capability.input.invalid", "capability.output.invalid"),
+        (DECISION_RESEARCH_SEPARATION_INVARIANT, ACTION_ACCEPTANCE_INVARIANT),
+    ),
+    "investment_decision_publish": CapabilityContract(
+        DECISION_PUBLISH_DESCRIPTION,
+        "investment_commands.decision_publish",
+        DECISION_PUBLISH_INPUT_SCHEMA,
+        DECISION_PUBLISH_OUTPUT_SCHEMA,
+        ("capability.input.invalid", "capability.output.invalid"),
+        (DECISION_RESEARCH_SEPARATION_INVARIANT,),
+        DECISION_OPERATIONS,
+        variant_selectors=("decision_kind",),
+        variant_aliases={
+            "action": "standard_action",
+            "conditional_action": "bounded_action",
+        },
+    ),
+    "investment_action_plan": CapabilityContract(
+        ACTION_PLAN_DESCRIPTION,
+        "investment_commands.action_plan",
+        ACTION_PLAN_INPUT_SCHEMA,
+        ACTION_PLAN_OUTPUT_SCHEMA,
+        ("capability.input.invalid", "capability.output.invalid"),
+        (RISK_GATE_BOUNDARY_INVARIANT,),
+        ACTION_PLAN_OPERATIONS,
+        variant_selectors=("action_tier",),
+    ),
+    "investment_action_update": CapabilityContract(
+        ACTION_UPDATE_DESCRIPTION,
+        "investment_commands.action_update",
+        ACTION_UPDATE_INPUT_SCHEMA,
+        ACTION_UPDATE_OUTPUT_SCHEMA,
+        ("capability.input.invalid", "capability.output.invalid"),
+        (ACTION_ACCEPTANCE_INVARIANT,),
+        ACTION_UPDATE_OPERATIONS,
+        actor_aware=True,
+        variant_selectors=("operation", "state"),
+        variant_aliases={
+            "respond.presented": "presented",
+            "respond.accepted": "accepted",
+            "respond.rejected": "rejected",
+            "respond.snoozed": "snoozed",
+            "respond.closed": "closed",
+        },
+    ),
 }
 CONTRACTED_CAPABILITY_NAMES = frozenset(CAPABILITY_CONTRACTS)
 
@@ -1347,8 +1893,17 @@ class CapabilityRegistry:
         )
         output_schema = contract.output_schema
         if contract.operations is not None:
-            operation = arguments.get("operation")
-            output_schema = contract.operations[str(operation)]["output_schema"]
+            selector = ".".join(
+                str(arguments[field])
+                for field in contract.variant_selectors
+                if field in arguments
+            )
+            operation = (
+                contract.variant_aliases.get(selector, selector)
+                if contract.variant_aliases is not None
+                else selector
+            )
+            output_schema = contract.operations[operation]["output_schema"]
         try:
             _validate_schema(result, output_schema, f"{name} result")
         except CompanionError as exc:

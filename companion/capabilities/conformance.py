@@ -9,15 +9,19 @@ import sys
 from typing import Any
 
 from ..foundation import CompanionError
+from ..timeutil import iso, utc_now
 from .registry import (
+    ACTION_ACCEPTANCE_INVARIANT,
     CONTEXT_CONFIRMATION_INVARIANT,
     CONTINUITY_INVARIANT,
+    DECISION_RESEARCH_SEPARATION_INVARIANT,
     HOME_INVARIANT,
     PORTFOLIO_LEDGER_INVARIANT,
     PORTFOLIO_TRUTH_INVARIANT,
     RECONCILIATION_INVARIANT,
     RESEARCH_BOUNDARY_INVARIANT,
     RESEARCH_WORK_INVARIANT,
+    RISK_GATE_BOUNDARY_INVARIANT,
     TRANSACTION_CONFIRMATION_INVARIANT,
 )
 
@@ -59,10 +63,24 @@ def _seed_research_fixture(root: Path) -> dict[str, Any]:
     account = companion.financial.account_create(
         "Synthetic research account", "CNY"
     )
+    opening = companion.financial.ledger_add(
+        account_id=account["id"],
+        entry_type="opening_balance",
+        occurred_at=iso(),
+        amount="100000",
+        currency="CNY",
+        source="synthetic-capability-conformance",
+    )
+    companion.financial.ledger_confirm(opening["id"])
     contexts = {}
     for context_type, content in (
         ("investor", {"objective": "synthetic research conformance"}),
-        ("mandate", {"maximum_loss": "synthetic only"}),
+        (
+            "mandate",
+            {
+                "max_single_position_weight": "0.20",
+            },
+        ),
         ("attention", {"timezone": "Asia/Shanghai"}),
     ):
         draft = companion.cognition.context_create(
@@ -77,7 +95,18 @@ def _seed_research_fixture(root: Path) -> dict[str, Any]:
             "objective": "exercise research contracts without user facts",
             "success_criteria": ["all research states remain separated"],
             "benchmark": {"name": "synthetic benchmark"},
-            "risk_budget": {"mode": "no real action"},
+            "risk_budget": {
+                "mode": "no real action",
+                "bounded_action": {
+                    "enabled": True,
+                    "allowed_asset_types": ["stock"],
+                    "allowed_execution_plan_types": ["priced_buy"],
+                    "max_trade_weight": "0.02",
+                    "max_post_trade_weight": "0.05",
+                    "max_validity_sessions": 20,
+                    "max_active_bounded_actions": 2,
+                },
+            },
             "universe": {"kind": "synthetic assets"},
             "horizons": {"research": "fixture"},
             "operating_cadence": {"mode": "one shot"},
@@ -116,13 +145,27 @@ def _seed_research_fixture(root: Path) -> dict[str, Any]:
     triage = companion.research_work.enqueue_candidate_manifest(
         candidate_manifest["id"], actor="capability-conformance"
     )["item"]
+    cutoff = iso()
+    companion.financial.reconcile(
+        account["id"],
+        cutoff,
+        {
+            "cash": {"CNY": "100000"},
+            "positions": {},
+            "position_values": {},
+            "position_total_by_currency": {},
+            "total_by_currency": {"CNY": "100000"},
+        },
+        "synthetic-capability-conformance",
+    )
     return {
         "account_id": account["id"],
         "program_id": program["id"],
         "asset_ids": [item["id"] for item in assets],
         "candidate_manifest_id": candidate_manifest["id"],
         "triage_item_id": triage["id"],
-        "cutoff": iso(),
+        "cutoff": cutoff,
+        "valid_until": iso(utc_now() + timedelta(days=7)),
         "next_check_at": iso(utc_now() + timedelta(days=2)),
     }
 
@@ -498,6 +541,293 @@ def probe_investment_mcp(
             "portfolio_context", {"account_id": research_fixture["account_id"]}
         )
 
+        qualified_opportunity_call = call(
+            "investment_opportunity_update",
+            {
+                "operation": "transition",
+                "opportunity_id": promoted_opportunity["id"],
+                "expected_version": _call_result(opportunity_transition_call)["version"],
+                "to_stage": "qualified",
+                "to_status": "active",
+                "evidence_refs": [
+                    source_one["id"],
+                    source_two["id"],
+                    promoted_research["validation"]["calculation_id"],
+                ],
+                "qualification": {
+                    "validation_calculation_id": promoted_research["validation"][
+                        "calculation_id"
+                    ],
+                    "major_unknowns": ["Decision and Risk Gate are not frozen"],
+                    "decision_basis": "Research is eligible, but is not yet a Decision.",
+                },
+                "reason": "synthetic research passed qualification only",
+            },
+        )
+        qualified_opportunity = _call_result(qualified_opportunity_call)
+        reality_spec = {
+            "version": "a-share-reality/v1",
+            "currency": "CNY",
+            "lot_size": 100,
+            "t_plus_one": True,
+            "signal_delay": "next_session",
+            "commission_rate": "0.0003",
+            "minimum_commission": "5",
+            "sell_stamp_duty_rate": "0.0005",
+            "cash_dividend_tax_rate": "0",
+            "slippage_bps": "0",
+            "money_quantum": "0.01",
+            "price_tick": "0.01",
+        }
+        action_plan_base = {
+            "as_of": research_fixture["cutoff"],
+            "account_id": research_fixture["account_id"],
+            "asset_id": asset_ids[0],
+            "quantity": "100",
+            "price": "10",
+            "reality_spec": reality_spec,
+            "market_snapshot_id": _call_result(market_snapshot_call)["id"],
+            "max_market_age_seconds": 3600,
+            "valid_until": research_fixture["valid_until"],
+            "price_range": {"min": "9.8", "max": "10.2"},
+        }
+        standard_plan_call = call(
+            "investment_action_plan",
+            {"action_tier": "standard", **action_plan_base},
+        )
+        bounded_plan_call = call(
+            "investment_action_plan",
+            {
+                "action_tier": "bounded",
+                **action_plan_base,
+                "validity_sessions": 5,
+            },
+        )
+        bounded_missing_sessions_call = call(
+            "investment_action_plan",
+            {"action_tier": "bounded", **action_plan_base},
+        )
+        blocked_plan_call = call(
+            "investment_action_plan",
+            {
+                "action_tier": "standard",
+                **action_plan_base,
+                "quantity": "100000",
+            },
+        )
+        standard_plan = _call_result(standard_plan_call)
+        bounded_plan = _call_result(bounded_plan_call)
+        blocked_plan = _call_result(blocked_plan_call)
+        decision_base = {
+            "content": "# Synthetic Decision\n\nA time-bounded manual action with alternatives.",
+            "decision_kind": "action",
+            "account_id": research_fixture["account_id"],
+            "as_of": research_fixture["cutoff"],
+            "knowledge_cutoff": research_fixture["cutoff"],
+            "valid_until": research_fixture["valid_until"],
+            "invalidators": ["price leaves range", "Mandate changes"],
+            "no_action": {"choice": "hold cash", "cost": "opportunity cost"},
+            "alternatives": [
+                {"choice": "hold cash"},
+                {"choice": "buy fewer shares"},
+            ],
+        }
+        unqualified_decision_call = call(
+            "investment_decision_publish",
+            {
+                **decision_base,
+                "subject": {"asset_id": asset_ids[1]},
+                "thesis_revision_ids": [rejected_research["revision"]["id"]],
+                "evidence_manifest_ids": [source_one["id"]],
+                "risk_calculation_id": standard_plan["risk"]["calculation_id"],
+                "research_validation_calculation_id": promoted_research["validation"][
+                    "calculation_id"
+                ],
+            },
+        )
+        expired_decision_call = call(
+            "investment_decision_publish",
+            {
+                **decision_base,
+                "subject": {"asset_id": asset_ids[0]},
+                "valid_until": "2020-01-01T00:00:00Z",
+                "thesis_revision_ids": [promoted_research["revision"]["id"]],
+                "evidence_manifest_ids": [source_one["id"], source_two["id"]],
+                "risk_calculation_id": standard_plan["risk"]["calculation_id"],
+                "research_validation_calculation_id": promoted_research["validation"][
+                    "calculation_id"
+                ],
+            },
+        )
+        blocked_decision_call = call(
+            "investment_decision_publish",
+            {
+                **decision_base,
+                "subject": {"asset_id": asset_ids[0]},
+                "thesis_revision_ids": [promoted_research["revision"]["id"]],
+                "evidence_manifest_ids": [source_one["id"], source_two["id"]],
+                "risk_calculation_id": blocked_plan["risk"]["calculation_id"],
+                "research_validation_calculation_id": promoted_research["validation"][
+                    "calculation_id"
+                ],
+            },
+        )
+        bounded_decision_call = call(
+            "investment_decision_publish",
+            {
+                **decision_base,
+                "subject": {"asset_id": asset_ids[0]},
+                "decision_kind": "conditional_action",
+                "thesis_revision_ids": [promoted_research["revision"]["id"]],
+                "evidence_manifest_ids": [source_one["id"], source_two["id"]],
+                "risk_calculation_id": bounded_plan["risk"]["calculation_id"],
+                "research_validation_calculation_id": promoted_research["validation"][
+                    "calculation_id"
+                ],
+            },
+        )
+        decision_publish_call = call(
+            "investment_decision_publish",
+            {
+                **decision_base,
+                "subject": {"asset_id": asset_ids[0]},
+                "thesis_revision_ids": [promoted_research["revision"]["id"]],
+                "evidence_manifest_ids": [source_one["id"], source_two["id"]],
+                "risk_calculation_id": standard_plan["risk"]["calculation_id"],
+                "research_validation_calculation_id": promoted_research["validation"][
+                    "calculation_id"
+                ],
+            },
+        )
+        decision_publish = _call_result(decision_publish_call)
+        actionable_opportunity_call = call(
+            "investment_opportunity_update",
+            {
+                "operation": "transition",
+                "opportunity_id": promoted_opportunity["id"],
+                "expected_version": qualified_opportunity["version"],
+                "to_stage": "actionable",
+                "to_status": "active",
+                "evidence_refs": [
+                    source_one["id"],
+                    source_two["id"],
+                    promoted_research["validation"]["calculation_id"],
+                    standard_plan["risk"]["calculation_id"],
+                    decision_publish["revision"]["id"],
+                ],
+                "qualification": {
+                    "validation_calculation_id": promoted_research["validation"][
+                        "calculation_id"
+                    ],
+                    "major_unknowns": [],
+                    "decision_basis": "The formal Decision froze the remaining action inputs.",
+                },
+                "decision_revision_id": decision_publish["revision"]["id"],
+                "reason": "synthetic Decision and Risk Gate completed action qualification",
+            },
+        )
+        actionable_opportunity = _call_result(actionable_opportunity_call)
+        portfolio_before_action_call = call(
+            "portfolio_context", {"account_id": research_fixture["account_id"]}
+        )
+        enqueue_call = call(
+            "investment_action_update",
+            {
+                "operation": "enqueue",
+                "opportunity_id": actionable_opportunity["id"],
+                "decision_revision_id": decision_publish["revision"]["id"],
+            },
+        )
+        queue = _call_result(enqueue_call)
+        snoozed_call = call(
+            "investment_action_update",
+            {
+                "operation": "respond",
+                "queue_id": queue["id"],
+                "state": "snoozed",
+                "reason": "synthetic user requested a later review",
+                "snoozed_until": iso(utc_now() + timedelta(hours=1)),
+                "user_confirmation_ref": "synthetic:user-message:snooze",
+            },
+        )
+        attention_call = call(
+            "investment_delivery_update",
+            {
+                "operation": "attention_decide",
+                "topic": "synthetic Action Card",
+                "materiality": "high",
+                "confidence": "decision_grade",
+                "reason": "present the isolated conformance Action Card",
+                "evidence": [queue["id"]],
+            },
+        )
+        attention = _call_result(attention_call)
+        attention_delivered_call = call(
+            "investment_delivery_update",
+            {
+                "operation": "attention_delivered",
+                "attention_decision_id": attention["id"],
+            },
+        )
+        presented_call = call(
+            "investment_action_update",
+            {
+                "operation": "respond",
+                "queue_id": queue["id"],
+                "state": "presented",
+                "attention_decision_id": attention["id"],
+            },
+        )
+        missing_confirmation_call = call(
+            "investment_action_update",
+            {
+                "operation": "respond",
+                "queue_id": queue["id"],
+                "state": "accepted",
+            },
+        )
+        accepted_call = call(
+            "investment_action_update",
+            {
+                "operation": "respond",
+                "queue_id": queue["id"],
+                "state": "accepted",
+                "user_confirmation_ref": "synthetic:user-message:accept",
+            },
+        )
+        decision_after_accept_call = call("decision_context", {})
+        portfolio_after_accept_call = call(
+            "portfolio_context", {"account_id": research_fixture["account_id"]}
+        )
+        closed_call = call(
+            "investment_action_update",
+            {
+                "operation": "respond",
+                "queue_id": queue["id"],
+                "state": "closed",
+                "reason": "synthetic response path completed",
+            },
+        )
+        second_enqueue_call = call(
+            "investment_action_update",
+            {
+                "operation": "enqueue",
+                "opportunity_id": actionable_opportunity["id"],
+                "decision_revision_id": decision_publish["revision"]["id"],
+                "idempotency_key": "synthetic-rejection-path",
+            },
+        )
+        rejected_action_call = call(
+            "investment_action_update",
+            {
+                "operation": "respond",
+                "queue_id": _call_result(second_enqueue_call)["id"],
+                "state": "rejected",
+                "reason": "synthetic user rejected this alternative",
+                "user_confirmation_ref": "synthetic:user-message:reject",
+            },
+        )
+
         context_draft_call = call(
             "investment_context_update",
             {
@@ -712,6 +1042,41 @@ def probe_investment_mcp(
                 "portfolio": _call_result(research_after_portfolio_call),
             },
         },
+        "decision_action": {
+            "qualified_opportunity": qualified_opportunity,
+            "plans": {
+                "standard": standard_plan,
+                "bounded": bounded_plan,
+                "blocked": blocked_plan,
+                "bounded_missing_sessions_error": _call_error(
+                    bounded_missing_sessions_call
+                ),
+            },
+            "decision": decision_publish,
+            "bounded_decision": _call_result(bounded_decision_call),
+            "blocked_decision_error": _call_error(blocked_decision_call),
+            "unqualified_decision_error": _call_error(unqualified_decision_call),
+            "expired_decision_error": _call_error(expired_decision_call),
+            "actionable_opportunity": actionable_opportunity,
+            "queue": {
+                "enqueued": queue,
+                "snoozed": _call_result(snoozed_call),
+                "attention": attention,
+                "attention_delivered": _call_result(attention_delivered_call),
+                "presented": _call_result(presented_call),
+                "missing_confirmation_error": _call_error(missing_confirmation_call),
+                "accepted": _call_result(accepted_call),
+                "closed": _call_result(closed_call),
+                "rejected": _call_result(rejected_action_call),
+            },
+            "before_accept": {
+                "portfolio": _call_result(portfolio_before_action_call),
+            },
+            "after_accept": {
+                "decision": _call_result(decision_after_accept_call),
+                "portfolio": _call_result(portfolio_after_accept_call),
+            },
+        },
         "context": {
             "draft": context_draft,
             "confirm": _call_result(context_confirm_call),
@@ -887,6 +1252,105 @@ def evaluate_investment_conformance(observation: dict[str, Any]) -> dict[str, An
             "capability": "investment_research_publish",
         },
     )
+    decision_context_schema = (tools.get("decision_context") or {}).get(
+        "inputSchema", {}
+    )
+    check(
+        "mcp.tools-list.decision-context",
+        decision_context_schema.get("additionalProperties") is False
+        and set(decision_context_schema.get("properties", {})) == {"limit"},
+        {"code": "missing_or_drifted_tool", "capability": "decision_context"},
+    )
+    decision_variants = (
+        (tools.get("investment_decision_publish") or {})
+        .get("inputSchema", {})
+        .get("oneOf", [])
+    )
+    decision_required = {
+        item.get("properties", {}).get("decision_kind", {}).get("const"): set(
+            item.get("required", [])
+        )
+        for item in decision_variants
+    }
+    check(
+        "mcp.tools-list.decision-publish-variants",
+        set(decision_required) == {"action", "conditional_action", "no_action", "watch"}
+        and {"risk_calculation_id", "research_validation_calculation_id"}
+        <= decision_required.get("action", set())
+        and {"risk_calculation_id", "research_validation_calculation_id"}
+        <= decision_required.get("conditional_action", set())
+        and "risk_calculation_id" not in decision_required.get("no_action", set()),
+        {
+            "code": "missing_or_drifted_tool",
+            "capability": "investment_decision_publish",
+        },
+    )
+    action_plan_variants = (
+        (tools.get("investment_action_plan") or {})
+        .get("inputSchema", {})
+        .get("oneOf", [])
+    )
+    action_plan_required = {
+        item.get("properties", {}).get("action_tier", {}).get("const"): set(
+            item.get("required", [])
+        )
+        for item in action_plan_variants
+    }
+    action_plan_properties = {
+        key
+        for item in action_plan_variants
+        for key in item.get("properties", {})
+    }
+    check(
+        "mcp.tools-list.action-plan-variants",
+        set(action_plan_required) == {"standard", "bounded"}
+        and "validity_sessions" in action_plan_required.get("bounded", set())
+        and "validity_sessions" not in action_plan_required.get("standard", set())
+        and not {
+            "thesis_revision_id", "research_validation_calculation_id",
+            "opinion", "confidence",
+        }
+        & action_plan_properties,
+        {
+            "code": "missing_or_drifted_tool",
+            "capability": "investment_action_plan",
+        },
+    )
+    action_update_variants = (
+        (tools.get("investment_action_update") or {})
+        .get("inputSchema", {})
+        .get("oneOf", [])
+    )
+    action_update_paths = {
+        (
+            item.get("properties", {}).get("operation", {}).get("const"),
+            item.get("properties", {}).get("state", {}).get("const"),
+        ): set(item.get("required", []))
+        for item in action_update_variants
+    }
+    check(
+        "mcp.tools-list.action-update-variants",
+        set(action_update_paths)
+        == {
+            ("enqueue", None),
+            ("respond", "presented"),
+            ("respond", "accepted"),
+            ("respond", "rejected"),
+            ("respond", "snoozed"),
+            ("respond", "closed"),
+        }
+        and "attention_decision_id"
+        in action_update_paths.get(("respond", "presented"), set())
+        and all(
+            "user_confirmation_ref"
+            in action_update_paths.get(("respond", state), set())
+            for state in ("accepted", "rejected", "snoozed")
+        ),
+        {
+            "code": "missing_or_drifted_tool",
+            "capability": "investment_action_update",
+        },
+    )
 
     home = observation.get("home_result")
     health = home.get("production_health") if isinstance(home, dict) else None
@@ -1007,6 +1471,115 @@ def evaluate_investment_conformance(observation: dict[str, Any]) -> dict[str, An
             "capability": "research_workflow",
             "invariant": RESEARCH_BOUNDARY_INVARIANT,
             "counterexample": "Evidence, prediction, Validation or Thesis created a Decision, Action Card, Execution or Ledger fact",
+        },
+    )
+
+    decision_action = observation.get("decision_action", {})
+    decision_result = decision_action.get("decision") or {}
+    decision_revision = decision_result.get("revision") or {}
+    decision_metadata = decision_revision.get("metadata") or {}
+    bounded_decision_metadata = (
+        (decision_action.get("bounded_decision") or {}).get("revision") or {}
+    ).get("metadata", {})
+    decision_context_after_accept = (
+        decision_action.get("after_accept", {}).get("decision") or {}
+    )
+    check(
+        DECISION_RESEARCH_SEPARATION_INVARIANT,
+        validation.get("status") == "eligible_for_decision"
+        and isinstance(decision_action.get("unqualified_decision_error"), str)
+        and "Research Validation" in decision_action["unqualified_decision_error"]
+        and decision_metadata.get("decision_kind") == "action"
+        and decision_metadata.get("valid_until")
+        == (research.get("fixture") or {}).get("valid_until")
+        and bool(decision_metadata.get("invalidators"))
+        and bool(decision_metadata.get("no_action"))
+        and bool(decision_metadata.get("alternatives"))
+        and bool(decision_metadata.get("source_refs"))
+        and bounded_decision_metadata.get("decision_kind") == "conditional_action"
+        and bounded_decision_metadata.get("action_tier") == "bounded"
+        and isinstance(decision_action.get("expired_decision_error"), str)
+        and "valid_until must be in the future"
+        in decision_action["expired_decision_error"]
+        and len(decision_context_after_accept.get("recent_decisions", [])) == 2,
+        {
+            "code": "invariant_violation",
+            "capability": "investment_decision_publish",
+            "invariant": DECISION_RESEARCH_SEPARATION_INVARIANT,
+            "counterexample": "Research Validation became a Decision or an unqualified/expired Decision was published",
+        },
+    )
+
+    plans = decision_action.get("plans", {})
+    standard_plan = plans.get("standard") or {}
+    bounded_plan = plans.get("bounded") or {}
+    blocked_plan = plans.get("blocked") or {}
+    check(
+        RISK_GATE_BOUNDARY_INVARIANT,
+        (standard_plan.get("risk") or {}).get("status") == "pass"
+        and standard_plan.get("action_tier") == "standard"
+        and standard_plan.get("eligible_for_decision") is True
+        and (bounded_plan.get("risk") or {}).get("status") == "pass"
+        and bounded_plan.get("action_tier") == "bounded"
+        and bounded_plan.get("eligible_for_conditional_decision") is True
+        and (blocked_plan.get("risk") or {}).get("status") == "blocked"
+        and bool((blocked_plan.get("risk") or {}).get("violations"))
+        and blocked_plan.get("eligible_for_decision") is False
+        and isinstance(decision_action.get("blocked_decision_error"), str)
+        and "passing Risk Gate" in decision_action["blocked_decision_error"]
+        and isinstance(plans.get("bounded_missing_sessions_error"), str)
+        and plans["bounded_missing_sessions_error"].startswith(
+            "capability.input.invalid:"
+        ),
+        {
+            "code": "invariant_violation",
+            "capability": "investment_action_plan",
+            "invariant": RISK_GATE_BOUNDARY_INVARIANT,
+            "counterexample": "Risk Gate acted like a research opinion or failed to veto an unaffordable action",
+        },
+    )
+
+    queue = decision_action.get("queue", {})
+    portfolio_before_accept = (
+        decision_action.get("before_accept", {}).get("portfolio") or {}
+    )
+    portfolio_after_accept = (
+        decision_action.get("after_accept", {}).get("portfolio") or {}
+    )
+    accepted = queue.get("accepted") or {}
+    check(
+        ACTION_ACCEPTANCE_INVARIANT,
+        (queue.get("enqueued") or {}).get("state") == "ready"
+        and (queue.get("snoozed") or {}).get("state") == "snoozed"
+        and (queue.get("presented") or {}).get("state") == "presented"
+        and accepted.get("state") == "accepted"
+        and accepted.get("user_confirmation_ref")
+        == "synthetic:user-message:accept"
+        and (queue.get("rejected") or {}).get("state") == "rejected"
+        and (queue.get("rejected") or {}).get("user_confirmation_ref")
+        == "synthetic:user-message:reject"
+        and isinstance(queue.get("missing_confirmation_error"), str)
+        and queue["missing_confirmation_error"].startswith(
+            "capability.input.invalid:"
+        )
+        and decision_context_after_accept.get("executions") == []
+        and any(
+            card.get("state") == "accepted"
+            and card.get("execution_created") is False
+            for card in decision_context_after_accept.get("action_cards", [])
+        )
+        and all(
+            (portfolio_before_accept.get("portfolio") or {}).get(field)
+            == (portfolio_after_accept.get("portfolio") or {}).get(field)
+            for field in ("cash", "positions", "total_by_currency")
+        )
+        and portfolio_before_accept.get("pending_transactions")
+        == portfolio_after_accept.get("pending_transactions"),
+        {
+            "code": "invariant_violation",
+            "capability": "investment_action_update",
+            "invariant": ACTION_ACCEPTANCE_INVARIANT,
+            "counterexample": "Action Card response created an Execution or changed Portfolio Ledger truth",
         },
     )
 
