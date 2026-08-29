@@ -53,13 +53,15 @@ def _unverified_summary(
     receipt_digest: str | None,
     incidents: list[dict[str, Any]],
     status: str = "unverified",
+    scopes: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    _static_baseline, workflows, enhancements = _scope_projection(scopes or {})
     return {
         "ok": False,
         "applicable": True,
         "baseline": {"status": status, "incidents": incidents},
-        "workflows": {},
-        "optional_enhancements": {},
+        "workflows": workflows,
+        "optional_enhancements": enhancements,
         "incidents": incidents,
         "provider_digest": provider_digest,
         "requirements_digest": requirements_digest,
@@ -111,6 +113,11 @@ def compatibility_summary(
             incidents=[incident],
             status="degraded",
         )
+    from .validator import validate_compatibility
+
+    static_validation = validate_compatibility(
+        registry.provider_manifest().document, requirements
+    )
     try:
         current = read_current_receipt(state_dir)
     except CompanionError as exc:
@@ -121,6 +128,7 @@ def compatibility_summary(
             receipt_digest=None,
             incidents=[incident],
             status="degraded",
+            scopes=static_validation["scopes"],
         )
     if current is None:
         incident = _incident("compatibility.receipt_missing")
@@ -129,6 +137,7 @@ def compatibility_summary(
             requirements_digest=requirements_digest,
             receipt_digest=None,
             incidents=[incident],
+            scopes=static_validation["scopes"],
         )
 
     receipt = current["receipt"]
@@ -191,6 +200,7 @@ def compatibility_summary(
             receipt_digest=current["digest"],
             incidents=incidents,
             status="degraded",
+            scopes=static_validation["scopes"],
         )
 
     baseline, workflows, enhancements = _scope_projection(

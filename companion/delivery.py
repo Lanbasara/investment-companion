@@ -157,7 +157,9 @@ class DeliveryEngine:
         now = iso()
         if item.get("content_hash"):
             if item["content_hash"] != content_hash:
-                raise CompanionError("delivery result is immutable once prepared")
+                raise CompanionError(
+                    "investment_delivery.immutable: delivery result is immutable once prepared"
+                )
             return item
         # Delivery modes define the result obligation; Attention Policy only
         # decides timing.  A quiet-hour or budget decision may defer a direct
@@ -198,7 +200,9 @@ class DeliveryEngine:
                 (status, canonical(result), content_hash, outbox_id, attention_decision_id, now, now, item["id"]),
             ).rowcount
             if changed != 1:
-                raise CompanionError("delivery preparation lost to another writer")
+                raise CompanionError(
+                    "investment_delivery.state_conflict: delivery preparation lost to another writer"
+                )
             self.c.audit.record(con, "primary-codex", "prepare", "delivery_record", item["id"], before={"status": item["status"]}, after={"status": status, "content_hash": content_hash})
         return self.get(delivery_id)
 
@@ -228,7 +232,9 @@ class DeliveryEngine:
                     (canonical(result), digest(batch, item["id"]), outbox["id"], now, now, item["id"]),
                 ).rowcount
                 if changed != 1:
-                    raise CompanionError("digest delivery state changed concurrently")
+                    raise CompanionError(
+                        "investment_delivery.state_conflict: digest delivery state changed concurrently"
+                    )
         return [self.get(item) for item in delivery_ids]
 
     def mark_outbox_result(self, outbox_id: str, *, success: bool, terminal: bool, error: str | None = None) -> None:
