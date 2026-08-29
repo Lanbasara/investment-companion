@@ -31,6 +31,9 @@ from .registry import (
     DELIVERY_STATE_INVARIANT,
     EXECUTION_CONFIRMATION_INVARIANT,
     EXECUTION_RECONCILIATION_INVARIANT,
+    PERFORMANCE_CALCULATION_INVARIANT,
+    REVIEW_IMMUTABILITY_INVARIANT,
+    CHANGE_PROPOSAL_INVARIANT,
     WORKFLOW_RUN_DELIVERY_INVARIANT,
     WORKFLOW_VERSION_INVARIANT,
     WORKFLOW_WAKE_LEASE_INVARIANT,
@@ -2152,6 +2155,234 @@ def probe_investment_mcp(
             "portfolio_context",
             {"account_id": account_id, "as_of": "2025-01-10T00:00:00Z"},
         )
+
+        performance_account = _call_result(
+            call(
+                "investment_transaction_update",
+                {
+                    "operation": "account_create",
+                    "name": "Synthetic performance account",
+                    "base_currency": "CNY",
+                },
+            )
+        )
+        performance_asset = _call_result(
+            call(
+                "investment_transaction_update",
+                {
+                    "operation": "asset_register",
+                    "asset_type": "stock",
+                    "name": "Synthetic performance asset",
+                    "currency": "CNY",
+                    "identifiers": {"synthetic_id": "PERFORMANCE-1"},
+                },
+            )
+        )
+
+        def record_and_confirm(entry: dict[str, Any]) -> dict[str, Any]:
+            pending_entry = _call_result(
+                call(
+                    "investment_transaction_update",
+                    {"operation": "record", **entry},
+                )
+            )
+            return _call_result(
+                call(
+                    "investment_transaction_update",
+                    {"operation": "confirm", "entry_id": pending_entry["id"]},
+                )
+            )
+
+        performance_opening = record_and_confirm(
+            {
+                "account_id": performance_account["id"],
+                "entry_type": "opening_balance",
+                "occurred_at": "2024-12-31T00:00:00Z",
+                "amount": "1000",
+                "currency": "CNY",
+                "source": "synthetic-performance-ledger",
+            }
+        )
+        performance_trade = record_and_confirm(
+            {
+                "account_id": performance_account["id"],
+                "entry_type": "trade",
+                "asset_id": performance_asset["id"],
+                "occurred_at": "2025-01-02T00:00:00Z",
+                "quantity": "10",
+                "price": "10",
+                "amount": "-100",
+                "fee": "5",
+                "currency": "CNY",
+                "source": "synthetic-performance-ledger",
+            }
+        )
+        performance_deposit = record_and_confirm(
+            {
+                "account_id": performance_account["id"],
+                "entry_type": "cash_deposit",
+                "occurred_at": "2025-01-05T00:00:00Z",
+                "amount": "500",
+                "currency": "CNY",
+                "source": "synthetic-performance-ledger",
+            }
+        )
+        performance_fee = record_and_confirm(
+            {
+                "account_id": performance_account["id"],
+                "entry_type": "fee",
+                "occurred_at": "2025-01-07T00:00:00Z",
+                "amount": "-10",
+                "currency": "CNY",
+                "source": "synthetic-performance-ledger",
+            }
+        )
+        performance_arguments = {
+            "benchmark_mode": "compare",
+            "account_id": performance_account["id"],
+            "period_start": "2025-01-01T00:00:00Z",
+            "period_end": "2025-01-11T00:00:00Z",
+            "period_basis": "start_exclusive_end_inclusive",
+            "start_prices": {},
+            "end_prices": {performance_asset["id"]: "12"},
+            "valuation_points": [
+                {"at": "2025-01-06T00:00:00Z", "value": "1400"}
+            ],
+            "price_source_refs": ["synthetic:performance-prices"],
+            "trade_reference_prices": {
+                performance_trade["id"]: {
+                    "price": "9.5",
+                    "source_ref": "synthetic:pre-trade-quote",
+                }
+            },
+            "attribution_refs": [decision_publish["revision"]["id"]],
+            "benchmark_start_value": "100",
+            "benchmark_end_value": "105",
+            "benchmark_source_ref": "synthetic:benchmark-series",
+        }
+        performance_call = call(
+            "investment_performance_calculate", performance_arguments
+        )
+        performance = _call_result(performance_call)
+        missing_price_call = call(
+            "investment_performance_calculate",
+            {**performance_arguments, "end_prices": {}},
+        )
+        missing_benchmark_arguments = dict(performance_arguments)
+        missing_benchmark_arguments.pop("benchmark_end_value")
+        missing_benchmark_call = call(
+            "investment_performance_calculate", missing_benchmark_arguments
+        )
+        unavailable_benchmark_call = call(
+            "investment_performance_calculate",
+            {
+                **{
+                    key: value
+                    for key, value in performance_arguments.items()
+                    if not key.startswith("benchmark_")
+                },
+                "benchmark_mode": "unavailable",
+                "benchmark_unavailable_reason": (
+                    "the synthetic benchmark series is intentionally absent"
+                ),
+            },
+        )
+
+        evaluation_research_before_call = call(
+            "research_context", {"subject_id": asset_ids[0], "limit": 20}
+        )
+        evaluation_program_before_call = call(
+            "investment_program_context", {"program_id": archived_program["id"]}
+        )
+        review_subject = {
+            "account_id": performance_account["id"],
+            "period_start": performance["period"]["start"],
+            "period_end": performance["period"]["end"],
+        }
+        review_arguments = {
+            "operation": "create",
+            "subject": review_subject,
+            "content": (
+                "The deterministic period result requires separately validated changes."
+            ),
+            "conclusion": "revise",
+            "calculation_ids": [performance["calculation_id"]],
+            "source_refs": ["synthetic:performance-review"],
+            "historical_refs": [decision_publish["revision"]["id"]],
+            "proposed_changes": [
+                {
+                    "target_type": "thesis",
+                    "target_id": promoted_research["thesis"]["id"],
+                    "change": "test a narrower evidence scope",
+                    "reason": "the period sample is deliberately synthetic",
+                    "validation_required": True,
+                },
+                {
+                    "target_type": "policy",
+                    "target_id": archived_program["id"],
+                    "change": "consider a lower risk budget",
+                    "reason": "the proposal must remain inert",
+                    "validation_required": True,
+                },
+                {
+                    "target_type": "strategy",
+                    "target_id": "synthetic-strategy-version",
+                    "change": "test stricter entry conditions",
+                    "reason": "slippage must be validated separately",
+                    "validation_required": True,
+                },
+            ],
+            "knowledge_cutoff": "2025-01-11T00:00:00Z",
+        }
+        missing_calculation_review_call = call(
+            "investment_review_publish",
+            {**review_arguments, "calculation_ids": []},
+        )
+        created_review_call = call("investment_review_publish", review_arguments)
+        created_review = _call_result(created_review_call)
+        superseded_review_call = call(
+            "investment_review_publish",
+            {
+                "operation": "supersede",
+                "review_id": created_review["review"]["id"],
+                "supersedes_revision_id": created_review["revision"]["id"],
+                "supersession_reason": "A later frozen interpretation is available.",
+                "subject": review_subject,
+                "content": "Continue without applying the earlier proposal.",
+                "conclusion": "continue",
+                "calculation_ids": [performance["calculation_id"]],
+                "source_refs": ["synthetic:performance-review-v2"],
+                "historical_refs": [
+                    created_review["revision"]["id"],
+                    decision_publish["revision"]["id"],
+                ],
+                "knowledge_cutoff": "2025-01-12T00:00:00Z",
+            },
+        )
+        superseded_review = _call_result(superseded_review_call)
+        stale_supersession_call = call(
+            "investment_review_publish",
+            {
+                "operation": "supersede",
+                "review_id": created_review["review"]["id"],
+                "supersedes_revision_id": created_review["revision"]["id"],
+                "supersession_reason": "Attempt to silently replace current history.",
+                "subject": review_subject,
+                "content": "This stale update must be rejected.",
+                "conclusion": "continue",
+                "calculation_ids": [performance["calculation_id"]],
+                "source_refs": ["synthetic:performance-review-v3"],
+                "historical_refs": [created_review["revision"]["id"]],
+                "knowledge_cutoff": "2025-01-13T00:00:00Z",
+            },
+        )
+        evaluation_context_call = call("evaluation_context", {"limit": 20})
+        evaluation_research_after_call = call(
+            "research_context", {"subject_id": asset_ids[0], "limit": 20}
+        )
+        evaluation_program_after_call = call(
+            "investment_program_context", {"program_id": archived_program["id"]}
+        )
     finally:
         proc.stdin.close()
         try:
@@ -2479,6 +2710,29 @@ def probe_investment_mcp(
             "revoked": _call_result(continuity_revoke_call),
             "revoked_portfolio": _call_result(revoked_portfolio_call),
         },
+        "evaluation": {
+            "ledger": {
+                "opening": performance_opening,
+                "trade": performance_trade,
+                "deposit": performance_deposit,
+                "fee": performance_fee,
+            },
+            "performance": performance,
+            "unavailable_benchmark": _call_result(unavailable_benchmark_call),
+            "missing_price_error": _call_error(missing_price_call),
+            "missing_benchmark_error": _call_error(missing_benchmark_call),
+            "missing_calculation_error": _call_error(
+                missing_calculation_review_call
+            ),
+            "created_review": created_review,
+            "superseded_review": superseded_review,
+            "stale_supersession_error": _call_error(stale_supersession_call),
+            "context": _call_result(evaluation_context_call),
+            "research_before": _call_result(evaluation_research_before_call),
+            "research_after": _call_result(evaluation_research_after_call),
+            "program_before": _call_result(evaluation_program_before_call),
+            "program_after": _call_result(evaluation_program_after_call),
+        },
     }
 
 
@@ -2549,6 +2803,63 @@ def evaluate_investment_conformance(observation: dict[str, Any]) -> dict[str, An
         {
             "code": "missing_or_drifted_tool",
             "capability": "investment_transaction_update",
+        },
+    )
+    evaluation_schema = (tools.get("evaluation_context") or {}).get(
+        "inputSchema", {}
+    )
+    check(
+        "mcp.tools-list.evaluation-context",
+        evaluation_schema.get("additionalProperties") is False
+        and set(evaluation_schema.get("properties", {})) == {"limit"},
+        {"code": "missing_or_drifted_tool", "capability": "evaluation_context"},
+    )
+    performance_variants = (
+        (tools.get("investment_performance_calculate") or {})
+        .get("inputSchema", {})
+        .get("oneOf", [])
+    )
+    check(
+        "mcp.tools-list.performance-calculate-variants",
+        {
+            variant.get("properties", {}).get("benchmark_mode", {}).get("const")
+            for variant in performance_variants
+        }
+        == {"compare", "unavailable"}
+        and all(
+            "period_basis" in variant.get("required", [])
+            and "price_source_refs" in variant.get("required", [])
+            and "attribution_refs" in variant.get("required", [])
+            and not {
+                "modified_dietz_return",
+                "transaction_cost",
+                "slippage_cost",
+                "maximum_drawdown",
+            }
+            & set(variant.get("properties", {}))
+            for variant in performance_variants
+        ),
+        {
+            "code": "missing_or_drifted_tool",
+            "capability": "investment_performance_calculate",
+        },
+    )
+    check(
+        "mcp.tools-list.review-publish-variants",
+        operations("investment_review_publish") == {"create", "supersede"}
+        and all(
+            "knowledge_cutoff" in variant.get("required", [])
+            and "calculation_ids" in variant.get("required", [])
+            and "historical_refs" in variant.get("required", [])
+            for variant in (
+                (tools.get("investment_review_publish") or {})
+                .get("inputSchema", {})
+                .get("oneOf", [])
+            )
+        ),
+        {
+            "code": "missing_or_drifted_tool",
+            "capability": "investment_review_publish",
         },
     )
     research_context_schema = (tools.get("research_context") or {}).get(
@@ -3815,6 +4126,131 @@ def evaluate_investment_conformance(observation: dict[str, Any]) -> dict[str, An
         {
             "code": "missing_negative_rejection",
             "capability": "personal_context_and_portfolio_ledger",
+        },
+    )
+    evaluation = observation.get("evaluation", {})
+    performance = evaluation.get("performance") or {}
+    performance_ledger = evaluation.get("ledger", {})
+    external_flow_ids = {
+        item.get("ledger_entry_id") for item in performance.get("external_flows", [])
+    }
+    check(
+        PERFORMANCE_CALCULATION_INVARIANT,
+        isinstance(performance.get("calculation_id"), str)
+        and performance.get("time_basis", {}).get("period_boundary")
+        == "start_exclusive_end_inclusive"
+        and performance.get("net_external_flow") == "500"
+        and performance.get("investment_gain_after_external_flows") == "5"
+        and performance.get("transaction_cost") == "15"
+        and performance.get("slippage_cost") == "5"
+        and performance.get("total_cost") == "20"
+        and performance.get("benchmark_return") == "0.05"
+        and performance.get("maximum_drawdown") == "0"
+        and performance.get("attribution", {}).get("status") == "linked"
+        and performance.get("caveats") == []
+        and (performance_ledger.get("deposit") or {}).get("id")
+        in external_flow_ids,
+        {
+            "code": "invariant_violation",
+            "capability": "investment_performance_calculate",
+            "invariant": PERFORMANCE_CALCULATION_INVARIANT,
+            "counterexample": "Performance outputs were accepted as model fields or diverged from the isolated confirmed Ledger",
+        },
+    )
+    unavailable_benchmark = evaluation.get("unavailable_benchmark") or {}
+    check(
+        "mcp.performance.required-evidence-and-variants/v1",
+        isinstance(evaluation.get("missing_price_error"), str)
+        and evaluation["missing_price_error"].startswith(
+            "investment_performance.valuation_required:"
+        )
+        and isinstance(evaluation.get("missing_benchmark_error"), str)
+        and evaluation["missing_benchmark_error"].startswith(
+            "capability.input.invalid:"
+        )
+        and unavailable_benchmark.get("benchmark", {}).get("mode")
+        == "unavailable"
+        and unavailable_benchmark.get("benchmark_return") is None
+        and unavailable_benchmark.get("caveats") == ["benchmark_return_missing"],
+        {
+            "code": "missing_performance_evidence_rejection",
+            "capability": "investment_performance_calculate",
+        },
+    )
+
+    created_review = evaluation.get("created_review") or {}
+    superseded_review = evaluation.get("superseded_review") or {}
+    evaluation_context = evaluation.get("context") or {}
+    review_id = (created_review.get("review") or {}).get("id")
+    review_summary = next(
+        (
+            item
+            for item in evaluation_context.get("reviews", [])
+            if item.get("id") == review_id
+        ),
+        {},
+    )
+    revision_ids = [
+        item.get("id") for item in review_summary.get("revisions", [])
+    ]
+    check(
+        REVIEW_IMMUTABILITY_INVARIANT,
+        (created_review.get("revision") or {}).get("revision") == 1
+        and (created_review.get("revision") or {}).get("parent_id") is None
+        and (superseded_review.get("revision") or {}).get("revision") == 2
+        and (superseded_review.get("revision") or {}).get("parent_id")
+        == (created_review.get("revision") or {}).get("id")
+        and revision_ids
+        == [
+            (created_review.get("revision") or {}).get("id"),
+            (superseded_review.get("revision") or {}).get("id"),
+        ]
+        and (review_summary.get("current_revision") or {}).get("id")
+        == (superseded_review.get("revision") or {}).get("id")
+        and created_review.get("history_preserved") is True
+        and superseded_review.get("history_preserved") is True
+        and isinstance(evaluation.get("stale_supersession_error"), str)
+        and evaluation["stale_supersession_error"].startswith(
+            "investment_review.revision_conflict:"
+        )
+        and isinstance(evaluation.get("missing_calculation_error"), str)
+        and evaluation["missing_calculation_error"].startswith(
+            "capability.input.invalid:"
+        ),
+        {
+            "code": "invariant_violation",
+            "capability": "investment_review_publish",
+            "invariant": REVIEW_IMMUTABILITY_INVARIANT,
+            "counterexample": "Review supersession rewrote history or published without Calculation lineage",
+        },
+    )
+    research_unchanged = _stable_research_projection(
+        evaluation.get("research_before") or {},
+        include_active_program_queue=True,
+    ) == _stable_research_projection(
+        evaluation.get("research_after") or {},
+        include_active_program_queue=True,
+    )
+    program_unchanged = _stable_program_projection(
+        evaluation.get("program_before") or {}
+    ) == _stable_program_projection(evaluation.get("program_after") or {})
+    check(
+        CHANGE_PROPOSAL_INVARIANT,
+        (created_review.get("change_proposal") or {}).get("status")
+        == "proposed"
+        and (created_review.get("change_proposal") or {}).get(
+            "automatic_application"
+        )
+        is False
+        and created_review.get("automatic_changes_applied") is False
+        and superseded_review.get("automatic_changes_applied") is False
+        and research_unchanged
+        and program_unchanged,
+        {
+            "code": "invariant_violation",
+            "capability": "investment_review_publish",
+            "invariant": CHANGE_PROPOSAL_INVARIANT,
+            "counterexample": "Change Proposal silently modified Thesis, Investment Policy or Strategy Version state",
         },
     )
     return {

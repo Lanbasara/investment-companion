@@ -37,6 +37,15 @@ EXECUTION_CONFIRMATION_INVARIANT = (
 EXECUTION_RECONCILIATION_INVARIANT = (
     "investment_execution_update.full_scope_reconciliation_required/v1"
 )
+PERFORMANCE_CALCULATION_INVARIANT = (
+    "investment_performance_calculate.outputs_are_kernel_calculated/v1"
+)
+REVIEW_IMMUTABILITY_INVARIANT = (
+    "investment_review_publish.revisions_are_append_only/v1"
+)
+CHANGE_PROPOSAL_INVARIANT = (
+    "investment_review_publish.change_proposals_are_inert/v1"
+)
 PROGRAM_CONFIRMATION_INVARIANT = (
     "investment_program.confirmation_and_versioning_required/v1"
 )
@@ -109,6 +118,18 @@ BRIEF_UPDATE_DESCRIPTION = (
 EXECUTION_UPDATE_DESCRIPTION = (
     "记录人工 Execution、用户报告的券商订单与成交，或管理用户在券商 App 配置的条件策略；"
     "报告事实不会自动改变 Portfolio Ledger，只有用户确认的 Ledger Entry 会。"
+)
+EVALUATION_CONTEXT_DESCRIPTION = (
+    "读取确定性 Performance Calculation、版本化 Review 与惰性 Change Proposal 摘要；"
+    "不暴露 Calculation 公式或完整审计实现。"
+)
+PERFORMANCE_CALCULATE_DESCRIPTION = (
+    "按确认账本、点时估值、现金流、费用、成交参考价和显式基准口径计算客观期间结果；"
+    "收益、费用、滑点和回撤均由 Financial Kernel 生成。"
+)
+REVIEW_PUBLISH_DESCRIPTION = (
+    "创建或追加发布引用 Calculation 与历史事实的 Review revision；Change Proposal 只等待后续验证，"
+    "不会静默修改 Thesis、Investment Policy 或 Strategy Version。"
 )
 WORKFLOW_CONTEXT_DESCRIPTION = (
     "读取主动 Schedule、Run、Wake 关联的 Delivery，以及通用系统与诊断状态。"
@@ -2920,6 +2941,368 @@ EXECUTION_UPDATE_OUTPUT_SCHEMA = {
     ]
 }
 
+NON_EMPTY_UNIQUE_STRINGS_SCHEMA = {
+    "type": "array", "items": S, "minItems": 1, "uniqueItems": True,
+}
+UNIQUE_STRINGS_SCHEMA = {
+    "type": "array", "items": S, "uniqueItems": True,
+}
+VALUATION_POINT_INPUT_SCHEMA = object_schema(
+    {"at": S, "value": DECIMAL_INPUT_SCHEMA}, ["at", "value"]
+)
+TRADE_REFERENCE_PRICE_INPUT_SCHEMA = object_schema(
+    {"price": DECIMAL_INPUT_SCHEMA, "source_ref": S},
+    ["price", "source_ref"],
+)
+TRADE_REFERENCE_PRICES_INPUT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": TRADE_REFERENCE_PRICE_INPUT_SCHEMA,
+}
+PERFORMANCE_COMMON_INPUT_PROPERTIES = {
+    "account_id": S,
+    "period_start": S,
+    "period_end": S,
+    "period_basis": {
+        "type": "string", "const": "start_exclusive_end_inclusive",
+    },
+    "start_prices": DECIMAL_MAP,
+    "end_prices": DECIMAL_MAP,
+    "valuation_points": {
+        "type": "array", "items": VALUATION_POINT_INPUT_SCHEMA,
+    },
+    "price_source_refs": NON_EMPTY_UNIQUE_STRINGS_SCHEMA,
+    "trade_reference_prices": TRADE_REFERENCE_PRICES_INPUT_SCHEMA,
+    "attribution_refs": UNIQUE_STRINGS_SCHEMA,
+}
+PERFORMANCE_COMMON_INPUT_REQUIRED = list(PERFORMANCE_COMMON_INPUT_PROPERTIES)
+EXTERNAL_FLOW_SCHEMA = object_schema(
+    {
+        "ledger_entry_id": S,
+        "occurred_at": S,
+        "amount": S,
+        "weight": S,
+        "weighted_amount": S,
+    },
+    ["ledger_entry_id", "occurred_at", "amount", "weight", "weighted_amount"],
+    additional_properties=True,
+)
+PERFORMANCE_TIME_BASIS_SCHEMA = object_schema(
+    {
+        "period_boundary": {
+            "type": "string", "const": "start_exclusive_end_inclusive",
+        },
+        "valuation": {"type": "string", "const": "point_in_time"},
+    },
+    ["period_boundary", "valuation"],
+    additional_properties=True,
+)
+PERFORMANCE_BENCHMARK_SCHEMA = object_schema(
+    {
+        "mode": {"type": "string", "enum": ["compare", "unavailable"]},
+        "return": {"type": ["string", "null"]},
+        "source_ref": {"type": ["string", "null"]},
+        "unavailable_reason": {"type": ["string", "null"]},
+    },
+    ["mode", "return", "source_ref", "unavailable_reason"],
+    additional_properties=True,
+)
+PERFORMANCE_COSTS_SCHEMA = object_schema(
+    {
+        "fees_and_taxes": S,
+        "slippage": S,
+        "total": S,
+        "slippage_trade_count": I,
+        "period_trade_count": I,
+    },
+    [
+        "fees_and_taxes", "slippage", "total", "slippage_trade_count",
+        "period_trade_count",
+    ],
+    additional_properties=True,
+)
+PERFORMANCE_ATTRIBUTION_SCHEMA = object_schema(
+    {
+        "reference_ids": UNIQUE_STRINGS_SCHEMA,
+        "status": {
+            "type": "string", "enum": ["linked", "insufficient_evidence"],
+        },
+    },
+    ["reference_ids", "status"],
+    additional_properties=True,
+)
+PERFORMANCE_OUTPUT_SCHEMA = object_schema(
+    {
+        "calculation_id": S,
+        "period": object_schema(
+            {"start": S, "end": S}, ["start", "end"],
+            additional_properties=True,
+        ),
+        "time_basis": PERFORMANCE_TIME_BASIS_SCHEMA,
+        "account_id": S,
+        "currency": S,
+        "start_value": S,
+        "end_value": S,
+        "net_external_flow": S,
+        "weighted_external_flow": S,
+        "investment_gain_after_external_flows": S,
+        "modified_dietz_return": {"type": ["string", "null"]},
+        "benchmark_return": {"type": ["string", "null"]},
+        "excess_return": {"type": ["string", "null"]},
+        "transaction_cost": S,
+        "slippage_cost": S,
+        "total_cost": S,
+        "maximum_drawdown": S,
+        "external_flows": {"type": "array", "items": EXTERNAL_FLOW_SCHEMA},
+        "valuation_points": {
+            "type": "array",
+            "items": object_schema(
+                {"at": S, "value": S}, ["at", "value"],
+                additional_properties=True,
+            ),
+        },
+        "attribution_refs": UNIQUE_STRINGS_SCHEMA,
+        "attribution": PERFORMANCE_ATTRIBUTION_SCHEMA,
+        "benchmark": PERFORMANCE_BENCHMARK_SCHEMA,
+        "costs": PERFORMANCE_COSTS_SCHEMA,
+        "warnings": SA,
+        "caveats": SA,
+    },
+    [
+        "calculation_id", "period", "time_basis", "account_id", "currency",
+        "start_value", "end_value", "net_external_flow",
+        "weighted_external_flow", "investment_gain_after_external_flows",
+        "modified_dietz_return", "benchmark_return", "excess_return",
+        "transaction_cost", "slippage_cost", "total_cost",
+        "maximum_drawdown", "external_flows", "valuation_points",
+        "attribution_refs", "attribution", "benchmark", "costs", "warnings",
+        "caveats",
+    ],
+    additional_properties=True,
+)
+PERFORMANCE_OPERATIONS = {
+    "compare": {
+        "input_schema": variant_schema(
+            "benchmark_mode", "compare",
+            {
+                **PERFORMANCE_COMMON_INPUT_PROPERTIES,
+                "benchmark_start_value": DECIMAL_INPUT_SCHEMA,
+                "benchmark_end_value": DECIMAL_INPUT_SCHEMA,
+                "benchmark_source_ref": S,
+            },
+            [
+                *PERFORMANCE_COMMON_INPUT_REQUIRED, "benchmark_start_value",
+                "benchmark_end_value", "benchmark_source_ref",
+            ],
+        ),
+        "output_schema": PERFORMANCE_OUTPUT_SCHEMA,
+    },
+    "unavailable": {
+        "input_schema": variant_schema(
+            "benchmark_mode", "unavailable",
+            {
+                **PERFORMANCE_COMMON_INPUT_PROPERTIES,
+                "benchmark_unavailable_reason": S,
+            },
+            [*PERFORMANCE_COMMON_INPUT_REQUIRED, "benchmark_unavailable_reason"],
+        ),
+        "output_schema": PERFORMANCE_OUTPUT_SCHEMA,
+    },
+}
+PERFORMANCE_CALCULATE_INPUT_SCHEMA = operation_union(PERFORMANCE_OPERATIONS)
+
+CHANGE_PROPOSAL_ITEM_SCHEMA = object_schema(
+    {
+        "target_type": {
+            "type": "string",
+            "enum": ["thesis", "strategy", "policy", "research_pipeline"],
+        },
+        "target_id": S,
+        "change": S,
+        "reason": S,
+        "validation_required": {"type": "boolean", "const": True},
+    },
+    ["target_type", "target_id", "change", "reason", "validation_required"],
+)
+REVIEW_COMMON_INPUT_PROPERTIES = {
+    "subject": O,
+    "content": S,
+    "conclusion": {
+        "type": "string",
+        "enum": ["continue", "revise", "stop", "insufficient_evidence"],
+    },
+    "calculation_ids": NON_EMPTY_UNIQUE_STRINGS_SCHEMA,
+    "source_refs": NON_EMPTY_UNIQUE_STRINGS_SCHEMA,
+    "historical_refs": NON_EMPTY_UNIQUE_STRINGS_SCHEMA,
+    "proposed_changes": {
+        "type": "array", "items": CHANGE_PROPOSAL_ITEM_SCHEMA,
+    },
+    "knowledge_cutoff": S,
+}
+REVIEW_COMMON_INPUT_REQUIRED = [
+    "subject", "content", "conclusion", "calculation_ids", "source_refs",
+    "historical_refs", "knowledge_cutoff",
+]
+CHANGE_PROPOSAL_OUTPUT_SCHEMA = object_schema(
+    {
+        "status": {"type": "string", "enum": ["proposed", "none"]},
+        "changes": {"type": "array", "items": CHANGE_PROPOSAL_ITEM_SCHEMA},
+        "requires_new_version": B,
+        "automatic_application": {"type": "boolean", "const": False},
+    },
+    ["status", "changes", "requires_new_version", "automatic_application"],
+    additional_properties=True,
+)
+REVIEW_OBJECT_SCHEMA = object_schema(
+    {
+        "id": S,
+        "object_type": {"type": "string", "const": "review"},
+        "subject": O,
+        "status": S,
+        "current_revision_id": S,
+        "created_at": S,
+        "updated_at": S,
+    },
+    [
+        "id", "object_type", "subject", "status", "current_revision_id",
+        "created_at", "updated_at",
+    ],
+    additional_properties=True,
+)
+REVIEW_REVISION_SCHEMA = object_schema(
+    {
+        "id": S,
+        "object_id": S,
+        "revision": I,
+        "status": {"type": "string", "const": "published"},
+        "parent_id": {"type": ["string", "null"]},
+        "knowledge_cutoff": S,
+        "calculation_ids": NON_EMPTY_UNIQUE_STRINGS_SCHEMA,
+        "metadata": O,
+        "created_at": S,
+    },
+    [
+        "id", "object_id", "revision", "status", "parent_id",
+        "knowledge_cutoff", "calculation_ids", "metadata", "created_at",
+    ],
+    additional_properties=True,
+)
+REVIEW_PUBLISH_OUTPUT_SCHEMA = object_schema(
+    {
+        "review": REVIEW_OBJECT_SCHEMA,
+        "revision": REVIEW_REVISION_SCHEMA,
+        "conclusion": REVIEW_COMMON_INPUT_PROPERTIES["conclusion"],
+        "change_proposal": CHANGE_PROPOSAL_OUTPUT_SCHEMA,
+        "history_preserved": {"type": "boolean", "const": True},
+        "automatic_changes_applied": {"type": "boolean", "const": False},
+    },
+    [
+        "review", "revision", "conclusion", "change_proposal",
+        "history_preserved", "automatic_changes_applied",
+    ],
+    additional_properties=True,
+)
+REVIEW_OPERATIONS = {
+    "create": {
+        "input_schema": operation_schema(
+            "create", REVIEW_COMMON_INPUT_PROPERTIES,
+            REVIEW_COMMON_INPUT_REQUIRED,
+        ),
+        "output_schema": REVIEW_PUBLISH_OUTPUT_SCHEMA,
+    },
+    "supersede": {
+        "input_schema": operation_schema(
+            "supersede",
+            {
+                **REVIEW_COMMON_INPUT_PROPERTIES,
+                "review_id": S,
+                "supersedes_revision_id": S,
+                "supersession_reason": S,
+            },
+            [
+                *REVIEW_COMMON_INPUT_REQUIRED, "review_id",
+                "supersedes_revision_id", "supersession_reason",
+            ],
+        ),
+        "output_schema": REVIEW_PUBLISH_OUTPUT_SCHEMA,
+    },
+}
+REVIEW_PUBLISH_INPUT_SCHEMA = operation_union(REVIEW_OPERATIONS)
+
+PERFORMANCE_CALCULATION_SUMMARY_SCHEMA = object_schema(
+    {
+        "id": S,
+        "kind": {"type": "string", "const": "account_performance"},
+        "as_of": S,
+        "outputs": object_schema(
+            {
+                key: value
+                for key, value in PERFORMANCE_OUTPUT_SCHEMA["properties"].items()
+                if key != "calculation_id"
+            },
+            [
+                key
+                for key in PERFORMANCE_OUTPUT_SCHEMA["required"]
+                if key != "calculation_id"
+            ],
+            additional_properties=True,
+        ),
+        "warnings": SA,
+        "created_at": S,
+    },
+    ["id", "kind", "as_of", "outputs", "warnings", "created_at"],
+    additional_properties=True,
+)
+REVIEW_SUMMARY_SCHEMA = object_schema(
+    {
+        **REVIEW_OBJECT_SCHEMA["properties"],
+        "current_revision": REVIEW_REVISION_SCHEMA,
+        "revisions": {"type": "array", "items": REVIEW_REVISION_SCHEMA},
+    },
+    [*REVIEW_OBJECT_SCHEMA["required"], "current_revision", "revisions"],
+    additional_properties=True,
+)
+EVALUATION_CONTEXT_INPUT_SCHEMA = object_schema(
+    {"limit": {"type": "integer", "minimum": 1, "maximum": 100}}
+)
+EVALUATION_CONTEXT_OUTPUT_SCHEMA = object_schema(
+    {
+        "schema": {
+            "type": "string", "const": "investment-companion.evaluation-context/v1",
+        },
+        "as_of": S,
+        "performance": {
+            "type": "array", "items": PERFORMANCE_CALCULATION_SUMMARY_SCHEMA,
+        },
+        "reviews": {"type": "array", "items": REVIEW_SUMMARY_SCHEMA},
+        "research_reviews": A,
+        "change_boundary": object_schema(
+            {
+                "review_may_propose": {"type": "boolean", "const": True},
+                "review_may_apply_strategy_change": {
+                    "type": "boolean", "const": False,
+                },
+                "new_version_and_validation_required": {
+                    "type": "boolean", "const": True,
+                },
+                "review_history_is_append_only": {
+                    "type": "boolean", "const": True,
+                },
+            },
+            [
+                "review_may_propose", "review_may_apply_strategy_change",
+                "new_version_and_validation_required",
+                "review_history_is_append_only",
+            ],
+            additional_properties=True,
+        ),
+    },
+    [
+        "schema", "as_of", "performance", "reviews", "research_reviews",
+        "change_boundary",
+    ],
+    additional_properties=True,
+)
+
 SCHEDULE_SCHEMA = object_schema(
     {
         "id": S,
@@ -3775,6 +4158,44 @@ CAPABILITY_CONTRACTS: dict[str, CapabilityContract] = {
         ),
         EXECUTION_OPERATIONS,
         actor_aware=True,
+    ),
+    "evaluation_context": CapabilityContract(
+        EVALUATION_CONTEXT_DESCRIPTION,
+        "investment.evaluation_context",
+        EVALUATION_CONTEXT_INPUT_SCHEMA,
+        EVALUATION_CONTEXT_OUTPUT_SCHEMA,
+        ("capability.input.invalid", "capability.output.invalid"),
+        (REVIEW_IMMUTABILITY_INVARIANT, CHANGE_PROPOSAL_INVARIANT),
+    ),
+    "investment_performance_calculate": CapabilityContract(
+        PERFORMANCE_CALCULATE_DESCRIPTION,
+        "investment_commands.performance_calculate",
+        PERFORMANCE_CALCULATE_INPUT_SCHEMA,
+        PERFORMANCE_OUTPUT_SCHEMA,
+        (
+            "capability.input.invalid",
+            "capability.output.invalid",
+            "investment_performance.valuation_required",
+            "investment_performance.benchmark_required",
+        ),
+        (PERFORMANCE_CALCULATION_INVARIANT,),
+        PERFORMANCE_OPERATIONS,
+        variant_selectors=("benchmark_mode",),
+    ),
+    "investment_review_publish": CapabilityContract(
+        REVIEW_PUBLISH_DESCRIPTION,
+        "investment_commands.review_publish",
+        REVIEW_PUBLISH_INPUT_SCHEMA,
+        REVIEW_PUBLISH_OUTPUT_SCHEMA,
+        (
+            "capability.input.invalid",
+            "capability.output.invalid",
+            "investment_review.calculation_lineage_required",
+            "investment_review.revision_conflict",
+            "investment_review.automatic_change_forbidden",
+        ),
+        (REVIEW_IMMUTABILITY_INVARIANT, CHANGE_PROPOSAL_INVARIANT),
+        REVIEW_OPERATIONS,
     ),
     "investment_workflow_context": CapabilityContract(
         WORKFLOW_CONTEXT_DESCRIPTION,

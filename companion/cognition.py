@@ -255,6 +255,11 @@ class CognitiveLedger:
         if not item:raise CompanionError(f"cognitive revision not found: {revision_id}")
         return item
 
+    def revision_list(self, object_id:str)->list[dict]:
+        self.object_get(object_id)
+        with self.db.connect() as con:
+            return rows_dict(con.execute("SELECT * FROM cognitive_revisions WHERE object_id=? ORDER BY revision",(object_id,)).fetchall())
+
     def link(self,from_id:str,to_id:str,link_type:str,metadata:dict|None=None)->dict:
         lid=new_id("link");now=iso()
         with self.db.transaction() as con:
