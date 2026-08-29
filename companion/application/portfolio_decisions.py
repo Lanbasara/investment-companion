@@ -379,6 +379,11 @@ class PortfolioDecisionService(
         elif qualification is not None:
             raise CompanionError("qualification may be supplied only when entering qualified or actionable")
         if to_stage == "actionable" and to_status == "active":
+            if item.get("funding_condition") is not None:
+                raise CompanionError(
+                    "Opportunity cannot become actionable while its Funding Condition is current; "
+                    "confirm the funding fact and rerun Portfolio Qualification, Risk Gate, and Action Plan"
+                )
             if not decision_revision_id:
                 raise CompanionError("actionable Opportunity requires decision_revision_id")
             self.c.actionability.validate_actionable_transition(

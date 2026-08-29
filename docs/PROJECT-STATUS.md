@@ -1,12 +1,12 @@
 # Investment Companion：项目状态与会话交棒
 
-更新时间：2026-08-27
+更新时间：2026-08-29
 
 当前生产基线：SQLite Schema 9 / 固定 Git Runtime `de69ccf`（已运行）
 
-当前开发目标：Schema 10 Account Continuity 已完成开发与测试；尚未迁移生产数据库或切换 Runtime
+当前开发目标：Schema 11 Opportunity Funding Condition 保留能力已完成开发与测试；尚未迁移生产数据库或切换 Runtime
 
-当前分支：`feature/research-work-queue`
+当前分支：`main`
 
 V4 冻结：annotated tag `v4.0.0-engineering-baseline`
 
@@ -66,6 +66,8 @@ Primary Codex 仍是唯一最终语义判断、正式发布和用户沟通主体
 
 当前工作树新增、尚未切换生产 Runtime 的架构能力：
 
+- 合格 Opportunity 可通过现有更新接口版本化、幂等地保留 Funding Condition；当前 Funding Condition 阻止提前进入 actionable，确认入金或处置成交后仍必须重跑 Portfolio Qualification、Risk Gate 和 Action Plan；
+
 - Account Continuity 把人工账户精度拆为 matched 对账锚点、用户无漏报/持续报告确认和独立市场估值；旧对账不再自动阻断方向、范围或条件化数量，确认连续性后允许精确方案，最终下单仍要求券商 App 预检；
 
 - Research Work Queue 把股票/ETF候选自动变成持久研究义务，支持逐项分流、完整研究、期限、租约、观察到期和恢复；
@@ -89,7 +91,7 @@ Primary Codex 仍是唯一最终语义判断、正式发布和用户沟通主体
 - 22 工具的版本无关 Investment MCP release profile；发布审计补齐了原 15 工具缺少的账户/资产、证据、Program、Opportunity、Action、Brief、Schedule/Wake/Delivery 入口，旧 157 工具 schema、Admin/All profile 与独立 dispatcher 已删除；
 - 跨模块黄金闭环已贯通研究、Research Validation、Risk Gate、Decision、待确认成交、确认账本、现金流调整绩效和惰性变更提案；
 - 精确同周期 Performance Calculation 已接入 Program 评价覆盖，月度指标不再把已有真实收益误报为缺失；
-- 195 项测试、8 个子测试通过；架构测试同时锁定大型模块上限、版本依赖、新服务边界与 22 工具闭环完整性。Agent 配置未发生变化。
+- 306 项测试、8 个子测试通过；架构测试同时锁定大型模块上限、版本依赖、新服务边界与 22 工具闭环完整性。Agent 配置未发生变化。
 
 当前生产 Runtime 已实现并继续保留：
 

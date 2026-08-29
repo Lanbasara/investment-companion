@@ -1022,6 +1022,58 @@ def probe_investment_mcp(
             },
         )
         qualified_opportunity = _call_result(qualified_opportunity_call)
+        funding_observed_call = call(
+            "investment_opportunity_update",
+            {
+                "operation": "create",
+                "subject": {
+                    "account_id": research_fixture["account_id"],
+                    "asset_id": asset_ids[0],
+                },
+                "evidence_refs": [source_one["id"]],
+                "reason": "synthetic funding-dependent candidate",
+                "program_id": research_fixture["program_id"],
+                "thesis_id": promoted_research["thesis"]["id"],
+            },
+        )
+        funding_observed = _call_result(funding_observed_call)
+        funding_researching_call = call(
+            "investment_opportunity_update",
+            {
+                "operation": "transition",
+                "opportunity_id": funding_observed["id"],
+                "expected_version": funding_observed["version"],
+                "to_stage": "researching",
+                "to_status": "active",
+                "evidence_refs": [source_one["id"], source_two["id"]],
+                "reason": "synthetic funding candidate research completed",
+            },
+        )
+        funding_researching = _call_result(funding_researching_call)
+        funding_qualified_call = call(
+            "investment_opportunity_update",
+            {
+                "operation": "transition",
+                "opportunity_id": funding_researching["id"],
+                "expected_version": funding_researching["version"],
+                "to_stage": "qualified",
+                "to_status": "active",
+                "evidence_refs": [
+                    source_one["id"],
+                    source_two["id"],
+                    promoted_research["validation"]["calculation_id"],
+                ],
+                "qualification": {
+                    "validation_calculation_id": promoted_research["validation"][
+                        "calculation_id"
+                    ],
+                    "major_unknowns": ["Confirmed funding is not yet available"],
+                    "decision_basis": "Research qualifies continued evaluation only.",
+                },
+                "reason": "synthetic funding candidate remains qualified only",
+            },
+        )
+        funding_qualified = _call_result(funding_qualified_call)
         reality_spec = {
             "version": "a-share-reality/v1",
             "currency": "CNY",
@@ -1092,8 +1144,8 @@ def probe_investment_mcp(
             "investment_opportunity_update",
             {
                 "operation": "funding_condition_set",
-                "opportunity_id": qualified_opportunity["id"],
-                "expected_version": qualified_opportunity["version"],
+                "opportunity_id": funding_qualified["id"],
+                "expected_version": funding_qualified["version"],
                 "funding_condition_calculation_id": blocked_plan[
                     "funding_condition"
                 ]["calculation_id"],
@@ -1106,8 +1158,8 @@ def probe_investment_mcp(
             "investment_opportunity_update",
             {
                 "operation": "funding_condition_set",
-                "opportunity_id": qualified_opportunity["id"],
-                "expected_version": qualified_opportunity["version"],
+                "opportunity_id": funding_qualified["id"],
+                "expected_version": funding_qualified["version"],
                 "funding_condition_calculation_id": blocked_plan[
                     "funding_condition"
                 ]["calculation_id"],
@@ -1241,7 +1293,7 @@ def probe_investment_mcp(
             {
                 "operation": "transition",
                 "opportunity_id": promoted_opportunity["id"],
-                "expected_version": funding_condition_opportunity["version"],
+                "expected_version": qualified_opportunity["version"],
                 "to_stage": "actionable",
                 "to_status": "active",
                 "evidence_refs": [
@@ -2570,6 +2622,7 @@ def probe_investment_mcp(
         "decision_action": {
             "qualified_opportunity": qualified_opportunity,
             "funding_condition_opportunity": {
+                "source": funding_qualified,
                 "linked": funding_condition_opportunity,
                 "replay": _call_result(funding_condition_replay_call),
                 "context": _call_result(funding_condition_context_call),
@@ -3758,6 +3811,7 @@ def evaluate_investment_conformance(observation: dict[str, Any]) -> dict[str, An
     )
 
     opportunity_funding = decision_action.get("funding_condition_opportunity", {})
+    funding_source = opportunity_funding.get("source") or {}
     linked_funding = opportunity_funding.get("linked") or {}
     replayed_funding = opportunity_funding.get("replay") or {}
     restored_funding = next(
@@ -3779,7 +3833,7 @@ def evaluate_investment_conformance(observation: dict[str, Any]) -> dict[str, An
         linked_funding.get("stage") == "qualified"
         and linked_funding.get("status") == "active"
         and linked_funding.get("version")
-        == (decision_action.get("qualified_opportunity") or {}).get("version", 0) + 1
+        == funding_source.get("version", 0) + 1
         and linked_funding.get("decision_revision_id") is None
         and (linked_funding.get("funding_condition") or {}).get("calculation_id")
         == funding_condition.get("calculation_id")

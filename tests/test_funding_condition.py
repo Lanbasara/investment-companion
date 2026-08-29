@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import timedelta
+from threading import Barrier
 
 import pytest
 
@@ -556,6 +559,30 @@ def test_qualified_opportunity_sets_and_replays_funding_condition_without_side_e
         "funding_condition_transitions"
     ]
     assert side_effect_counts(companion) == before
+    actionable_evidence = sorted(
+        {
+            ref
+            for transition in linked["transitions"]
+            for ref in transition["evidence_refs"]
+        }
+    )
+    with pytest.raises(CompanionError, match="Funding Condition is current"):
+        companion.investment_commands.opportunity_update(
+            operation="transition",
+            opportunity_id=linked["id"],
+            expected_version=linked["version"],
+            to_stage="actionable",
+            to_status="active",
+            evidence_refs=actionable_evidence,
+            qualification={
+                "validation_calculation_id": linked["qualification"][
+                    "validation_calculation_id"
+                ],
+                "major_unknowns": [],
+                "decision_basis": "Funding has not actually been confirmed.",
+            },
+            reason="A current Funding Condition must block promotion",
+        )
 
     restored = companion.investment.research_context(
         subject_id=asset["id"]
@@ -754,6 +781,98 @@ def test_funding_condition_set_rejects_invalid_state_lineage_version_and_idempot
     assert linked["version"] == opportunity["version"] + 1
 
 
+def test_concurrent_same_funding_condition_update_replays_one_transition(
+    tmp_path, monkeypatch
+):
+    companion, _checked_time, _account, _asset, trade, opportunity = (
+        setup_qualified_funding_opportunity(tmp_path)
+    )
+    condition = companion.investment_commands.action_plan(**trade)[
+        "funding_condition"
+    ]
+    rendezvous = Barrier(2)
+    transaction = companion.db.transaction
+
+    @contextmanager
+    def concurrent_transaction():
+        rendezvous.wait(timeout=10)
+        with transaction() as con:
+            yield con
+
+    monkeypatch.setattr(companion.db, "transaction", concurrent_transaction)
+
+    def update():
+        return companion.investment_commands.opportunity_update(
+            operation="funding_condition_set",
+            opportunity_id=opportunity["id"],
+            expected_version=opportunity["version"],
+            funding_condition_calculation_id=condition["calculation_id"],
+            reason="Concurrent idempotent Funding Condition",
+            idempotency_key="pytest:funding-condition:concurrent-same",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(update) for _ in range(2)]
+        results = [future.result() for future in futures]
+
+    assert {result["version"] for result in results} == {
+        opportunity["version"] + 1
+    }
+    assert all(result["stage"] == "qualified" for result in results)
+    assert all(
+        len(result["funding_condition_transitions"]) == 1 for result in results
+    )
+
+
+def test_concurrent_distinct_funding_condition_updates_have_one_lost_writer(
+    tmp_path, monkeypatch
+):
+    companion, _checked_time, _account, _asset, trade, opportunity = (
+        setup_qualified_funding_opportunity(tmp_path)
+    )
+    conditions = [
+        companion.investment_commands.action_plan(**{**trade, "quantity": quantity})[
+            "funding_condition"
+        ]
+        for quantity in (200, 300)
+    ]
+    rendezvous = Barrier(2)
+    transaction = companion.db.transaction
+
+    @contextmanager
+    def concurrent_transaction():
+        rendezvous.wait(timeout=10)
+        with transaction() as con:
+            yield con
+
+    monkeypatch.setattr(companion.db, "transaction", concurrent_transaction)
+
+    def update(index: int):
+        return companion.investment_commands.opportunity_update(
+            operation="funding_condition_set",
+            opportunity_id=opportunity["id"],
+            expected_version=opportunity["version"],
+            funding_condition_calculation_id=conditions[index]["calculation_id"],
+            reason=f"Concurrent distinct Funding Condition {index}",
+            idempotency_key=f"pytest:funding-condition:concurrent-distinct:{index}",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = [executor.submit(update, index) for index in range(2)]
+        results = []
+        errors = []
+        for future in futures:
+            try:
+                results.append(future.result())
+            except CompanionError as exc:
+                errors.append(str(exc))
+
+    assert len(results) == 1
+    assert errors == ["Opportunity Funding Condition update lost to another writer"]
+    assert results[0]["stage"] == "qualified"
+    assert len(results[0]["funding_condition_transitions"]) == 1
+
+
 def test_confirmed_funding_ledger_entry_requires_reruns_and_never_advances_opportunity(
     tmp_path,
 ):
@@ -791,6 +910,66 @@ def test_confirmed_funding_ledger_entry_requires_reruns_and_never_advances_oppor
     assert unchanged["funding_condition_transitions"][-1][
         "condition_status"
     ] == "facts_drifted"
+    assert companion.operating.queue_list() == []
+    assert companion.execution.list() == []
+
+    rerun = companion.investment_commands.action_plan(**trade)
+    assert rerun["risk"]["status"] == "pass"
+    assert rerun["funding_condition"] is None
+    still_qualified = companion.operating.opportunity_get(opportunity["id"])
+    assert still_qualified["stage"] == "qualified"
+    assert still_qualified["version"] == linked["version"]
+
+
+def test_confirmed_disposal_requires_reruns_and_never_advances_opportunity(
+    tmp_path,
+):
+    companion, checked_time, account, asset, trade, opportunity = (
+        setup_qualified_funding_opportunity(tmp_path)
+    )
+    holding = companion.financial.ledger_add(
+        account_id=account["id"],
+        entry_type="trade",
+        asset_id=asset["id"],
+        occurred_at=iso(checked_time - timedelta(minutes=1)),
+        quantity="100",
+        price="8",
+        amount="-800",
+        currency="CNY",
+        source="opportunity-disposal-holding-fixture",
+    )
+    companion.financial.ledger_confirm(holding["id"])
+    condition = companion.investment_commands.action_plan(**trade)[
+        "funding_condition"
+    ]
+    linked = companion.investment_commands.opportunity_update(
+        operation="funding_condition_set",
+        opportunity_id=opportunity["id"],
+        expected_version=opportunity["version"],
+        funding_condition_calculation_id=condition["calculation_id"],
+        reason="Wait for confirmed disposal proceeds",
+    )
+    disposal = companion.financial.ledger_add(
+        account_id=account["id"],
+        entry_type="trade",
+        asset_id=asset["id"],
+        occurred_at=iso(checked_time),
+        quantity="-100",
+        price="13",
+        amount="1300",
+        currency="CNY",
+        source="opportunity-disposal-confirmation-fixture",
+    )
+
+    companion.financial.ledger_confirm(disposal["id"])
+
+    unchanged = companion.operating.opportunity_get(opportunity["id"])
+    assert unchanged["stage"] == "qualified"
+    assert unchanged["status"] == "active"
+    assert unchanged["version"] == linked["version"]
+    assert unchanged["decision_revision_id"] is None
+    assert unchanged["funding_condition"] is None
+    assert unchanged["funding_condition_transitions"][-1]["state"] == "expired"
     assert companion.operating.queue_list() == []
     assert companion.execution.list() == []
 
