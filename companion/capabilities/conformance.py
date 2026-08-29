@@ -21,6 +21,7 @@ from .registry import (
     DECISION_QUALIFICATION_INVARIANT,
     DECISION_RESEARCH_SEPARATION_INVARIANT,
     HOME_INVARIANT,
+    OPPORTUNITY_FUNDING_CONDITION_INVARIANT,
     PORTFOLIO_LEDGER_INVARIANT,
     PORTFOLIO_TRUTH_INVARIANT,
     PROGRAM_CONFIRMATION_INVARIANT,
@@ -825,7 +826,10 @@ def probe_investment_mcp(
         invalid_reference_call = call(
             "investment_research_publish",
             {
-                "subject": {"asset_id": asset_ids[0]},
+                "subject": {
+                    "account_id": research_fixture["account_id"],
+                    "asset_id": asset_ids[0],
+                },
                 "content": "# Synthetic invalid reference thesis",
                 "evidence_manifest_ids": ["manifest_" + "0" * 64],
                 "knowledge_cutoff": research_fixture["cutoff"],
@@ -874,7 +878,10 @@ def probe_investment_mcp(
             "investment_opportunity_update",
             {
                 "operation": "create",
-                "subject": {"asset_id": asset_ids[0]},
+                "subject": {
+                    "account_id": research_fixture["account_id"],
+                    "asset_id": asset_ids[0],
+                },
                 "evidence_refs": [source_one["id"]],
                 "reason": "synthetic validated research question",
                 "program_id": research_fixture["program_id"],
@@ -1077,6 +1084,44 @@ def probe_investment_mcp(
         bounded_plan = _call_result(bounded_plan_call)
         blocked_plan = _call_result(blocked_plan_call)
         missing_market_plan = _call_result(missing_market_plan_call)
+        funding_before_decision_call = call("decision_context", {})
+        funding_before_portfolio_call = call(
+            "portfolio_context", {"account_id": research_fixture["account_id"]}
+        )
+        funding_condition_set_call = call(
+            "investment_opportunity_update",
+            {
+                "operation": "funding_condition_set",
+                "opportunity_id": qualified_opportunity["id"],
+                "expected_version": qualified_opportunity["version"],
+                "funding_condition_calculation_id": blocked_plan[
+                    "funding_condition"
+                ]["calculation_id"],
+                "reason": "synthetic qualified candidate requires confirmed funding",
+                "idempotency_key": "synthetic:qualified-funding-condition",
+            },
+        )
+        funding_condition_opportunity = _call_result(funding_condition_set_call)
+        funding_condition_replay_call = call(
+            "investment_opportunity_update",
+            {
+                "operation": "funding_condition_set",
+                "opportunity_id": qualified_opportunity["id"],
+                "expected_version": qualified_opportunity["version"],
+                "funding_condition_calculation_id": blocked_plan[
+                    "funding_condition"
+                ]["calculation_id"],
+                "reason": "synthetic qualified candidate requires confirmed funding",
+                "idempotency_key": "synthetic:qualified-funding-condition",
+            },
+        )
+        funding_condition_context_call = call(
+            "research_context", {"subject_id": asset_ids[0], "limit": 10}
+        )
+        funding_after_decision_call = call("decision_context", {})
+        funding_after_portfolio_call = call(
+            "portfolio_context", {"account_id": research_fixture["account_id"]}
+        )
         decision_base = {
             "content": "# Synthetic Decision\n\nA time-bounded manual action with alternatives.",
             "decision_kind": "action",
@@ -1196,7 +1241,7 @@ def probe_investment_mcp(
             {
                 "operation": "transition",
                 "opportunity_id": promoted_opportunity["id"],
-                "expected_version": qualified_opportunity["version"],
+                "expected_version": funding_condition_opportunity["version"],
                 "to_stage": "actionable",
                 "to_status": "active",
                 "evidence_refs": [
@@ -2524,6 +2569,19 @@ def probe_investment_mcp(
         },
         "decision_action": {
             "qualified_opportunity": qualified_opportunity,
+            "funding_condition_opportunity": {
+                "linked": funding_condition_opportunity,
+                "replay": _call_result(funding_condition_replay_call),
+                "context": _call_result(funding_condition_context_call),
+                "before": {
+                    "decision": _call_result(funding_before_decision_call),
+                    "portfolio": _call_result(funding_before_portfolio_call),
+                },
+                "after": {
+                    "decision": _call_result(funding_after_decision_call),
+                    "portfolio": _call_result(funding_after_portfolio_call),
+                },
+            },
             "plans": {
                 "standard": standard_plan,
                 "bounded": bounded_plan,
@@ -2925,7 +2983,14 @@ def evaluate_investment_conformance(observation: dict[str, Any]) -> dict[str, An
     check(
         "mcp.tools-list.opportunity-update-variants",
         set(opportunity_operations)
-        == {"create", "transition", "work_claim", "triage_complete", "research_complete"}
+        == {
+            "create",
+            "transition",
+            "funding_condition_set",
+            "work_claim",
+            "triage_complete",
+            "research_complete",
+        }
         and opportunity_operations.count("research_complete") == 3
         and {
             "item_id", "outcome", "reason", "result_refs", "opportunity_id"
@@ -3689,6 +3754,59 @@ def evaluate_investment_conformance(observation: dict[str, Any]) -> dict[str, An
             "capability": "investment_action_plan",
             "invariant": FUNDING_CONDITION_INVARIANT,
             "counterexample": "future funding changed current cash or Funding Condition omitted its auditable alternatives",
+        },
+    )
+
+    opportunity_funding = decision_action.get("funding_condition_opportunity", {})
+    linked_funding = opportunity_funding.get("linked") or {}
+    replayed_funding = opportunity_funding.get("replay") or {}
+    restored_funding = next(
+        (
+            item
+            for item in (
+                opportunity_funding.get("context", {}).get("opportunities", [])
+            )
+            if item.get("id") == linked_funding.get("id")
+        ),
+        {},
+    )
+    funding_before = opportunity_funding.get("before", {})
+    funding_after = opportunity_funding.get("after", {})
+    funding_before_portfolio = funding_before.get("portfolio") or {}
+    funding_after_portfolio = funding_after.get("portfolio") or {}
+    check(
+        OPPORTUNITY_FUNDING_CONDITION_INVARIANT,
+        linked_funding.get("stage") == "qualified"
+        and linked_funding.get("status") == "active"
+        and linked_funding.get("version")
+        == (decision_action.get("qualified_opportunity") or {}).get("version", 0) + 1
+        and linked_funding.get("decision_revision_id") is None
+        and (linked_funding.get("funding_condition") or {}).get("calculation_id")
+        == funding_condition.get("calculation_id")
+        and [
+            item.get("state")
+            for item in linked_funding.get("funding_condition_transitions", [])
+        ]
+        == ["current"]
+        and replayed_funding.get("version") == linked_funding.get("version")
+        and replayed_funding.get("funding_condition_transitions")
+        == linked_funding.get("funding_condition_transitions")
+        and (restored_funding.get("funding_condition") or {}).get("calculation_id")
+        == funding_condition.get("calculation_id")
+        and no_decision_or_action(funding_before.get("decision") or {})
+        and no_decision_or_action(funding_after.get("decision") or {})
+        and all(
+            (funding_before_portfolio.get("portfolio") or {}).get(field)
+            == (funding_after_portfolio.get("portfolio") or {}).get(field)
+            for field in ("cash", "positions", "total_by_currency")
+        )
+        and funding_before_portfolio.get("pending_transactions")
+        == funding_after_portfolio.get("pending_transactions"),
+        {
+            "code": "invariant_violation",
+            "capability": "investment_opportunity_update",
+            "invariant": OPPORTUNITY_FUNDING_CONDITION_INVARIANT,
+            "counterexample": "Funding Condition association promoted the Opportunity, duplicated an idempotent transition, or created Decision/Action/Execution/Ledger side effects",
         },
     )
 

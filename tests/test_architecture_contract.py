@@ -256,6 +256,18 @@ def test_portfolio_decision_and_queue_are_not_hosted_by_operating_projection():
         assert f"def {method}(" in decisions
 
 
+def test_opportunity_funding_condition_policy_has_one_deep_module():
+    decisions = (PACKAGE / "application" / "portfolio_decisions.py").read_text(
+        encoding="utf-8"
+    )
+    funding = (PACKAGE / "application" / "opportunity_funding.py").read_text(
+        encoding="utf-8"
+    )
+    assert "def opportunity_set_funding_condition(" not in decisions
+    assert "def opportunity_set_funding_condition(" in funding
+    assert "opportunity_funding_condition_transitions" in funding
+
+
 def test_research_catalog_is_version_neutral_and_does_not_promote_pipeline_labels():
     source = (PACKAGE / "application" / "research_catalog.py").read_text(encoding="utf-8")
     assert "v5_" not in source.lower()
@@ -332,6 +344,7 @@ def test_extracted_services_have_bounded_responsibilities():
     maximum_lines = {
         "application/programs.py": 500,
         "application/portfolio_decisions.py": 900,
+        "application/opportunity_funding.py": 350,
         "application/research_catalog.py": 250,
         "platform/workflow.py": 425,
         "platform/outbox.py": 200,

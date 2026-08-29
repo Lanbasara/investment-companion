@@ -22,6 +22,9 @@ RESEARCH_BOUNDARY_INVARIANT = (
 RESEARCH_WORK_INVARIANT = (
     "investment_opportunity_update.explicit_candidate_disposition/v1"
 )
+OPPORTUNITY_FUNDING_CONDITION_INVARIANT = (
+    "investment_opportunity_update.funding_condition_retains_qualified_only/v1"
+)
 DECISION_RESEARCH_SEPARATION_INVARIANT = (
     "decision.research_validation_is_not_decision/v1"
 )
@@ -95,7 +98,8 @@ RESEARCH_CONTEXT_DESCRIPTION = (
     "读取某标的或 work_item_id 对应的 ResearchRecord、Validation、研究义务、资格状态与下次检查。"
 )
 OPPORTUNITY_UPDATE_DESCRIPTION = (
-    "领取并完成研究义务，逐项分流候选，或创建和推进 Opportunity；研究结果不会自动成为 Decision 或交易。"
+    "领取并完成研究义务，逐项分流候选，创建和推进 Opportunity，或为 active qualified Opportunity 版本化关联 Funding Condition；"
+    "Funding Condition 不会推进 stage、形成 Decision 或交易。"
 )
 EVIDENCE_UPDATE_DESCRIPTION = (
     "冻结带来源、时点和类型的 Evidence，或登记决策时点市场快照；不会自动形成建议或交易。"
@@ -920,6 +924,44 @@ TRANSACTION_UPDATE_OUTPUT_SCHEMA = {
 NULLABLE_STRING = {"type": ["string", "null"]}
 NULLABLE_OBJECT = {"type": ["object", "null"], "additionalProperties": True}
 
+OPPORTUNITY_FUNDING_CONDITION_TRANSITION_SCHEMA = object_schema(
+    {
+        "transition_id": S,
+        "calculation_id": S,
+        "replaces_calculation_id": NULLABLE_STRING,
+        "state": {
+            "type": "string",
+            "enum": ["current", "superseded", "expired"],
+        },
+        "condition_status": S,
+        "supports_current_planning": B,
+        "opportunity_version": I,
+        "linked_at": S,
+        "reason": S,
+        "actor": S,
+        "required_reruns": A,
+        "calculation": O,
+    },
+    [
+        "transition_id",
+        "calculation_id",
+        "replaces_calculation_id",
+        "state",
+        "condition_status",
+        "supports_current_planning",
+        "opportunity_version",
+        "linked_at",
+        "reason",
+        "actor",
+        "required_reruns",
+        "calculation",
+    ],
+    additional_properties=False,
+)
+NULLABLE_OPPORTUNITY_FUNDING_CONDITION_SCHEMA = {
+    "anyOf": [OPPORTUNITY_FUNDING_CONDITION_TRANSITION_SCHEMA, {"type": "null"}]
+}
+
 OPPORTUNITY_SUMMARY_SCHEMA = object_schema(
     {
         "id": S,
@@ -935,11 +977,17 @@ OPPORTUNITY_SUMMARY_SCHEMA = object_schema(
         "created_at": S,
         "updated_at": S,
         "closed_at": NULLABLE_STRING,
+        "funding_condition": NULLABLE_OPPORTUNITY_FUNDING_CONDITION_SCHEMA,
+        "funding_condition_transitions": {
+            "type": "array",
+            "items": OPPORTUNITY_FUNDING_CONDITION_TRANSITION_SCHEMA,
+        },
     },
     [
         "id", "program_id", "subject", "stage", "status", "thesis_id",
         "strategy_version_id", "decision_revision_id", "qualification", "version",
-        "created_at", "updated_at", "closed_at",
+        "created_at", "updated_at", "closed_at", "funding_condition",
+        "funding_condition_transitions",
     ],
     additional_properties=True,
 )
@@ -1246,6 +1294,25 @@ OPPORTUNITY_OPERATIONS = {
                 "decision_revision_id": S, "idempotency_key": S,
             },
             ["opportunity_id", "expected_version", "to_stage", "to_status", "evidence_refs", "reason"],
+        ),
+        "output_schema": OPPORTUNITY_SCHEMA,
+    },
+    "funding_condition_set": {
+        "input_schema": operation_schema(
+            "funding_condition_set",
+            {
+                "opportunity_id": S,
+                "expected_version": I,
+                "funding_condition_calculation_id": S,
+                "reason": S,
+                "idempotency_key": S,
+            },
+            [
+                "opportunity_id",
+                "expected_version",
+                "funding_condition_calculation_id",
+                "reason",
+            ],
         ),
         "output_schema": OPPORTUNITY_SCHEMA,
     },
@@ -4513,7 +4580,11 @@ CAPABILITY_CONTRACTS: dict[str, CapabilityContract] = {
         OPPORTUNITY_UPDATE_INPUT_SCHEMA,
         OPPORTUNITY_UPDATE_OUTPUT_SCHEMA,
         ("capability.input.invalid", "capability.output.invalid"),
-        (RESEARCH_BOUNDARY_INVARIANT, RESEARCH_WORK_INVARIANT),
+        (
+            RESEARCH_BOUNDARY_INVARIANT,
+            RESEARCH_WORK_INVARIANT,
+            OPPORTUNITY_FUNDING_CONDITION_INVARIANT,
+        ),
         OPPORTUNITY_OPERATIONS,
         actor_aware=True,
     ),

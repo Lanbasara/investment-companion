@@ -6,13 +6,18 @@ from ..db import row_dict, rows_dict
 from ..foundation import CompanionError, canonical, digest, new_id
 from ..timeutil import iso, parse, utc_now
 from .actionability_lifecycle import ActionabilityLifecycleMixin
+from .opportunity_funding import OpportunityFundingConditionMixin
 from .programs import InvestmentProgramService
 
 
 STAGE_ORDER = {"observed": 0, "researching": 1, "qualified": 2, "actionable": 3}
 
 
-class PortfolioDecisionService(ActionabilityLifecycleMixin, InvestmentProgramService):
+class PortfolioDecisionService(
+    OpportunityFundingConditionMixin,
+    ActionabilityLifecycleMixin,
+    InvestmentProgramService,
+):
     """Opportunity qualification and human DecisionQueue lifecycle."""
 
     def _exists(self, table: str, identifier: str) -> None:
@@ -245,6 +250,7 @@ class PortfolioDecisionService(ActionabilityLifecycleMixin, InvestmentProgramSer
         if not item:
             raise CompanionError(f"Opportunity not found: {opportunity_id}")
         item["transitions"] = transitions
+        item = self._add_funding_condition_projection(item)
         validation = self.c.actionability.qualification_status(item)
         item["research_validation"] = validation
         item["evidence_band"] = (
@@ -286,7 +292,12 @@ class PortfolioDecisionService(ActionabilityLifecycleMixin, InvestmentProgramSer
         query += " ORDER BY updated_at DESC LIMIT ?"
         params.append(limit)
         with self.db.connect() as con:
-            return rows_dict(con.execute(query, params).fetchall())
+            opportunities = rows_dict(con.execute(query, params).fetchall())
+        effective_at = iso()
+        return [
+            self._add_funding_condition_projection(item, as_of=effective_at)
+            for item in opportunities
+        ]
 
     def opportunity_transition(
         self,

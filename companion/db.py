@@ -8,8 +8,9 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 from .migrations.execution_strategy import MIGRATION_008_CHECKSUM, MIGRATION_008_ID, MIGRATION_008_SQL; from .migrations.research_work import MIGRATION_009_CHECKSUM, MIGRATION_009_ID, MIGRATION_009_SQL; from .migrations.account_continuity import MIGRATION_010_CHECKSUM, MIGRATION_010_ID, MIGRATION_010_SQL
+from .migrations.opportunity_funding_condition import MIGRATION_011_CHECKSUM, MIGRATION_011_ID, MIGRATION_011_SQL
 from .timeutil import iso
-SCHEMA_VERSION=10
+SCHEMA_VERSION=11
 SCHEMA = r"""
 CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
@@ -949,7 +950,8 @@ MIGRATIONS = (
     (4, MIGRATION_004_ID, MIGRATION_004_SQL, MIGRATION_004_CHECKSUM), (5, MIGRATION_005_ID, MIGRATION_005_SQL, MIGRATION_005_CHECKSUM),
     (6, MIGRATION_006_ID, MIGRATION_006_SQL, MIGRATION_006_CHECKSUM), (7, MIGRATION_007_ID, MIGRATION_007_SQL, MIGRATION_007_CHECKSUM),
     (8, MIGRATION_008_ID, MIGRATION_008_SQL, MIGRATION_008_CHECKSUM), (9, MIGRATION_009_ID, MIGRATION_009_SQL, MIGRATION_009_CHECKSUM),
-    (10, MIGRATION_010_ID, MIGRATION_010_SQL, MIGRATION_010_CHECKSUM),)
+    (10, MIGRATION_010_ID, MIGRATION_010_SQL, MIGRATION_010_CHECKSUM),
+    (11, MIGRATION_011_ID, MIGRATION_011_SQL, MIGRATION_011_CHECKSUM),)
 class Database:
     def __init__(self, path: str | Path):
         self.path = Path(path).expanduser().resolve()
@@ -1011,7 +1013,7 @@ class Database:
                     (BASELINE_MIGRATION_ID, 3, BASELINE_CHECKSUM, iso()),
                 )
 
-            if current not in {3, 4, 5, 6, 7, 8, 9, 10}:
+            if current not in {3, 4, 5, 6, 7, 8, 9, 10, 11}:
                 raise RuntimeError(f"unsupported source schema version: {current}")
 
             for version, migration_id, _sql, checksum in MIGRATIONS:

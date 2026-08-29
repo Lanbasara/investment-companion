@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from datetime import timedelta
 
-from companion.core import Companion
+import pytest
+
+from companion.core import Companion, CompanionError
+from companion.governance import GATE_CHECKLISTS
 from companion.timeutil import iso, utc_now
 
 
@@ -91,6 +94,161 @@ def paths_by_type(condition: dict) -> dict[str, dict]:
 
 def ledger_ids(companion: Companion) -> list[str]:
     return [item["id"] for item in companion.financial.ledger_list(limit=500)]
+
+
+def setup_qualified_funding_opportunity(tmp_path):
+    companion, checked_time, account, asset, trade = setup_cash_blocked_candidate(
+        tmp_path
+    )
+    artifact = companion.data.manifest_publish(
+        kind="fixture_evidence",
+        schema_version="fixture/v1",
+        manifest={"gate": "G0", "suite": "opportunity-funding-condition"},
+    )
+    evidence = companion.gates.evidence_publish(
+        "G0",
+        checks={key: True for key in GATE_CHECKLISTS["G0"]},
+        artifacts=[artifact["id"]],
+        unknowns=[],
+        counterevidence=[],
+        counterevidence_disposition={},
+        code_version="test-fixture",
+        scope="test_fixture",
+    )
+    companion.gates.assessment_record(
+        gate="G0",
+        status="go",
+        evidence_manifest_id=evidence["id"],
+        code_version="test-fixture",
+        assessed_by="pytest",
+        scope="test_fixture",
+    )
+    companion.jobs.feature_set(
+        "v5_operating_system", True, reason="Opportunity Funding Condition fixture"
+    )
+    investor = companion.cognition.context_create(
+        "investor",
+        {"goals": ["test an auditable funding condition"]},
+        reason="Opportunity Funding Condition fixture",
+    )
+    investor = companion.cognition.context_confirm(investor["id"])
+    attention = companion.cognition.context_create(
+        "attention",
+        {"timezone": "UTC", "daily_notification_budget": 5},
+        reason="Opportunity Funding Condition fixture",
+    )
+    attention = companion.cognition.context_confirm(attention["id"])
+    mandate = companion.cognition.context_current("mandate")
+    program = companion.operating.program_create(
+        name="Funding Condition test program",
+        content={
+            "objective": "Test a qualified funding-dependent candidate",
+            "success_criteria": ["Funding history remains auditable"],
+            "benchmark": {"name": "cash"},
+            "risk_budget": {"single_position_weight": "1"},
+            "universe": {"asset_ids": [asset["id"]]},
+            "horizons": {"research": "one week"},
+            "operating_cadence": {"daily": "exceptions"},
+            "stop_conditions": ["Funding Condition expires"],
+            "account_ids": [account["id"]],
+        },
+        context_refs={
+            "investor_revision_id": investor["id"],
+            "mandate_revision_id": mandate["id"],
+            "attention_revision_id": attention["id"],
+        },
+        reason="Opportunity Funding Condition fixture",
+    )
+    companion.operating.program_confirm(
+        program["revisions"][0]["id"],
+        user_approval_ref="pytest:funding-condition-program",
+    )
+    manifests = [
+        companion.data.manifest_publish(
+            kind="investment_evidence",
+            schema_version="research-evidence/v1",
+            manifest={
+                "asset_id": asset["id"],
+                "source": source,
+                "source_group": group,
+                "first_known_at": trade["as_of"],
+                "observed_at": trade["as_of"],
+            },
+        )
+        for source, group in (
+            ("issuer filing", "issuer"),
+            ("exchange notice", "exchange"),
+        )
+    ]
+    research = companion.investment_commands.research_publish(
+        subject={"asset_id": asset["id"]},
+        content="# Funding candidate\n\nA bounded, falsifiable fixture Thesis.",
+        evidence_manifest_ids=[item["id"] for item in manifests],
+        knowledge_cutoff=trade["as_of"],
+        validation_spec={
+            "falsifiers": ["the candidate no longer merits research"],
+            "counterevidence": {
+                "searched": ["issuer", "exchange"],
+                "findings": [],
+            },
+            "applicability": {
+                "horizon": "one week",
+                "conditions": ["normal liquidity"],
+                "excluded_conditions": ["suspension"],
+            },
+            "cost_assumptions": {
+                "commission": "RealitySpec",
+                "tax": "RealitySpec",
+                "slippage": "price range",
+            },
+            "max_evidence_age_days": 30,
+        },
+    )
+    validation_id = research["validation"]["calculation_id"]
+    opportunity = companion.investment_commands.opportunity_update(
+        operation="create",
+        subject={"account_id": account["id"], "asset_id": asset["id"]},
+        evidence_refs=[manifests[0]["id"]],
+        reason="Funding-dependent candidate",
+        thesis_id=research["thesis"]["id"],
+    )
+    opportunity = companion.investment_commands.opportunity_update(
+        operation="transition",
+        opportunity_id=opportunity["id"],
+        expected_version=opportunity["version"],
+        to_stage="researching",
+        to_status="active",
+        evidence_refs=[item["id"] for item in manifests],
+        reason="Research the funding-dependent candidate",
+    )
+    opportunity = companion.investment_commands.opportunity_update(
+        operation="transition",
+        opportunity_id=opportunity["id"],
+        expected_version=opportunity["version"],
+        to_stage="qualified",
+        to_status="active",
+        evidence_refs=[*[item["id"] for item in manifests], validation_id],
+        qualification={
+            "validation_calculation_id": validation_id,
+            "major_unknowns": ["Current confirmed cash is insufficient"],
+            "decision_basis": "Research is qualified; funding is not current cash.",
+        },
+        reason="Research Validation qualifies continued evaluation",
+    )
+    return companion, checked_time, account, asset, trade, opportunity
+
+
+def side_effect_counts(companion: Companion) -> dict[str, int]:
+    with companion.db.connect() as con:
+        return {
+            table: con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            for table in (
+                "cognitive_objects",
+                "decision_queue_items",
+                "executions",
+                "ledger_entries",
+            )
+        }
 
 
 def test_action_plan_records_funding_range_costs_buffer_and_paths_without_ledger_writes(
@@ -349,3 +507,296 @@ def test_funding_condition_expires_and_portfolio_or_market_drift_preserves_histo
     assert companion.financial.calculation_get(condition["calculation_id"])[
         "outputs"
     ] == frozen
+
+
+def test_qualified_opportunity_sets_and_replays_funding_condition_without_side_effects(
+    tmp_path,
+):
+    companion, _checked_time, _account, asset, trade, opportunity = (
+        setup_qualified_funding_opportunity(tmp_path)
+    )
+    condition = companion.investment_commands.action_plan(**trade)[
+        "funding_condition"
+    ]
+    before = side_effect_counts(companion)
+    before_stage_transitions = len(opportunity["transitions"])
+
+    linked = companion.investment_commands.opportunity_update(
+        operation="funding_condition_set",
+        opportunity_id=opportunity["id"],
+        expected_version=opportunity["version"],
+        funding_condition_calculation_id=condition["calculation_id"],
+        reason="Retain the qualified candidate while confirmed cash is insufficient",
+        idempotency_key="pytest:funding-condition:first",
+    )
+    replay = companion.investment_commands.opportunity_update(
+        operation="funding_condition_set",
+        opportunity_id=opportunity["id"],
+        expected_version=opportunity["version"],
+        funding_condition_calculation_id=condition["calculation_id"],
+        reason="Retain the qualified candidate while confirmed cash is insufficient",
+        idempotency_key="pytest:funding-condition:first",
+    )
+
+    assert linked["stage"] == "qualified"
+    assert linked["status"] == "active"
+    assert linked["version"] == opportunity["version"] + 1
+    assert linked["decision_revision_id"] is None
+    assert len(linked["transitions"]) == before_stage_transitions
+    assert linked["funding_condition"]["state"] == "current"
+    assert linked["funding_condition"]["calculation_id"] == condition[
+        "calculation_id"
+    ]
+    assert linked["funding_condition"]["calculation"]["schema"] == (
+        "investment-companion.funding-condition/v1"
+    )
+    assert len(linked["funding_condition_transitions"]) == 1
+    assert replay["version"] == linked["version"]
+    assert replay["funding_condition_transitions"] == linked[
+        "funding_condition_transitions"
+    ]
+    assert side_effect_counts(companion) == before
+
+    restored = companion.investment.research_context(
+        subject_id=asset["id"]
+    )["opportunities"][0]
+    assert restored["funding_condition"]["calculation_id"] == condition[
+        "calculation_id"
+    ]
+    assert restored["funding_condition_transitions"][0]["state"] == "current"
+
+
+def test_funding_condition_replacement_preserves_superseded_and_expired_history(
+    tmp_path, monkeypatch
+):
+    companion, _checked_time, _account, asset, trade, opportunity = (
+        setup_qualified_funding_opportunity(tmp_path)
+    )
+    first_condition = companion.investment_commands.action_plan(**trade)[
+        "funding_condition"
+    ]
+    second_condition = companion.investment_commands.action_plan(
+        **{**trade, "quantity": "300"}
+    )["funding_condition"]
+    first = companion.investment_commands.opportunity_update(
+        operation="funding_condition_set",
+        opportunity_id=opportunity["id"],
+        expected_version=opportunity["version"],
+        funding_condition_calculation_id=first_condition["calculation_id"],
+        reason="Retain the first funding path",
+        idempotency_key="pytest:funding-condition:replace:first",
+    )
+    replaced = companion.investment_commands.opportunity_update(
+        operation="funding_condition_set",
+        opportunity_id=opportunity["id"],
+        expected_version=first["version"],
+        funding_condition_calculation_id=second_condition["calculation_id"],
+        reason="Replace it with the current candidate quantity",
+        idempotency_key="pytest:funding-condition:replace:second",
+    )
+
+    assert replaced["stage"] == "qualified"
+    assert replaced["version"] == opportunity["version"] + 2
+    assert replaced["funding_condition"]["calculation_id"] == second_condition[
+        "calculation_id"
+    ]
+    assert [
+        item["state"] for item in replaced["funding_condition_transitions"]
+    ] == ["superseded", "current"]
+    assert replaced["funding_condition_transitions"][1][
+        "replaces_calculation_id"
+    ] == first_condition["calculation_id"]
+
+    with companion.db.connect() as con:
+        frozen_rows = [
+            dict(row)
+            for row in con.execute(
+                "SELECT * FROM opportunity_funding_condition_transitions "
+                "WHERE opportunity_id=? ORDER BY to_version",
+                (opportunity["id"],),
+            ).fetchall()
+        ]
+    monkeypatch.setattr(
+        "companion.application.portfolio_decisions.iso",
+        lambda *_args, **_kwargs: trade["valid_until"],
+    )
+    expired = companion.investment.research_context(
+        subject_id=asset["id"]
+    )["opportunities"][0]
+    assert expired["funding_condition"] is None
+    assert [
+        item["state"] for item in expired["funding_condition_transitions"]
+    ] == ["superseded", "expired"]
+    assert expired["funding_condition_transitions"][-1]["condition_status"] == (
+        "expired"
+    )
+    with companion.db.connect() as con:
+        assert [
+            dict(row)
+            for row in con.execute(
+                "SELECT * FROM opportunity_funding_condition_transitions "
+                "WHERE opportunity_id=? ORDER BY to_version",
+                (opportunity["id"],),
+            ).fetchall()
+        ] == frozen_rows
+
+
+def test_funding_condition_set_rejects_invalid_state_lineage_version_and_idempotency(
+    tmp_path,
+):
+    companion, _checked_time, account, asset, trade, opportunity = (
+        setup_qualified_funding_opportunity(tmp_path)
+    )
+    first_condition = companion.investment_commands.action_plan(**trade)[
+        "funding_condition"
+    ]
+    second_condition = companion.investment_commands.action_plan(
+        **{**trade, "quantity": "300"}
+    )["funding_condition"]
+    observed = companion.investment_commands.opportunity_update(
+        operation="create",
+        subject={"account_id": account["id"], "asset_id": asset["id"]},
+        evidence_refs=[opportunity["transitions"][0]["evidence_refs"][0]],
+        reason="Observed candidate cannot retain funding yet",
+        thesis_id=opportunity["thesis_id"],
+    )
+    with pytest.raises(CompanionError, match="active qualified Opportunity"):
+        companion.investment_commands.opportunity_update(
+            operation="funding_condition_set",
+            opportunity_id=observed["id"],
+            expected_version=observed["version"],
+            funding_condition_calculation_id=first_condition["calculation_id"],
+            reason="Invalid observed association",
+        )
+
+    other_account = companion.financial.account_create("Other account", "CNY")
+    with companion.db.transaction() as con:
+        con.execute(
+            "UPDATE opportunities SET subject_json=? WHERE id=?",
+            (
+                '{"account_id":"%s","asset_id":"%s"}'
+                % (other_account["id"], asset["id"]),
+                opportunity["id"],
+            ),
+        )
+    with pytest.raises(CompanionError, match="account/asset mismatch"):
+        companion.investment_commands.opportunity_update(
+            operation="funding_condition_set",
+            opportunity_id=opportunity["id"],
+            expected_version=opportunity["version"],
+            funding_condition_calculation_id=first_condition["calculation_id"],
+            reason="Cross-account association",
+        )
+    other_asset = companion.financial.asset_upsert(
+        "stock", "Other asset", "CNY", {"fixture": "cross-asset"}
+    )
+    with companion.db.transaction() as con:
+        con.execute(
+            "UPDATE opportunities SET subject_json=? WHERE id=?",
+            (
+                '{"account_id":"%s","asset_id":"%s"}'
+                % (account["id"], other_asset["id"]),
+                opportunity["id"],
+            ),
+        )
+    with pytest.raises(CompanionError, match="account/asset mismatch"):
+        companion.investment_commands.opportunity_update(
+            operation="funding_condition_set",
+            opportunity_id=opportunity["id"],
+            expected_version=opportunity["version"],
+            funding_condition_calculation_id=first_condition["calculation_id"],
+            reason="Cross-asset association",
+        )
+    with companion.db.transaction() as con:
+        con.execute(
+            "UPDATE opportunities SET subject_json=? WHERE id=?",
+            (
+                '{"account_id":"%s","asset_id":"%s"}'
+                % (account["id"], asset["id"]),
+                opportunity["id"],
+            ),
+        )
+    with pytest.raises(CompanionError, match="Funding Condition Calculation"):
+        companion.investment_commands.opportunity_update(
+            operation="funding_condition_set",
+            opportunity_id=opportunity["id"],
+            expected_version=opportunity["version"],
+            funding_condition_calculation_id=first_condition["risk_calculation_id"],
+            reason="Wrong Calculation kind",
+        )
+
+    linked = companion.investment_commands.opportunity_update(
+        operation="funding_condition_set",
+        opportunity_id=opportunity["id"],
+        expected_version=opportunity["version"],
+        funding_condition_calculation_id=first_condition["calculation_id"],
+        reason="Valid association",
+        idempotency_key="pytest:funding-condition:collision",
+    )
+    with pytest.raises(CompanionError, match="idempotency_key belongs to different inputs"):
+        companion.investment_commands.opportunity_update(
+            operation="funding_condition_set",
+            opportunity_id=opportunity["id"],
+            expected_version=opportunity["version"],
+            funding_condition_calculation_id=second_condition["calculation_id"],
+            reason="Different payload reuses the key",
+            idempotency_key="pytest:funding-condition:collision",
+        )
+    with pytest.raises(CompanionError, match="Opportunity version conflict"):
+        companion.investment_commands.opportunity_update(
+            operation="funding_condition_set",
+            opportunity_id=opportunity["id"],
+            expected_version=opportunity["version"],
+            funding_condition_calculation_id=second_condition["calculation_id"],
+            reason="Stale writer loses deterministically",
+            idempotency_key="pytest:funding-condition:stale",
+        )
+    assert linked["version"] == opportunity["version"] + 1
+
+
+def test_confirmed_funding_ledger_entry_requires_reruns_and_never_advances_opportunity(
+    tmp_path,
+):
+    companion, checked_time, account, _asset, trade, opportunity = (
+        setup_qualified_funding_opportunity(tmp_path)
+    )
+    condition = companion.investment_commands.action_plan(**trade)[
+        "funding_condition"
+    ]
+    linked = companion.investment_commands.opportunity_update(
+        operation="funding_condition_set",
+        opportunity_id=opportunity["id"],
+        expected_version=opportunity["version"],
+        funding_condition_calculation_id=condition["calculation_id"],
+        reason="Wait for a confirmed funding fact",
+    )
+    deposit = companion.financial.ledger_add(
+        account_id=account["id"],
+        entry_type="cash_deposit",
+        occurred_at=iso(checked_time),
+        amount="500",
+        currency="CNY",
+        source="opportunity-funding-confirmation-fixture",
+    )
+
+    companion.financial.ledger_confirm(deposit["id"])
+
+    unchanged = companion.operating.opportunity_get(opportunity["id"])
+    assert unchanged["stage"] == "qualified"
+    assert unchanged["status"] == "active"
+    assert unchanged["version"] == linked["version"]
+    assert unchanged["decision_revision_id"] is None
+    assert unchanged["funding_condition"] is None
+    assert unchanged["funding_condition_transitions"][-1]["state"] == "expired"
+    assert unchanged["funding_condition_transitions"][-1][
+        "condition_status"
+    ] == "facts_drifted"
+    assert companion.operating.queue_list() == []
+    assert companion.execution.list() == []
+
+    rerun = companion.investment_commands.action_plan(**trade)
+    assert rerun["risk"]["status"] == "pass"
+    assert rerun["funding_condition"] is None
+    still_qualified = companion.operating.opportunity_get(opportunity["id"])
+    assert still_qualified["stage"] == "qualified"
+    assert still_qualified["version"] == linked["version"]

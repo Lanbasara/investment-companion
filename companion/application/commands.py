@@ -112,6 +112,21 @@ class InvestmentCommandService:
                     "idempotency_key",
                 },
             ),
+            "funding_condition_set": (
+                {
+                    "opportunity_id",
+                    "expected_version",
+                    "funding_condition_calculation_id",
+                    "reason",
+                },
+                {
+                    "opportunity_id",
+                    "expected_version",
+                    "funding_condition_calculation_id",
+                    "reason",
+                    "idempotency_key",
+                },
+            ),
             "work_claim": (
                 {"item_id"}, {"item_id", "owner", "lease_seconds"},
             ),
@@ -138,6 +153,10 @@ class InvestmentCommandService:
         if operation == "create":
             return self.c.operating.opportunity_create(**payload, actor=actor)
         opportunity_id = payload.pop("opportunity_id")
+        if operation == "funding_condition_set":
+            return self.c.operating.opportunity_set_funding_condition(
+                opportunity_id, **payload, actor=actor
+            )
         return self.c.operating.opportunity_transition(
             opportunity_id, **payload, actor=actor
         )

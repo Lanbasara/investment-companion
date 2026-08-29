@@ -7,6 +7,14 @@
       "module": "investment_decision_publish",
       "rationale": "Require action Decisions to carry the immutable candidate Portfolio Qualification already returned by Action Plan and frozen by Risk, so consumers gain one stronger publication seam without a new tool or duplicated qualification policy.",
       "to_digest": "sha256:1dc463751840dbdb47db028952a18f482465538238d69f6cf4c76a55bc95eb1f"
+    },
+    {
+      "decision": "migration",
+      "from_digest": "sha256:61ae9bd2bc3c1a22644c951043df5c8dbf645c1d3e975e3178b7c949dd08cc4f",
+      "rationale": "Expand the existing Opportunity seam with one versioned Funding Condition association operation so qualified cash-blocked candidates survive sessions without adding a tool or exposing storage policy.",
+      "removal_conditions": "Issue #19 declares and consumes funding_condition_set plus its current/superseded/expired projection, and Issue #20 promotes the migrated surface to the baseline and removes this exception.",
+      "remove_by": "2026-09-30",
+      "to_digest": "sha256:64d65e88109a036bb179fbf610eed00b052b0d1e2a5e7ef128b9c4e7df306e60"
     }
   ],
   "format": "investment-companion.interface-depth-policy/v1"

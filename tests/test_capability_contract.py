@@ -141,8 +141,29 @@ def test_provider_manifest_contracts_all_investment_profile_workflows():
     opportunity = first.document["capabilities"]["investment_opportunity_update"]
     assert opportunity["handler"] == "investment_commands.opportunity_update"
     assert set(opportunity["operations"]) == {
-        "create", "transition", "work_claim", "triage_complete", "research_complete"
+        "create", "transition", "funding_condition_set", "work_claim",
+        "triage_complete", "research_complete"
     }
+    funding_variant = next(
+        variant
+        for variant in opportunity["input_schema"]["oneOf"]
+        if variant["properties"]["operation"]["const"]
+        == "funding_condition_set"
+    )
+    assert {
+        "opportunity_id",
+        "expected_version",
+        "funding_condition_calculation_id",
+        "reason",
+    } <= set(funding_variant["required"])
+    assert {
+        "funding_condition",
+        "funding_condition_transitions",
+    } <= set(
+        opportunity["operations"]["funding_condition_set"]["output_schema"][
+            "required"
+        ]
+    )
     assert len([
         variant
         for variant in opportunity["input_schema"]["oneOf"]
@@ -1174,6 +1195,7 @@ def test_real_investment_mcp_profile_captures_home_production_health_drift(tmp_p
         "investment_transaction_update.reconciliation_never_autofills/v1",
         "investment_transaction_update.continuity_is_not_broker_sync/v1",
         "investment_opportunity_update.explicit_candidate_disposition/v1",
+        "investment_opportunity_update.funding_condition_retains_qualified_only/v1",
         "research.evidence_validation_thesis_never_auto_action/v1",
         "mcp.research-work.outcomes/v1",
         "mcp.research-negative-cases.rejected/v1",
