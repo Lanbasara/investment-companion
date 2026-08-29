@@ -29,7 +29,7 @@ Tushare 凭据放在本机的 `~/.config/tushare/token`（权限必须屏蔽 gro
 从 [项目状态与交棒入口](docs/PROJECT-STATUS.md) 开始阅读。新的长期架构以[版本无关目标架构](docs/ARCHITECTURE.md)、[领域词典](docs/DOMAIN-GLOSSARY.md)、[架构升级实施计划](docs/REFACTOR-PLAN.md)和[生产灰度验收清单](docs/PRODUCTION-ROLLOUT-CHECKLIST.md)为准；V2–V7 文档继续保存历史决策、兼容契约与生产运行事实。系统不自动交易或承诺盈利。
 浏览器阅读入口为 [docs/index.html](docs/index.html)；它直接渲染上述权威 Markdown，不维护第二份易过期的文档副本。
 
-开发验收可用 `COMPANION_MCP_PROFILE=investment ./bin/companion-mcp` 启动 22 个版本无关语义接口；`admin` 只提供历史管理工具，`all` 保持迁移期兼容。固定生产 Runtime 当前仍使用 `all`，切换按[生产灰度验收清单](docs/PRODUCTION-ROLLOUT-CHECKLIST.md)执行。
+`./bin/companion-mcp` 只启动官方 `investment` release profile 的 22 个版本无关语义接口。旧 schema、Admin/All profile 与独立 dispatcher 已退出，不再存在迁移双轨。
 
 行动型 Decision 有两道独立硬门槛：研究资格决定最大行动强度，交易方案还必须通过当前 Mandate、确认账本和市场现实驱动的 Risk Gate。`eligible_for_bounded_action` 只允许 Program 明确授权的小额条件行动，`eligible_for_decision` 才允许正式行动；`research_only`、纯 `unvalidated` 预测和研究文字都不能直接授权行动。
 
@@ -51,11 +51,12 @@ Capability Contract tracer 使用 Core 自带 CLI 验证候选 Plugin；验证�
 ```bash
 python3 -m companion.capabilities provider
 python3 -m companion.capabilities validate --requirements /path/to/plugin/.codex-plugin/capability-requirements.json
-python3 -m companion.capabilities receipt --requirements /path/to/requirements.json --state-dir /isolated/deployment-state --environment non_production --core-identity CORE_COMMIT --plugin-identity PLUGIN_COMMIT
+python3 -m companion.capabilities depth
+python3 -m companion.capabilities receipt --requirements /path/to/requirements.json --usage-source /path/to/plugin/skills/example/SKILL.md --state-dir /isolated/deployment-state --environment non_production --core-identity CORE_COMMIT --plugin-identity PLUGIN_COMMIT
 ```
 
-Receipt CLI 会把 `CORE_COMMIT`、`PLUGIN_COMMIT` 与两个干净 checkout 的真实 HEAD 核对后再签发。生产运行时通过 `COMPANION_PLUGIN_REQUIREMENTS`、`COMPANION_CAPABILITY_RECEIPT_DIR`、`COMPANION_MCP_PROFILE=investment`、`COMPANION_CORE_IDENTITY` 和 `COMPANION_PLUGIN_IDENTITY` 比较当前摘要与 Receipt；缺少任一发布身份都会降级。它不会在 Home 或会话启动时重跑 conformance suite。完整 Receipt 仅由 CLI doctor 返回，Investment MCP doctor 只返回摘要。
+Receipt CLI 会把 `CORE_COMMIT`、`PLUGIN_COMMIT` 与两个干净 checkout 的真实 HEAD 核对后再签发，并绑定 contract format、provider/requirements digest、Skill prose 审计、Interface Depth、真实 MCP conformance 与 release pair。生产运行时通过 `COMPANION_PLUGIN_REQUIREMENTS`、`COMPANION_CAPABILITY_RECEIPT_DIR`、`COMPANION_CAPABILITY_RECEIPT_IDENTITY`、`COMPANION_MCP_PROFILE=investment`、`COMPANION_CORE_IDENTITY` 和 `COMPANION_PLUGIN_IDENTITY` 比较当前摘要与 Receipt；缺少任一发布身份都会降级。它不会在 Home 或会话启动时重跑 conformance suite。完整 Receipt 仅由 CLI doctor 返回，Investment MCP doctor 只返回摘要。
 
-新 Codex 会话由项目级 `SessionStart` Hook 注入一个有界 `session-brief`。它只包含数据库健康、Context 初始化状态和活跃对象计数；具体投资材料仍由 Lifecycle Skill 按问题创建 Recovery Package 后加载。
+新 Codex 会话由项目级 `SessionStart` Hook 注入一个有界 `session-brief`。它只包含数据库健康、Context 初始化状态和活跃对象计数；具体投资材料由 Lifecycle Skill 从 Investment Home 开始，再按问题惰性读取各 Context Workbench。旧 Recovery Package 不属于 release MCP，其最终产品去留留给后续 Context Assembly 设计。
 
 项目不连接券商、不自动交易、不维持常驻 Subagent。

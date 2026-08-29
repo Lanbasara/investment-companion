@@ -9,7 +9,7 @@
 
 ## 每次会话的定向
 
-开始维护或开发本项目时先读取 `docs/PROJECT-STATUS.md`。开始投资任务时先使用 `$manage-investment-lifecycle`：读取当前 Context Revision，并按问题调用 `recovery_package_create`；只加载返回的相关 Thesis、Decision、Review 和文件句柄，禁止扫描整个工作目录。
+开始维护或开发本项目时先读取 `docs/PROJECT-STATUS.md`。开始投资任务时先使用 `$manage-investment-lifecycle`：先读取 `investment_home` 与 `production_health`，再按问题惰性调用 Portfolio、Research、Decision 或 Evaluation Context；禁止扫描整个工作目录。
 
 聊天历史和 `memory/*.md`、`portfolio/current.md` 都不是精确长期真相。Investor/Mandate/Attention Policy 使用 Context Revision；组合使用 confirmed Ledger Entry 派生；Markdown 保存可读认知材料。
 

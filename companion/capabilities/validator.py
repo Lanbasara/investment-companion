@@ -297,6 +297,86 @@ def _add_scope_result(
         result["status"] = "degraded"
 
 
+def _scope_contract_digests(
+    provider: dict[str, Any], requirements: dict[str, Any]
+) -> dict[str, Any]:
+    """Fingerprint the exact contract evidence consumed by each runtime scope."""
+    provided = provider.get("capabilities", {})
+    required = requirements.get("capabilities", {})
+    if not isinstance(provided, dict):
+        provided = {}
+    if not isinstance(required, dict):
+        required = {}
+    baseline: dict[str, Any] = {
+        "provider_format": provider.get("format"),
+        "requirements_format": requirements.get("format"),
+        "consumer": requirements.get("consumer"),
+        "capabilities": {},
+    }
+    workflows: dict[str, dict[str, Any]] = {}
+    optional: dict[str, Any] = {}
+    capabilities: dict[str, Any] = {}
+    for name, requirement in sorted(required.items()):
+        item = {
+            "provider": provided.get(name),
+            "requirement": requirement,
+        }
+        level = requirement.get("level") if isinstance(requirement, dict) else None
+        requirement_workflows = (
+            requirement.get("workflows", []) if isinstance(requirement, dict) else []
+        )
+        capabilities[name] = {
+            "digest": content_digest(item),
+            "level": level,
+            "workflows": requirement_workflows,
+            "fallback": requirement.get("fallback")
+            if isinstance(requirement, dict)
+            else None,
+        }
+        if level == "baseline_required":
+            baseline["capabilities"][name] = item
+        elif level == "workflow_required":
+            for workflow in requirement_workflows:
+                workflows.setdefault(workflow, {})[name] = item
+        elif level == "optional_enhancement":
+            optional[name] = item
+    return {
+        "baseline": content_digest(baseline),
+        "workflows": {
+            name: content_digest(value) for name, value in sorted(workflows.items())
+        },
+        "optional_enhancements": {
+            name: content_digest(value) for name, value in sorted(optional.items())
+        },
+        "capabilities": capabilities,
+    }
+
+
+def _selector_values(schema: dict[str, Any], selector: str) -> set[str]:
+    values: set[str] = set()
+    properties = schema.get("properties", {})
+    selected = properties.get(selector) if isinstance(properties, dict) else None
+    if isinstance(selected, dict):
+        if isinstance(selected.get("const"), str):
+            values.add(selected["const"])
+        values.update(
+            item for item in selected.get("enum", []) if isinstance(item, str)
+        )
+    for choice in schema.get("oneOf", []):
+        if isinstance(choice, dict):
+            values.update(_selector_values(choice, selector))
+    return values
+
+
+def _source_workflow(path: Path) -> str | None:
+    parts = path.parts
+    try:
+        index = parts.index("skills")
+    except ValueError:
+        return None
+    return parts[index + 1] if len(parts) > index + 1 else None
+
+
 def validate_compatibility(
     provider: dict[str, Any],
     requirements: dict[str, Any],
@@ -436,6 +516,9 @@ def validate_compatibility(
                 _add_scope_result(scopes["workflows"], workflow, capability_failures)
         elif level == "optional_enhancement":
             _add_scope_result(scopes["optional_enhancements"], name, capability_failures)
+            scopes["optional_enhancements"][name]["fallback"] = requirement.get(
+                "fallback"
+            )
         if requirement_failures and level != "baseline_required":
             scopes["baseline"]["failures"].extend(requirement_failures)
             scopes["baseline"]["status"] = "degraded"
@@ -449,6 +532,7 @@ def validate_compatibility(
             if isinstance(capability, dict) and capability.get("status") == "contracted"
         }
         uses: dict[str, list[str]] = {}
+        selector_uses: dict[str, dict[str, set[str]]] = {}
         source_failures: list[dict[str, Any]] = []
         for source in usage_sources:
             path = Path(source).expanduser().resolve()
@@ -466,6 +550,29 @@ def validate_compatibility(
             for name in sorted(contracted):
                 if re.search(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", prose):
                     uses.setdefault(name, []).append(str(path))
+                    workflow = _source_workflow(path)
+                    requirement = required.get(name, {})
+                    if (
+                        workflow
+                        and workflow not in requirement.get("workflows", [])
+                    ):
+                        source_failures.append(
+                            {
+                                "code": "undeclared_workflow_capability_usage",
+                                "capability": name,
+                                "workflow": workflow,
+                                "scope": "baseline",
+                                "source": str(path),
+                            }
+                        )
+            workflow = _source_workflow(path)
+            if workflow:
+                for selector, value in re.findall(
+                    r"\b(operation|view)\s*=\s*[\"']([^\"']+)[\"']", prose
+                ):
+                    selector_uses.setdefault(workflow, {}).setdefault(
+                        selector, set()
+                    ).add(value)
         undeclared = [
             {
                 "code": "undeclared_capability_usage",
@@ -476,7 +583,33 @@ def validate_compatibility(
             for name, sources in sorted(uses.items())
             if name not in declared
         ]
-        usage_failures = [*source_failures, *undeclared]
+        selector_failures: list[dict[str, Any]] = []
+        for workflow, selectors in sorted(selector_uses.items()):
+            workflow_requirements = [
+                requirement
+                for requirement in required.values()
+                if isinstance(requirement, dict)
+                and workflow in requirement.get("workflows", [])
+            ]
+            for selector, values in sorted(selectors.items()):
+                declared_values = set().union(
+                    *(
+                        _selector_values(requirement.get("input_schema", {}), selector)
+                        for requirement in workflow_requirements
+                    )
+                )
+                for value in sorted(values - declared_values):
+                    selector_failures.append(
+                        {
+                            "code": "undeclared_selector_usage",
+                            "capability": "capability_usage_audit",
+                            "workflow": workflow,
+                            "selector": selector,
+                            "value": value,
+                            "scope": "baseline",
+                        }
+                    )
+        usage_failures = [*source_failures, *undeclared, *selector_failures]
         failures.extend(usage_failures)
         if usage_failures:
             scopes["baseline"]["failures"].extend(usage_failures)
@@ -486,6 +619,13 @@ def validate_compatibility(
             "sources": [str(Path(item).expanduser().resolve()) for item in usage_sources],
             "used_contracted_capabilities": {
                 name: sources for name, sources in sorted(uses.items())
+            },
+            "used_selectors": {
+                workflow: {
+                    selector: sorted(values)
+                    for selector, values in sorted(selectors.items())
+                }
+                for workflow, selectors in sorted(selector_uses.items())
             },
             "failures": usage_failures,
         }
@@ -502,6 +642,7 @@ def validate_compatibility(
         "compatible": not blocking,
         "provider_digest": content_digest(provider),
         "requirements_digest": content_digest(requirements),
+        "scope_digests": _scope_contract_digests(provider, requirements),
         "scopes": scopes,
         "failures": failures,
     }

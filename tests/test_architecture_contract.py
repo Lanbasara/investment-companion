@@ -22,18 +22,6 @@ def internal_imports(module_path: Path) -> set[str]:
     return result
 
 
-def advertised_tools() -> list[str]:
-    tree = ast.parse((PACKAGE / "mcp_server.py").read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
-            continue
-        if not any(isinstance(target, ast.Name) and target.id == "TOOLS" for target in node.targets):
-            continue
-        assert isinstance(node.value, ast.Dict)
-        return [key.value for key in node.value.keys if isinstance(key, ast.Constant)]
-    raise AssertionError("mcp_server.TOOLS was not found")
-
-
 def test_pure_kernels_do_not_depend_on_stateful_companion_modules():
     for module in ("foundation", "timeutil", "quant_runtime", "v4_data"):
         assert internal_imports(PACKAGE / f"{module}.py") == set()
@@ -295,7 +283,6 @@ def test_legacy_god_modules_have_a_no_growth_budget():
     maximum_lines = {
         "core.py": 600,
         "db.py": 1102,
-        "mcp_server.py": 368,
         "operating.py": 800,
         "v5_quant_experiment.py": 1607,
         "v6_predictive_recommendations.py": 1260,
@@ -324,11 +311,18 @@ def test_extracted_services_have_bounded_responsibilities():
     assert all(actual[name] <= limit for name, limit in maximum_lines.items())
 
 
-def test_no_new_public_version_namespace_is_introduced():
-    tools = advertised_tools()
-    versioned = [name for name in tools if re.match(r"^v\d+_", name)]
-    assert len(versioned) <= 71
-    assert {name.split("_", 1)[0] for name in versioned} <= {"v4", "v5", "v6"}
+def test_release_mcp_has_no_legacy_schema_or_dispatcher_authority():
+    from companion.interfaces.mcp_profiles import INVESTMENT_TOOLS
+
+    source = (PACKAGE / "mcp_server.py").read_text(encoding="utf-8")
+    assert "TOOLS =" not in source
+    assert "TOOLS={" not in source
+    assert "if name ==" not in source
+    assert not [name for name in INVESTMENT_TOOLS if re.match(r"^v\d+_", name)]
+    assert "recovery_package_create" not in INVESTMENT_TOOLS
+    assert "recovery_package_create" not in (ROOT / "AGENTS.md").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_golden_workflow_catalog_is_complete_and_references_real_tests():

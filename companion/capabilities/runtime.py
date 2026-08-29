@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -10,8 +11,8 @@ from .receipts import read_current_receipt
 from .registry import CapabilityRegistry, content_digest
 
 
-def _incident(code: str, **details: Any) -> dict[str, Any]:
-    return {"severity": "critical", "code": code, "scope": "baseline", **details}
+def _incident(code: str, *, scope: str = "baseline", **details: Any) -> dict[str, Any]:
+    return {"severity": "critical", "code": code, "scope": scope, **details}
 
 
 def _receipt_state_dir(root: Path) -> Path:
@@ -30,19 +31,26 @@ def _scope_projection(scopes: dict[str, Any]) -> tuple[dict[str, Any], dict[str,
         "incidents": baseline_source.get("failures", []),
     }
 
-    def project(values: dict[str, Any]) -> dict[str, Any]:
-        return {
-            name: {
-                "status": value.get("status", "unverified"),
+    def project(values: dict[str, Any], *, optional: bool = False) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for name, value in values.items():
+            status = value.get("status", "unverified")
+            fallback = value.get("fallback")
+            if optional and status == "degraded":
+                status = "fallback" if fallback else "unverified"
+            item = {
+                "status": status,
                 "incidents": value.get("failures", []),
             }
-            for name, value in values.items()
-        }
+            if optional:
+                item["fallback"] = fallback
+            result[name] = item
+        return result
 
     return (
         baseline,
         project(scopes.get("workflows", {})),
-        project(scopes.get("optional_enhancements", {})),
+        project(scopes.get("optional_enhancements", {}), optional=True),
     )
 
 
@@ -141,33 +149,70 @@ def compatibility_summary(
         )
 
     receipt = current["receipt"]
-    comparisons = (
-        (
-            "provider_digest_mismatch",
-            receipt.get("provider_digest"),
-            provider_digest,
-        ),
+    hard_incidents: list[dict[str, Any]] = []
+    contract_incidents: list[dict[str, Any]] = []
+    for code, expected, actual in (
+        ("provider_digest_mismatch", receipt.get("provider_digest"), provider_digest),
         (
             "requirements_digest_mismatch",
             receipt.get("requirements_digest"),
             requirements_digest,
         ),
-        (
-            "mcp_profile_mismatch",
-            receipt.get("mcp_profile"),
-            os.environ.get("COMPANION_MCP_PROFILE", "all"),
-        ),
-    )
-    incidents = [
-        _incident(f"compatibility.{code}", expected=expected, actual=actual)
-        for code, expected, actual in comparisons
-        if expected != actual
-    ]
+    ):
+        if expected != actual:
+            contract_incidents.append(
+                _incident(
+                    f"compatibility.{code}",
+                    scope="contract",
+                    expected=expected,
+                    actual=actual,
+                )
+            )
+    profile = os.environ.get("COMPANION_MCP_PROFILE", "investment")
+    if receipt.get("mcp_profile") != profile:
+        hard_incidents.append(
+            _incident(
+                "compatibility.mcp_profile_mismatch",
+                expected=receipt.get("mcp_profile"),
+                actual=profile,
+            )
+        )
+    if receipt.get("contract_format") != registry.provider_manifest().document.get(
+        "format"
+    ):
+        hard_incidents.append(
+            _incident(
+                "compatibility.contract_format_mismatch",
+                expected=receipt.get("contract_format"),
+                actual=registry.provider_manifest().document.get("format"),
+            )
+        )
     if gate_scope == "production" and receipt.get("environment") != "production":
-        incidents.append(
+        hard_incidents.append(
             _incident(
                 "compatibility.non_production_receipt",
                 actual=receipt.get("environment"),
+            )
+        )
+    configured_receipt_identity = os.environ.get(
+        "COMPANION_CAPABILITY_RECEIPT_IDENTITY"
+    )
+    if gate_scope == "production" and not configured_receipt_identity:
+        hard_incidents.append(
+            _incident(
+                "compatibility.receipt_identity_missing",
+                expected=current["digest"],
+            )
+        )
+    elif (
+        configured_receipt_identity is not None
+        and configured_receipt_identity != current["digest"]
+    ):
+        hard_incidents.append(
+            _incident(
+                "compatibility.receipt_identity_mismatch",
+                expected=configured_receipt_identity,
+                actual=current["digest"],
             )
         )
     for role, env_name in (
@@ -177,7 +222,7 @@ def compatibility_summary(
         actual = os.environ.get(env_name)
         expected = receipt.get("release_pair", {}).get(role)
         if gate_scope == "production" and not actual:
-            incidents.append(
+            hard_incidents.append(
                 _incident(
                     "compatibility.release_pair_identity_missing",
                     role=role,
@@ -185,7 +230,7 @@ def compatibility_summary(
                 )
             )
         elif actual is not None and actual != expected:
-            incidents.append(
+            hard_incidents.append(
                 _incident(
                     "compatibility.release_pair_mismatch",
                     role=role,
@@ -193,19 +238,95 @@ def compatibility_summary(
                     actual=actual,
                 )
             )
-    if incidents:
-        return _unverified_summary(
-            provider_digest=provider_digest,
-            requirements_digest=requirements_digest,
-            receipt_digest=current["digest"],
-            incidents=incidents,
-            status="degraded",
-            scopes=static_validation["scopes"],
+    from .depth import load_interface_depth_policy, validate_interface_depth
+
+    try:
+        interface_depth = validate_interface_depth(
+            registry, load_interface_depth_policy()
+        )
+    except CompanionError as exc:
+        interface_depth = {
+            "passed": False,
+            "surface_digest": None,
+            "policy_digest": None,
+            "failures": [{"code": "interface_depth.policy_invalid", "error": str(exc)}],
+        }
+    receipt_depth = receipt.get("interface_depth", {})
+    for code, expected, actual in (
+        (
+            "interface_surface_digest_mismatch",
+            receipt_depth.get("surface_digest"),
+            interface_depth.get("surface_digest"),
+        ),
+        (
+            "interface_policy_digest_mismatch",
+            receipt_depth.get("policy_digest"),
+            interface_depth.get("policy_digest"),
+        ),
+    ):
+        if expected != actual:
+            hard_incidents.append(
+                _incident(f"compatibility.{code}", expected=expected, actual=actual)
+            )
+    if not interface_depth.get("passed"):
+        hard_incidents.extend(
+            _incident("compatibility.interface_depth_failed", failure=failure)
+            for failure in interface_depth.get("failures", [])
         )
 
-    baseline, workflows, enhancements = _scope_projection(
-        receipt.get("validation", {}).get("scopes", {})
-    )
+    scopes = deepcopy(static_validation["scopes"])
+    receipt_scope_digests = receipt.get("validation", {}).get("scope_digests")
+    if not isinstance(receipt_scope_digests, dict):
+        hard_incidents.append(
+            _incident("compatibility.receipt_scope_digests_missing")
+        )
+        receipt_scope_digests = {}
+    current_scope_digests = static_validation["scope_digests"]
+
+    def add_scope_drift(kind: str, name: str, expected: Any, actual: Any) -> None:
+        failure = _incident(
+            "compatibility.scope_digest_mismatch",
+            scope=kind,
+            name=name,
+            expected=expected,
+            actual=actual,
+        )
+        if kind == "baseline":
+            target = scopes["baseline"]
+        elif kind == "workflow":
+            target = scopes["workflows"].setdefault(
+                name, {"status": "compatible", "failures": []}
+            )
+        else:
+            target = scopes["optional_enhancements"].setdefault(
+                name, {"status": "compatible", "failures": [], "fallback": None}
+            )
+        target["failures"].append(failure)
+        target["status"] = "degraded"
+
+    expected_baseline = receipt_scope_digests.get("baseline")
+    actual_baseline = current_scope_digests["baseline"]
+    if expected_baseline != actual_baseline:
+        add_scope_drift("baseline", "baseline", expected_baseline, actual_baseline)
+    for key, kind in (
+        ("workflows", "workflow"),
+        ("optional_enhancements", "optional_enhancement"),
+    ):
+        expected_values = receipt_scope_digests.get(key, {})
+        actual_values = current_scope_digests[key]
+        for name in sorted(set(expected_values) | set(actual_values)):
+            if expected_values.get(name) != actual_values.get(name):
+                add_scope_drift(
+                    kind,
+                    name,
+                    expected_values.get(name),
+                    actual_values.get(name),
+                )
+    if hard_incidents:
+        scopes["baseline"]["failures"].extend(hard_incidents)
+        scopes["baseline"]["status"] = "degraded"
+
+    baseline, workflows, enhancements = _scope_projection(scopes)
     blocking = baseline["status"] != "compatible" or any(
         item["status"] != "compatible" for item in workflows.values()
     )
@@ -220,7 +341,7 @@ def compatibility_summary(
         "baseline": baseline,
         "workflows": workflows,
         "optional_enhancements": enhancements,
-        "incidents": scope_incidents,
+        "incidents": [*contract_incidents, *scope_incidents],
         "provider_digest": provider_digest,
         "requirements_digest": requirements_digest,
         "receipt_digest": current["digest"],

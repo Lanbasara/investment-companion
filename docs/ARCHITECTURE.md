@@ -138,7 +138,7 @@ Codex 默认不面对全部底层对象，而通过少量粗粒度读取入口�
 
 写操作保持窄而明确，例如确认 Context、登记待确认成交、确认流水、发布 Decision、回应行动卡和批准 Change Proposal。诊断、迁移、Gate、Job、Manifest 和原始对象管理只进入 Admin/Operations 工具面。
 
-MCP 分为三个可选择 Profile：`investment` 暴露 22 个版本无关语义入口，完整覆盖事实、计划、证据、研究、机会、决策、风险、行动、执行、绩效、简报、日历、唤醒和交付；`admin` 保留历史运维/兼容工具，`all` 用于迁移期双轨兼容。最初 15 工具的数量目标在发布审计中被证明不完整，因此以有界且闭环完整的 22 个入口取代人为凑数。生产默认值只有在 Plugin Skills 和 cc-connect 验收完成后才从 `all` 切到 `investment`。
+MCP 只暴露官方 `investment` release profile 的 22 个版本无关语义入口，完整覆盖事实、计划、证据、研究、机会、决策、风险、行动、执行、绩效、简报、日历、唤醒和交付。工具发现、输入/输出验证、分派和 provider manifest 全部从 Capability Registry 派生；旧 schema、Admin/All profile 与独立 dispatcher 已删除。最初 15 工具的数量目标在发布审计中被证明不完整，因此以有界且闭环完整的 22 个入口取代人为凑数。
 
 ## 7. 统一市场日历与时间服务
 

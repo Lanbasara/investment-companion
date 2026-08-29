@@ -147,7 +147,7 @@ Performance 首批必须覆盖：期初期末估值、期间现金流、费用�
 
 退出门：默认 Codex 工具面保持有界、版本无关且覆盖完整用户闭环；用户自然语言无需出现 Program、Opportunity、Manifest、Gate 或版本号。
 
-当前完成：五个 Context Workbench、统一 China Market Calendar 和 22 工具 Investment MCP Profile 已实现。发布前审计发现原 15 工具无法建立 Program、推进 Opportunity/Action、冻结来源、生成 Brief 或管理 Schedule/Wake/Delivery，因此补为 22 个聚合语义入口，而不把功能不完整伪装成“工具少”。Research Context 只暴露版本无关 Research Catalog，Transaction、Execution、Workflow 和 Delivery 均收敛为稳定命令。用户已选择飞书自然语言为正式交互，不开发业务交互卡片。默认仍为 `all` 兼容 Profile；Plugin 安装与生产切换尚未执行。
+当前完成：五个 Context Workbench、统一 China Market Calendar 和 22 工具 Investment MCP release profile 已实现。发布前审计发现原 15 工具无法建立 Program、推进 Opportunity/Action、冻结来源、生成 Brief 或管理 Schedule/Wake/Delivery，因此补为 22 个聚合语义入口，而不把功能不完整伪装成“工具少”。Research Context 只暴露版本无关 Research Catalog，Transaction、Execution、Workflow 和 Delivery 均收敛为稳定命令。用户已选择飞书自然语言为正式交互，不开发业务交互卡片。Capability Registry 已成为工具发现、验证、分派与 provider manifest 的唯一机器权威，旧 `all`/`admin` 双轨已退出。
 
 ### Batch E：兼容迁移和生产切换
 
