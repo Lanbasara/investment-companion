@@ -2,10 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from ..db import row_dict
-from ..financial import reconciliation_is_full_match
 from ..foundation import CompanionError
-from ..timeutil import iso, parse
+from ..timeutil import iso
 
 
 class InvestmentHomeService:
@@ -21,6 +19,7 @@ class InvestmentHomeService:
         self.c = companion
 
     def home(self) -> dict[str, Any]:
+        effective_at = iso()
         today = self.c.operating.today()
         status = self.c.operating.status()
         delivery = self.c.delivery.status()
@@ -33,9 +32,17 @@ class InvestmentHomeService:
         validations = self._research_validations(limit=3)
         active_schedules = self.c.schedule_list(status="active")
         recent_runs = self.c.run_list(limit=50)
+        account_id = self._single_program_account()
+        portfolio_qualification = (
+            self.c.portfolio_qualification.evaluate_account(
+                account_id=account_id, as_of=effective_at
+            ).stable_projection(compact=True)
+            if account_id
+            else None
+        )
         return {
             "schema": self.SCHEMA,
-            "as_of": iso(),
+            "as_of": effective_at,
             "state": today["mode"],
             "message": today["message"],
             "program": today.get("program"),
@@ -49,6 +56,7 @@ class InvestmentHomeService:
                 "work_queue": research_work,
             },
             "evaluation": performance[0] if performance else None,
+            "portfolio_qualification": portfolio_qualification,
             "workflow": {
                 "active_schedule_count": len(active_schedules),
                 "next_schedules": [
@@ -159,7 +167,10 @@ class InvestmentHomeService:
         )
         investor = self.c.cognition.context_current("investor")
         mandate = self.c.cognition.context_current("mandate")
-        truth_freshness = self._portfolio_truth_freshness(account_id, effective_at)
+        qualification = self.c.portfolio_qualification.evaluate_account(
+            account_id=account_id, as_of=effective_at
+        )
+        truth_freshness = qualification.legacy_truth_freshness()
         return {
             "schema": "investment-companion.portfolio-context/v1",
             "as_of": effective_at,
@@ -173,135 +184,9 @@ class InvestmentHomeService:
             "mandate": mandate,
             "policy": self._policy_summary(),
             "truth": "confirmed_ledger_replay",
+            "portfolio_qualification": qualification.stable_projection(),
             "truth_freshness": truth_freshness,
-            "precision_boundary": {
-                "current_broker_position_proven": truth_freshness["broker_position_recently_proven"],
-                "ledger_position_continuity_supported": truth_freshness["ledger_continuity_supported"],
-                "precise_position_advice_allowed": truth_freshness["precise_position_advice_allowed"],
-                "conditional_position_advice_allowed": True,
-                "market_revaluation_required": True,
-                "market_moves_do_not_invalidate_quantities": True,
-                "final_order_quantities_require_broker_preflight": True,
-                "required_when_stale": truth_freshness["required_action"],
-            },
-        }
-
-    def _portfolio_truth_freshness(self, account_id: str, effective_at: str) -> dict[str, Any]:
-        cutoff = parse(effective_at)
-        with self.c.db.connect() as con:
-            reconciliation = row_dict(
-                con.execute(
-                    "SELECT * FROM reconciliations WHERE account_id=? "
-                    "AND julianday(as_of)<=julianday(?) "
-                    "ORDER BY julianday(as_of) DESC,rowid DESC LIMIT 1",
-                    (account_id, effective_at),
-                ).fetchone()
-            )
-            ledger = con.execute(
-                "SELECT occurred_at,id FROM ledger_entries WHERE account_id=? "
-                "AND status IN ('confirmed','reversed') "
-                "AND julianday(occurred_at)<=julianday(?) "
-                "ORDER BY julianday(occurred_at) DESC,rowid DESC LIMIT 1",
-                (account_id, effective_at),
-            ).fetchone()
-            pending_count = int(
-                con.execute(
-                    "SELECT COUNT(*) FROM ledger_entries WHERE account_id=? AND status='needs_confirmation'",
-                    (account_id,),
-                ).fetchone()[0]
-            )
-            open_execution_count = int(
-                con.execute(
-                    "SELECT COUNT(*) FROM executions WHERE status IN ('accepted','ordered','partially_filled') "
-                    "AND json_extract(details_json,'$.account_id')=?",
-                    (account_id,),
-                ).fetchone()[0]
-            )
-            active_broker_strategy_count = int(
-                con.execute(
-                    "SELECT COUNT(*) FROM broker_execution_plans WHERE account_id=? "
-                    "AND status IN ('active','sleeping','termination_pending','exception')",
-                    (account_id,),
-                ).fetchone()[0]
-            )
-        full_scope_matched = reconciliation_is_full_match(reconciliation)
-        continuity = self.c.financial.continuity_current(account_id)
-        verified_at = reconciliation["as_of"] if full_scope_matched else None
-        latest_ledger_at = ledger["occurred_at"] if ledger else None
-        age_seconds = max(0, int((cutoff - parse(verified_at)).total_seconds())) if verified_at else None
-        stale_after_seconds = 3 * 24 * 60 * 60
-        reconciliation_stale = verified_at is None or age_seconds is None or age_seconds > stale_after_seconds
-        continuity_valid = bool(
-            continuity
-            and continuity.get("reporting_commitment") is True
-            and full_scope_matched
-            and parse(continuity["confirmed_at"]) >= parse(continuity["anchor_reconciliation_as_of"])
-            and parse(continuity["confirmed_at"]) <= cutoff
-        )
-        broker_position_recently_proven = full_scope_matched and not reconciliation_stale
-        precise_allowed = bool(
-            full_scope_matched
-            and pending_count == 0
-            and open_execution_count == 0
-            and active_broker_strategy_count == 0
-            and (broker_position_recently_proven or continuity_valid)
-        )
-        stale = not precise_allowed
-        if reconciliation and not full_scope_matched:
-            status = "reconciliation_needs_review"
-            warning = (
-                "latest reconciliation did not match cash, positions, valuations, and total value"
-            )
-            required_action = "resolve the latest reconciliation differences; conditional advice remains allowed"
-        elif pending_count:
-            status = "pending_transactions"
-            warning = "pending transactions must be confirmed or rejected before exact order sizing"
-            required_action = "resolve pending transactions; conditional advice remains allowed"
-        elif open_execution_count or active_broker_strategy_count:
-            status = "open_execution_preflight_required"
-            warning = "open orders or broker-managed conditions can still change available cash or holdings"
-            required_action = "reconcile open executions and broker conditions; conditional advice remains allowed"
-        elif reconciliation_stale and continuity_valid:
-            status = "ledger_continuity_confirmed"
-            warning = (
-                "broker statement is dated, but quantities and cash remain usable under the active "
-                "user reporting commitment; refresh market prices and preflight the final order in the broker App"
-            )
-            required_action = "refresh market prices and verify broker available cash/holdings before submitting the final order"
-        elif reconciliation_stale:
-            status = "continuity_confirmation_required"
-            warning = (
-                "broker statement is dated and no active user reporting commitment proves ledger continuity"
-            )
-            required_action = (
-                "ask the user to confirm no unrecorded trades, cash flows, income/fees/taxes, "
-                "corporate actions or open orders since the last matched reconciliation; "
-                "until then provide ranges and conditional quantities, not silence or no_action"
-            )
-        else:
-            status = "recently_reconciled"
-            warning = None
-            required_action = "refresh market prices and verify broker available cash/holdings before submitting the final order"
-        return {
-            "verified_at": verified_at,
-            "reconciliation_id": reconciliation["id"] if reconciliation else None,
-            "latest_reconciliation_as_of": reconciliation["as_of"] if reconciliation else None,
-            "full_scope_matched": full_scope_matched,
-            "latest_confirmed_ledger_at": latest_ledger_at,
-            "age_seconds": age_seconds,
-            "stale_after_seconds": stale_after_seconds,
-            "reconciliation_stale": reconciliation_stale,
-            "status": status,
-            "stale": stale,
-            "warning": warning,
-            "pending_transaction_count": pending_count,
-            "open_execution_count": open_execution_count,
-            "active_broker_strategy_count": active_broker_strategy_count,
-            "continuity_confirmation": continuity,
-            "ledger_continuity_supported": continuity_valid,
-            "broker_position_recently_proven": broker_position_recently_proven,
-            "precise_position_advice_allowed": precise_allowed,
-            "required_action": required_action,
+            "precision_boundary": qualification.legacy_precision_boundary(),
         }
 
     def research_context(

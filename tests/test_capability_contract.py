@@ -55,6 +55,7 @@ def test_provider_manifest_contracts_all_investment_profile_workflows():
         "additionalProperties": False,
     }
     assert "production_health" in home["output_schema"]["required"]
+    assert "portfolio_qualification" in home["output_schema"]["required"]
     assert home["errors"] == ["capability.input.invalid", "capability.output.invalid"]
     assert home["invariants"] == ["investment_home.production_health.required/v1"]
     contracted = {
@@ -113,6 +114,25 @@ def test_provider_manifest_contracts_all_investment_profile_workflows():
     assert first.document["capabilities"]["portfolio_context"]["handler"] == (
         "investment.portfolio_context"
     )
+    qualification = first.document["capabilities"]["portfolio_context"][
+        "output_schema"
+    ]["properties"]["portfolio_qualification"]
+    assert qualification["properties"]["level"]["enum"] == [
+        "unavailable",
+        "directional_only",
+        "range_ready",
+        "preflight_ready",
+    ]
+    assert {
+        "calculation_id",
+        "level",
+        "allowed_uses",
+        "blockers",
+        "reason_codes",
+        "required_actions",
+        "as_of",
+        "validity",
+    } <= set(qualification["required"])
     research_context = first.document["capabilities"]["research_context"]
     assert research_context["handler"] == "investment.research_context"
     assert research_context["invariants"] == [

@@ -4072,8 +4072,14 @@ def evaluate_investment_conformance(observation: dict[str, Any]) -> dict[str, An
     continuity_precision = (continuity.get("portfolio") or {}).get(
         "precision_boundary", {}
     )
+    continuity_qualification = (continuity.get("portfolio") or {}).get(
+        "portfolio_qualification", {}
+    )
     revoked_precision = (continuity.get("revoked_portfolio") or {}).get(
         "precision_boundary", {}
+    )
+    revoked_qualification = (continuity.get("revoked_portfolio") or {}).get(
+        "portfolio_qualification", {}
     )
     check(
         CONTINUITY_INVARIANT,
@@ -4081,9 +4087,17 @@ def evaluate_investment_conformance(observation: dict[str, Any]) -> dict[str, An
         and continuity_precision.get("current_broker_position_proven") is False
         and continuity_precision.get("ledger_position_continuity_supported") is True
         and continuity_precision.get("precise_position_advice_allowed") is True
+        and continuity_qualification.get("level") == "preflight_ready"
+        and continuity_qualification.get("validity", {}).get(
+            "broker_realtime_proven"
+        )
+        is False
         and (continuity.get("revoked") or {}).get("status") == "revoked"
         and revoked_precision.get("ledger_position_continuity_supported") is False
-        and revoked_precision.get("precise_position_advice_allowed") is False,
+        and revoked_precision.get("precise_position_advice_allowed") is False
+        and revoked_qualification.get("level") == "range_ready"
+        and revoked_qualification.get("reason_codes")
+        == ["account_continuity_invalid"],
         {
             "code": "invariant_violation",
             "capability": "investment_transaction_update",
