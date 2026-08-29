@@ -192,11 +192,20 @@ def test_provider_manifest_contracts_all_investment_profile_workflows():
     assert {
         "investment_action_plan.risk_gate_is_veto_not_thesis/v1",
         "investment_action_plan.portfolio_qualification_caps_precision/v1",
+        "investment_action_plan.future_funding_never_becomes_current_cash/v1",
     } == set(action_plan["invariants"])
     assert {
         variant["properties"]["action_tier"]["const"]
         for variant in action_plan["input_schema"]["oneOf"]
     } == {"standard", "bounded"}
+    assert all(
+        {
+            "planned_deposit",
+            "expected_disposal_proceeds",
+            "willing_to_fund",
+        }.isdisjoint(variant["properties"])
+        for variant in action_plan["input_schema"]["oneOf"]
+    )
     candidate_qualification = action_plan["output_schema"]["properties"][
         "candidate_qualification"
     ]
@@ -253,6 +262,34 @@ def test_provider_manifest_contracts_all_investment_profile_workflows():
     assert action_plan["output_schema"]["properties"][
         "conditional_sizing_available"
     ] == {"type": "boolean"}
+    funding_condition = action_plan["output_schema"]["properties"][
+        "funding_condition"
+    ]["anyOf"][0]
+    assert {
+        "calculation_id",
+        "candidate_quantity_domain",
+        "price_range",
+        "confirmed_cash",
+        "cost_range",
+        "required_additional_cash",
+        "paths",
+        "validity",
+        "candidate_qualification_calculation_id",
+        "risk_calculation_id",
+        "automatic_decision_or_execution",
+    } <= set(funding_condition["required"])
+    assert funding_condition["properties"]["automatic_decision_or_execution"] == {
+        "type": "boolean",
+        "const": False,
+    }
+    assert {
+        item["properties"]["type"]["const"]
+        for item in funding_condition["properties"]["paths"]["items"]["oneOf"]
+    } == {
+        "additional_funding",
+        "reduce_quantity",
+        "confirmed_disposal_proceeds",
+    }
     action_update = first.document["capabilities"]["investment_action_update"]
     assert action_update["handler"] == "investment_commands.action_update"
     assert set(action_update["operations"]) == {
@@ -1145,6 +1182,7 @@ def test_real_investment_mcp_profile_captures_home_production_health_drift(tmp_p
         "decision.portfolio_qualification_shared_with_risk/v1",
         "investment_action_plan.risk_gate_is_veto_not_thesis/v1",
         "investment_action_plan.portfolio_qualification_caps_precision/v1",
+        "investment_action_plan.future_funding_never_becomes_current_cash/v1",
         "action_card.acceptance_never_changes_portfolio/v1",
         "investment_execution_update.confirmed_ledger_only_changes_portfolio/v1",
         "investment_execution_update.full_scope_reconciliation_required/v1",

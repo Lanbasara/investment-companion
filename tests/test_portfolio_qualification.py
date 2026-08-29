@@ -653,6 +653,7 @@ def test_action_plan_projects_candidate_qualification_and_derives_legacy_eligibi
     assert plan["risk"]["precise_action_eligible"] is True
     assert plan["candidate_qualification"]["level"] == "preflight_ready"
     assert plan["risk"]["status"] == "pass"
+    assert plan["funding_condition"] is None
     assert plan["eligible_for_decision"] is True
     assert plan["conditional_sizing_available"] is True
     assert plan["decision_blockers"] == []

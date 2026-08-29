@@ -1056,6 +1056,14 @@ class InvestmentCommandService:
             raise CompanionError(
                 "Risk and Action Plan produced different Portfolio Qualifications"
             )
+        mandate_revision = self.c.cognition.context_current("mandate")
+        if not mandate_revision:
+            raise CompanionError("Action Plan requires a confirmed current Mandate")
+        funding_condition = self.c.funding_condition.evaluate(
+            risk=risk_calculation,
+            qualification=qualification,
+            mandate_revision=mandate_revision,
+        )
         precision = qualification.account_qualification.legacy_precision_boundary()
         truth_freshness = qualification.account_qualification.legacy_truth_freshness()
         exact_sizing = "precise_decision_support" in qualification.allowed_uses
@@ -1083,6 +1091,7 @@ class InvestmentCommandService:
             },
             "risk": risk,
             "candidate_qualification": qualification.stable_projection(),
+            "funding_condition": funding_condition,
             "precision_boundary": precision,
             "truth_freshness": truth_freshness,
             "eligible_for_decision": risk["precise_action_eligible"],

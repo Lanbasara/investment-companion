@@ -33,6 +33,7 @@ from .registry import (
     DELIVERY_STATE_INVARIANT,
     EXECUTION_CONFIRMATION_INVARIANT,
     EXECUTION_RECONCILIATION_INVARIANT,
+    FUNDING_CONDITION_INVARIANT,
     PERFORMANCE_CALCULATION_INVARIANT,
     REVIEW_IMMUTABILITY_INVARIANT,
     CHANGE_PROPOSAL_INVARIANT,
@@ -3648,6 +3649,46 @@ def evaluate_investment_conformance(observation: dict[str, Any]) -> dict[str, An
             "capability": "investment_action_plan",
             "invariant": CANDIDATE_QUALIFICATION_INVARIANT,
             "counterexample": "candidate qualification ignored portfolio or market precision, duplicated Risk, or implied no_action",
+        },
+    )
+
+    funding_condition = blocked_plan.get("funding_condition") or {}
+    funding_paths = {
+        item.get("type"): item
+        for item in funding_condition.get("paths", [])
+        if isinstance(item, dict)
+    }
+    check(
+        FUNDING_CONDITION_INVARIANT,
+        standard_plan.get("funding_condition") is None
+        and funding_condition.get("schema")
+        == "investment-companion.funding-condition/v1"
+        and funding_condition.get("candidate_qualification_calculation_id")
+        == (blocked_plan.get("candidate_qualification") or {}).get("calculation_id")
+        and funding_condition.get("risk_calculation_id")
+        == (blocked_plan.get("risk") or {}).get("calculation_id")
+        and set(funding_paths)
+        == {
+            "additional_funding",
+            "reduce_quantity",
+            "confirmed_disposal_proceeds",
+        }
+        and funding_paths.get("additional_funding", {}).get("assumptions", {}).get(
+            "planned_deposits_counted_as_cash"
+        )
+        is False
+        and funding_paths.get("confirmed_disposal_proceeds", {})
+        .get("assumptions", {})
+        .get("expected_disposal_proceeds_counted_as_cash")
+        is False
+        and (blocked_plan.get("risk") or {}).get("status") == "blocked"
+        and blocked_plan.get("eligible_for_decision") is False
+        and funding_condition.get("automatic_decision_or_execution") is False,
+        {
+            "code": "invariant_violation",
+            "capability": "investment_action_plan",
+            "invariant": FUNDING_CONDITION_INVARIANT,
+            "counterexample": "future funding changed current cash or Funding Condition omitted its auditable alternatives",
         },
     )
 

@@ -34,6 +34,9 @@ RISK_GATE_BOUNDARY_INVARIANT = (
 CANDIDATE_QUALIFICATION_INVARIANT = (
     "investment_action_plan.portfolio_qualification_caps_precision/v1"
 )
+FUNDING_CONDITION_INVARIANT = (
+    "investment_action_plan.future_funding_never_becomes_current_cash/v1"
+)
 ACTION_ACCEPTANCE_INVARIANT = (
     "action_card.acceptance_never_changes_portfolio/v1"
 )
@@ -107,7 +110,8 @@ DECISION_PUBLISH_DESCRIPTION = (
     "把当前组合、候选 Portfolio Qualification、约束、已验证研究、替代方案和风险结果冻结为有期限的正式 Investment Decision；不会成交。"
 )
 ACTION_PLAN_DESCRIPTION = (
-    "用统一候选 Portfolio Qualification、当前 Mandate 和独立 Risk Gate 计算 standard 或 bounded 人工行动方案。"
+    "用统一候选 Portfolio Qualification、当前 Mandate 和独立 Risk Gate 计算 standard 或 bounded 人工行动方案；"
+    "现金不足时投影不可变 Funding Condition，但未来资金不会成为当前现金。"
 )
 ACTION_UPDATE_DESCRIPTION = (
     "把可行动 Opportunity 加入 Action Card 队列，或记录呈现、接受、拒绝、延后和关闭；任何响应都不会成交。"
@@ -1769,6 +1773,199 @@ RISK_GATE_RESULT_SCHEMA = object_schema(
     ],
     additional_properties=True,
 )
+FUNDING_AMOUNT_RANGE_SCHEMA = object_schema(
+    {
+        "minimum": S,
+        "at_reference_price": S,
+        "maximum": S,
+    },
+    ["minimum", "at_reference_price", "maximum"],
+)
+FUNDING_VALIDITY_SCHEMA = object_schema(
+    {
+        "status": {
+            "type": "string",
+            "enum": ["current_at_as_of", "expired_at_as_of"],
+        },
+        "valid_until": S,
+        "invalidate_on": SA,
+        "supports_current_planning": B,
+    },
+    ["status", "valid_until", "invalidate_on", "supports_current_planning"],
+    additional_properties=True,
+)
+FUNDING_REQUIREMENT_SCHEMA = object_schema(
+    {"code": S, "summary": S}, ["code", "summary"]
+)
+FUNDING_RERUN_SCHEMA = object_schema(
+    {
+        "code": {
+            "type": "string",
+            "enum": [
+                "rerun_portfolio_qualification",
+                "rerun_risk_gate",
+                "rerun_action_plan",
+            ],
+        },
+        "summary": S,
+    },
+    ["code", "summary"],
+)
+FUNDING_PATH_COMMON_PROPERTIES = {
+    "state": {
+        "type": "string",
+        "enum": [
+            "requires_confirmed_ledger_entry",
+            "available_as_non_actionable_alternative",
+            "unavailable_with_current_cash",
+        ],
+    },
+    "assumptions": O,
+    "validity": FUNDING_VALIDITY_SCHEMA,
+    "confirmation_requirements": {
+        "type": "array",
+        "items": FUNDING_REQUIREMENT_SCHEMA,
+    },
+    "required_reruns": {"type": "array", "items": FUNDING_RERUN_SCHEMA},
+}
+FUNDING_PATH_COMMON_REQUIRED = list(FUNDING_PATH_COMMON_PROPERTIES)
+FUNDING_PATH_SCHEMA = {
+    "oneOf": [
+        object_schema(
+            {
+                "type": {"type": "string", "const": "additional_funding"},
+                **FUNDING_PATH_COMMON_PROPERTIES,
+                "amount_range": FUNDING_AMOUNT_RANGE_SCHEMA,
+            },
+            ["type", *FUNDING_PATH_COMMON_REQUIRED, "amount_range"],
+        ),
+        object_schema(
+            {
+                "type": {"type": "string", "const": "reduce_quantity"},
+                **FUNDING_PATH_COMMON_PROPERTIES,
+                "quantity_range": object_schema(
+                    {
+                        "minimum": S,
+                        "maximum_across_price_range": S,
+                        "maximum_at_minimum_price": S,
+                        "maximum_at_reference_price": S,
+                        "maximum_at_maximum_price": S,
+                        "step": S,
+                    },
+                    [
+                        "minimum",
+                        "maximum_across_price_range",
+                        "maximum_at_minimum_price",
+                        "maximum_at_reference_price",
+                        "maximum_at_maximum_price",
+                        "step",
+                    ],
+                ),
+            },
+            ["type", *FUNDING_PATH_COMMON_REQUIRED, "quantity_range"],
+        ),
+        object_schema(
+            {
+                "type": {
+                    "type": "string",
+                    "const": "confirmed_disposal_proceeds",
+                },
+                **FUNDING_PATH_COMMON_PROPERTIES,
+                "required_net_proceeds_range": FUNDING_AMOUNT_RANGE_SCHEMA,
+            },
+            [
+                "type",
+                *FUNDING_PATH_COMMON_REQUIRED,
+                "required_net_proceeds_range",
+            ],
+        ),
+    ]
+}
+FUNDING_CONDITION_SCHEMA = object_schema(
+    {
+        "schema": {
+            "type": "string",
+            "const": "investment-companion.funding-condition/v1",
+        },
+        "policy_version": {
+            "type": "string",
+            "const": "funding-condition-policy/v1",
+        },
+        "calculation_id": S,
+        "account_id": S,
+        "asset_id": S,
+        "direction": {"type": "string", "const": "buy"},
+        "currency": S,
+        "as_of": S,
+        "candidate_quantity_domain": object_schema(
+            {
+                "kind": {
+                    "type": "string",
+                    "const": "up_to_requested_quantity",
+                },
+                "minimum": S,
+                "maximum": S,
+                "step": S,
+            },
+            ["kind", "minimum", "maximum", "step"],
+        ),
+        "price_range": object_schema(
+            {"minimum": S, "reference": S, "maximum": S},
+            ["minimum", "reference", "maximum"],
+        ),
+        "confirmed_cash": object_schema(
+            {
+                "amount": S,
+                "cash_safety_buffer": S,
+                "cash_above_buffer": S,
+                "spendable_amount": S,
+                "portfolio_calculation_id": S,
+            },
+            [
+                "amount",
+                "cash_safety_buffer",
+                "cash_above_buffer",
+                "spendable_amount",
+                "portfolio_calculation_id",
+            ],
+        ),
+        "cost_range": object_schema(
+            {
+                "notional": FUNDING_AMOUNT_RANGE_SCHEMA,
+                "commission": FUNDING_AMOUNT_RANGE_SCHEMA,
+                "tax": FUNDING_AMOUNT_RANGE_SCHEMA,
+                "total": FUNDING_AMOUNT_RANGE_SCHEMA,
+            },
+            ["notional", "commission", "tax", "total"],
+        ),
+        "required_additional_cash": FUNDING_AMOUNT_RANGE_SCHEMA,
+        "paths": {"type": "array", "items": FUNDING_PATH_SCHEMA},
+        "validity": FUNDING_VALIDITY_SCHEMA,
+        "candidate_qualification_calculation_id": S,
+        "risk_calculation_id": S,
+        "automatic_decision_or_execution": {"type": "boolean", "const": False},
+    },
+    [
+        "schema",
+        "policy_version",
+        "calculation_id",
+        "account_id",
+        "asset_id",
+        "direction",
+        "currency",
+        "as_of",
+        "candidate_quantity_domain",
+        "price_range",
+        "confirmed_cash",
+        "cost_range",
+        "required_additional_cash",
+        "paths",
+        "validity",
+        "candidate_qualification_calculation_id",
+        "risk_calculation_id",
+        "automatic_decision_or_execution",
+    ],
+)
 ACTION_PLAN_OUTPUT_SCHEMA = object_schema(
     {
         "schema": {
@@ -1802,6 +1999,9 @@ ACTION_PLAN_OUTPUT_SCHEMA = object_schema(
         ),
         "risk": RISK_GATE_RESULT_SCHEMA,
         "candidate_qualification": CANDIDATE_QUALIFICATION_SCHEMA,
+        "funding_condition": {
+            "anyOf": [FUNDING_CONDITION_SCHEMA, {"type": "null"}]
+        },
         "precision_boundary": PRECISION_BOUNDARY_SCHEMA,
         "truth_freshness": TRUTH_FRESHNESS_SCHEMA,
         "eligible_for_decision": B,
@@ -1813,6 +2013,7 @@ ACTION_PLAN_OUTPUT_SCHEMA = object_schema(
     },
     [
         "schema", "action", "risk", "candidate_qualification",
+        "funding_condition",
         "precision_boundary", "truth_freshness",
         "eligible_for_decision", "conditional_sizing_available",
         "decision_blockers", "action_tier",
@@ -4361,7 +4562,11 @@ CAPABILITY_CONTRACTS: dict[str, CapabilityContract] = {
         ACTION_PLAN_INPUT_SCHEMA,
         ACTION_PLAN_OUTPUT_SCHEMA,
         ("capability.input.invalid", "capability.output.invalid"),
-        (RISK_GATE_BOUNDARY_INVARIANT, CANDIDATE_QUALIFICATION_INVARIANT),
+        (
+            RISK_GATE_BOUNDARY_INVARIANT,
+            CANDIDATE_QUALIFICATION_INVARIANT,
+            FUNDING_CONDITION_INVARIANT,
+        ),
         ACTION_PLAN_OPERATIONS,
         variant_selectors=("action_tier",),
     ),

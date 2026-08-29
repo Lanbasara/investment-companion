@@ -17,6 +17,7 @@ from ..delivery import DeliveryEngine
 from ..execution import ExecutionLifecycleService
 from ..execution_strategy import BrokerExecutionStrategyService
 from ..financial import FinancialKernel
+from ..funding_condition import FundingConditionService
 from ..governance import GateRegistry
 from ..jobs import JobEngine
 from ..market_calendar import MarketCalendar
@@ -61,6 +62,7 @@ def compose_services(companion) -> None:
     companion.execution = ExecutionLifecycleService(companion)
     companion.execution_strategy = BrokerExecutionStrategyService(companion)
     companion.portfolio_qualification = PortfolioQualificationService(companion)
+    companion.funding_condition = FundingConditionService(companion)
     companion.program_evaluation = ProgramEvaluationCoverage(companion)
     companion.operating = InvestmentOperatingSystem(companion)
     companion.briefing = InvestmentBriefingService(companion)
